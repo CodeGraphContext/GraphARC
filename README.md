@@ -16,6 +16,10 @@
 | Convergence | Cycles end with a machine-readable `termination_reason`, never by running out of road |
 | Traces as replay points | Every node execution is one JSONL line: state delta, duration, tokens, error |
 | Crash-safe resume | SQLite checkpointing; kill a run mid-write and resume produces exactly one output |
+| Enforced tool boundary | Permissions decide *which* tools run (deny → ask → allow, default deny); a sandboxed executor bounds *what a tool touches* once it does |
+| Durable memory | Claims carry provenance and are superseded, never overwritten — later runs see what changed and skip known dead ends |
+
+The sandbox is a CPython audit hook, which is an in-process boundary, not a kernel one: subprocess spawning is refused outright (a child would run unhooked), and native extensions can bypass it. `os.stat` raises no audit event, so metadata reads outside the workspace are not blocked. For a real boundary, a container executor implements the same interface.
 
 ## Install (development)
 
@@ -85,7 +89,7 @@ Each roadmap stage ships with a failure-gate test, not just a happy path:
 - **Stage 3** — a crashed worker and a hung worker cannot sink the batch; duplicate evidence cannot inflate confidence.
 - **Stage 4** — an impossible investigation halts on a no-progress window, far under the hard ceiling.
 - **Stage 5** — the verifier rejects a fabricated citation without consulting the model, catches a misleading one with it, and fails closed on any ambiguous verdict.
-- **Harness** — a tool cannot read outside its workspace or open a socket without declaring the capability; a hung tool is killed.
+- **Harness** — a tool cannot read, list, or delete outside its workspace, cannot open a socket without declaring the capability, and cannot spawn a subprocess to escape the audit hook; a tool that swallows SIGTERM is still killed.
 - **Stage 6** — a later run reuses a fact from an earlier run, sees what superseded it, and avoids the dead end.
 - **Capstone** — unverified evidence is never persisted to memory.
 

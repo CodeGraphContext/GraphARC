@@ -57,6 +57,34 @@ def test_entity_resolution_is_case_and_punctuation_insensitive():
     assert store.current("NEO4J")
 
 
+def test_non_ascii_entities_stay_distinct():
+    """An ASCII-only normalizer would erase these entirely and merge them into
+    one node — cross-contaminating facts about unrelated subjects."""
+    store = MemoryStore()
+    store.add(Claim(subject="東京", predicate="is in", object="Japan", source="s"))
+    store.add(Claim(subject="北京", predicate="is in", object="China", source="s"))
+
+    tokyo = store.current("東京")
+    beijing = store.current("北京")
+    assert [c.object for c in tokyo] == ["Japan"]
+    assert [c.object for c in beijing] == ["China"]
+
+
+def test_accented_names_do_not_collide_with_their_stripped_form():
+    store = MemoryStore()
+    store.add(Claim(subject="Müller", predicate="wrote", object="paper A", source="s"))
+    store.add(Claim(subject="M ller", predicate="wrote", object="paper B", source="s"))
+    assert [c.object for c in store.current("Müller")] == ["paper A"]
+
+
+def test_punctuation_only_entity_does_not_become_a_shared_empty_key():
+    store = MemoryStore()
+    store.add(Claim(subject="???", predicate="p", object="1", source="s"))
+    store.add(Claim(subject="!!!", predicate="p", object="2", source="s"))
+    assert [c.object for c in store.current("???")] == ["1"]
+    assert [c.object for c in store.current("!!!")] == ["2"]
+
+
 def test_retrieval_is_bounded():
     store = MemoryStore()
     for i in range(50):

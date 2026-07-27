@@ -50,20 +50,53 @@ def summarize(recorder: TraceRecorder, run_id: str) -> RunMetrics | None:
     )
 
 
+_MERMAID_ESCAPES = {
+    '"': "#quot;",
+    "[": "#91;",
+    "]": "#93;",
+    "{": "#123;",
+    "}": "#125;",
+    "(": "#40;",
+    ")": "#41;",
+    "<": "#60;",
+    ">": "#62;",
+    ";": "#59;",
+}
+
+
+def _label(text: str, limit: int = 120) -> str:
+    """Make arbitrary text safe inside a Mermaid label.
+
+    Truncate the text *before* escaping and quoting — slicing the composed line
+    would cut off the closing delimiter and break the whole diagram, which is
+    exactly what happens on the error paths an operator most needs to see.
+    """
+    flat = " ".join(str(text).split())[:limit]
+    return "".join(_MERMAID_ESCAPES.get(ch, ch) for ch in flat)
+
+
 def to_mermaid(recorder: TraceRecorder, run_id: str) -> str:
     """Render the executed path as a Mermaid flowchart (file-first, git-friendly)."""
     events = [e for e in recorder.read_events(run_id) if e.phase in ("end", "error")]
     if not events:
-        return "flowchart TD\n  empty[no events]"
+        return 'flowchart TD\n  empty["no events"]'
     lines = ["flowchart TD"]
-    seen: dict[str, str] = {}
+    # Key by (node, step) so parallel instances of a fan-out worker are distinct
+    # nodes rather than one node with a self-loop the graph never had.
+    ids: dict[tuple[str, int], str] = {}
+
+    def node_ref(ev) -> str:
+        key = (ev.node, ev.step)
+        node_id = ids.setdefault(key, f"n{len(ids)}")
+        return f'{node_id}["{_label(ev.node)}"]'
+
+    lines.append(f"  start((start)) --> {node_ref(events[0])}")
     for i, e in enumerate(events):
-        node_id = seen.setdefault(e.node, f"n{len(seen)}")
-        if i == 0:
-            lines.append(f"  start((start)) --> {node_id}[{e.node}]")
         if e.phase == "error":
-            lines.append(f"  {node_id} -.->|error| err{i}{{{e.error or 'error'}}}"[:200])
+            lines.append(
+                f'  {node_ref(e)} -.->|error| err{i}{{"{_label(e.error or "error")}"}}'
+            )
     for a, b in zip(events, events[1:], strict=False):
         if a.phase == "end":
-            lines.append(f"  {seen[a.node]}[{a.node}] --> {seen[b.node]}[{b.node}]")
+            lines.append(f"  {node_ref(a)} --> {node_ref(b)}")
     return "\n".join(dict.fromkeys(lines))

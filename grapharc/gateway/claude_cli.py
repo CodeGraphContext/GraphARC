@@ -162,17 +162,27 @@ class ClaudeCodeCLIChatModel(BaseChatModel):
 
         text = str(payload.get("result", ""))
         usage = payload.get("usage") or {}
-        input_tokens = int(usage.get("input_tokens", 0))
+        # Cached input is still input. Counting only `input_tokens` would let a
+        # budget under-count by an order of magnitude on real calls, since most
+        # of a turn's prompt arrives as cache creation or cache reads.
+        cache_creation = int(usage.get("cache_creation_input_tokens", 0))
+        cache_read = int(usage.get("cache_read_input_tokens", 0))
+        uncached = int(usage.get("input_tokens", 0))
+        input_tokens = uncached + cache_creation + cache_read
         output_tokens = int(usage.get("output_tokens", 0))
         usage_metadata = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
+            "input_token_details": {
+                "cache_creation": cache_creation,
+                "cache_read": cache_read,
+            },
         }
         # Uniform usage envelope (OpenRouter discipline): native counts + cost.
         self.last_usage = {
             **usage_metadata,
-            "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+            "uncached_input_tokens": uncached,
             "cost_usd": payload.get("total_cost_usd"),
             "model": self.model,
         }

@@ -45,6 +45,9 @@ class CapstoneState(ArcState):
     entities: list[str] = []
     n_workers: int = 2
     recalled: str = ""
+    # The verifier's anchor source lives in state, not a closure: it must be
+    # per-run and checkpointed, or a resumed run verifies against nothing.
+    source_text: str = ""
     worker_results: Annotated[list[WorkerResult], operator.add] = []
     evidence: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -66,15 +69,11 @@ def build_capstone(
     if worker_model is reviewer_model:
         raise ValueError("worker and reviewer must be different model instances")
 
-    source_text = ""  # bound at run time by `plan`, used by the verifier's anchor
-
     def recall(state: CapstoneState) -> dict:
         return {"recalled": render_context(store, entities=state.entities or ["research"])}
 
-    def plan(state: CapstoneState) -> None:
-        nonlocal source_text
-        source_text = "\n".join(state.corpus)
-        return None
+    def plan(state: CapstoneState) -> dict:
+        return {"source_text": "\n".join(state.corpus)}
 
     def dispatch(state: CapstoneState) -> list[tuple[str, ShardPayload]]:
         shards: list[list[int]] = [[] for _ in range(state.n_workers)]
@@ -120,7 +119,7 @@ def build_capstone(
                 reviewer_model,
                 text=f"{state.question} — {e['quote']}",
                 citation=e["quote"],
-                source_text=source_text,
+                source_text=state.source_text,
             )
             for e in evidence
         ]
@@ -161,7 +160,7 @@ def build_capstone(
 
     g = ArcGraph(CapstoneState, name="capstone", budget=budget, trace=trace)
     g.add_node("recall", recall, writes={"recalled"})
-    g.add_node("plan", plan, writes=set())
+    g.add_node("plan", plan, writes={"source_text"})
     g.add_node("search", search, writes={"worker_results"}, input_schema=ShardPayload)
     g.add_node("verify", verify, writes={"evidence", "failures", "verdicts"})
     g.add_node("answer", answer, writes={"answer", "termination_reason"})

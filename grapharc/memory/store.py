@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import threading
+import unicodedata
 import uuid
 from datetime import UTC, datetime
 
@@ -26,8 +27,15 @@ def _now() -> str:
 
 
 def _normalize(entity: str) -> str:
-    """Cheap entity resolution: case- and punctuation-insensitive identity."""
-    return re.sub(r"[^a-z0-9]+", " ", entity.lower()).strip()
+    """Entity resolution: case- and punctuation-insensitive, Unicode-aware.
+
+    An ASCII-only character class would erase every non-Latin script, silently
+    merging unrelated entities (東京 and 北京 both becoming the empty key) — the
+    worst failure mode for a store whose job is keeping facts attributable.
+    """
+    folded = unicodedata.normalize("NFKC", entity).casefold()
+    norm = re.sub(r"[\W_]+", " ", folded, flags=re.UNICODE).strip()
+    return norm or folded.strip()
 
 
 class Claim(BaseModel):

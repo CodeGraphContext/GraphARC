@@ -7,6 +7,7 @@
 """
 
 import sys
+import time
 
 import pytest
 
@@ -169,6 +170,98 @@ def test_gate_tool_cannot_open_network_without_capability(tmp_path):
     not hasattr(sys, "addaudithook") or sys.platform == "win32",
     reason="requires POSIX fork + audit hooks",
 )
+@pytest.mark.parametrize(
+    "spawn",
+    [
+        "os.system('cat /etc/passwd')",
+        "__import__('subprocess').run(['cat', '/etc/passwd'])",
+    ],
+)
+def test_gate_tool_cannot_spawn_a_subprocess(tmp_path, spawn):
+    """A child process runs without the audit hook, so it can't be confined —
+    spawning one is refused outright rather than silently escaping."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    def escape(code: str) -> str:
+        import os  # noqa: F401 — in scope for the hostile eval below
+
+        return str(eval(code))  # noqa: S307 — deliberately hostile tool body
+
+    reg = ToolRegistry()
+    reg.register(ToolSpec(name="escape", description="", fn=escape))
+    policy = _policy([{"action": "allow", "pattern": "escape"}])
+    harness = Harness(reg, policy, workspace=str(workspace))
+
+    with pytest.raises(SandboxViolation, match="spawn a process"):
+        harness.call("escape", {"code": spawn})
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, "addaudithook") or sys.platform == "win32",
+    reason="requires POSIX fork + audit hooks",
+)
+@pytest.mark.parametrize("op", ["os.listdir", "os.scandir", "os.remove", "os.rmdir"])
+def test_gate_non_open_filesystem_calls_are_confined(tmp_path, op):
+    """os.listdir/remove/rmdir take paths too — model-supplied arguments reach
+    them directly, so gating `open` alone was never enough."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    def touch(operation: str, path: str) -> str:
+        import os as _os
+
+        fn = {
+            "os.listdir": _os.listdir,
+            "os.scandir": lambda p: list(_os.scandir(p)),
+            "os.remove": _os.remove,
+            "os.rmdir": _os.rmdir,
+        }[operation]
+        return str(fn(path))
+
+    reg = ToolRegistry()
+    reg.register(ToolSpec(name="touch", description="", fn=touch))
+    policy = _policy([{"action": "allow", "pattern": "touch"}])
+    harness = Harness(reg, policy, workspace=str(workspace))
+
+    directory_ops = ("os.listdir", "os.scandir", "os.rmdir")
+    target = str(outside.parent if op in directory_ops else outside)
+    with pytest.raises(SandboxViolation, match="outside its workspace"):
+        harness.call("touch", {"operation": op, "path": target})
+    assert outside.exists()  # the destructive ops never happened
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, "addaudithook") or sys.platform == "win32",
+    reason="requires POSIX fork + audit hooks",
+)
+def test_gate_sibling_directory_is_not_inside_the_workspace(tmp_path):
+    """`<ws>-evil` shares a string prefix with `<ws>` but is not inside it."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sibling = tmp_path / "ws-evil"
+    sibling.mkdir()
+    (sibling / "secret.txt").write_text("SIBLING-SECRET", encoding="utf-8")
+
+    def read_file(path: str) -> str:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    reg = ToolRegistry()
+    reg.register(ToolSpec(name="read_file", description="", fn=read_file))
+    policy = _policy([{"action": "allow", "pattern": "read_file"}])
+    harness = Harness(reg, policy, workspace=str(workspace))
+
+    with pytest.raises(SandboxViolation, match="outside its workspace"):
+        harness.call("read_file", {"path": str(sibling / "secret.txt")})
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, "addaudithook") or sys.platform == "win32",
+    reason="requires POSIX fork + audit hooks",
+)
 def test_gate_hung_tool_is_killed(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -185,3 +278,39 @@ def test_gate_hung_tool_is_killed(tmp_path):
 
     with pytest.raises(SandboxViolation, match="timeout"):
         harness.call("hang", {})
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, "addaudithook") or sys.platform == "win32",
+    reason="requires POSIX fork + audit hooks",
+)
+@pytest.mark.timeout(30)
+def test_gate_sigterm_handling_tool_is_still_killed(tmp_path):
+    """"Killed" must mean killed: a tool that swallows SIGTERM must not keep
+    running after the harness has already reported a timeout."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    marker = workspace / "still-alive.txt"
+
+    def stubborn(marker_path: str) -> None:
+        import signal as _signal
+        import time as _time
+
+        _signal.signal(_signal.SIGTERM, lambda *_: None)  # ignore SIGTERM
+        for _ in range(60):
+            _time.sleep(0.1)
+            with open(marker_path, "a", encoding="utf-8") as f:
+                f.write("tick\n")
+
+    reg = ToolRegistry()
+    reg.register(ToolSpec(name="stubborn", description="", fn=stubborn, timeout_seconds=0.5))
+    policy = _policy([{"action": "allow", "pattern": "stubborn"}])
+    harness = Harness(reg, policy, workspace=str(workspace))
+
+    with pytest.raises(SandboxViolation, match="timeout"):
+        harness.call("stubborn", {"marker_path": str(marker)})
+
+    ticks_at_kill = marker.read_text().count("tick") if marker.exists() else 0
+    time.sleep(1.5)
+    ticks_later = marker.read_text().count("tick") if marker.exists() else 0
+    assert ticks_later == ticks_at_kill, "tool kept running after the timeout"
