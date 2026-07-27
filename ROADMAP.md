@@ -18,10 +18,7 @@ adversarial pass that found a full escape the first one missed.
 
 In order. Each unblocks more than it costs.
 
-1. **Prove the V0 gate** (§4.1) — a real model, through `AgentNode`, editing a
-   file and running a test under permission gating and a budget. Everything it
-   needs now exists; nothing has demonstrated it end to end.
-2. **Async through the kernel** (§1.1) — **B** blocks the HTTP API, concurrency,
+1. **Async through the kernel** (§1.1) — **B** blocks the HTTP API, concurrency,
    and streaming. Cannot be retrofitted cheaply later.
 3. **Wire the harness into an example graph** (§3.1) — the tool plane is
    hardened and driveable, and still no shipped graph calls a tool.
@@ -126,7 +123,9 @@ Hardened and now driveable by `AgentNode`; still imported by zero *example* grap
 - [x] Registry, deny→ask→allow permissions, hooks, approval gates
 - [x] Audit-hook executor: path confinement, network gating, spawn refusal,
       SIGKILL escalation
-- [ ] **B 3.1 — Wire it to an agent** (see §4.1). Zero callers today.
+- [x] **3.1 — Wired to an agent.** `AgentNode` drives the registry, permissions
+      and executor; `grapharc/examples/agent_fixit.py` is a shipped graph that
+      calls tools. Other example graphs still do not.
 - [ ] **3.2 — Container executor** — a real kernel boundary. The README claims
       one "slots in behind this interface"; it does not exist.
 - [ ] **3.3 — Core tools:** bash, read, write, edit, glob, grep.
@@ -145,8 +144,10 @@ The missing unit that makes everything else compose.
       fed back to the model rather than killing the run; malformed tool JSON is
       reported back instead of silently reading as success; stall detection keys
       on the tool *result*, so re-running a test suite is not mistaken for a
-      loop. **Still to prove the §4.1 gate: a real model editing a file and
-      running a test.**
+      loop. **Gate passed:** a real model read a broken `calc.py`, wrote the
+      fix, ran the suite, and stopped `target_met` — verified by an independent
+      test run, with the denied tool never offered and 3,906 tokens metered.
+      See `grapharc/examples/agent_fixit.py` and `pytest -m live`.
 - [ ] **4.2 — Context management** (compaction, just-in-time retrieval).
 - [ ] **4.3 — Subagent spawning** with context isolation and summary-only return.
 - [ ] **4.4 — Skills / instruction packs** loaded on demand.
@@ -221,9 +222,9 @@ Where the vision lives or dies. No prior art to copy.
 - [x] Builds a clean wheel; 101 tests; CI; ruff clean
 - [ ] **11.1 — Publish to PyPI.** Not published; `git clone` is the only path.
 - [ ] **11.2 — Docs site** with runnable examples.
-- [~] **11.3 — Live-model examples in CI** behind the `live` marker. Stage 5
-      and the capstone now run end-to-end against real cross-vendor models; CI
-      wiring still pending.
+- [~] **11.3 — Live-model examples** behind the `live` marker: stage 5, the
+      capstone, and the V0 agent gate all run end-to-end against real models.
+      CI wiring still pending (it needs a key in secrets).
 - [ ] **11.4 — Benchmarks, including published losses.**
 - [ ] **11.5 — External security review** (after §0 and §3.2).
 - [ ] **11.6 — Classifiers, `[project.urls]`, contribution guide.**
