@@ -174,9 +174,27 @@ def main(argv: list[str] | None = None) -> int:
         "stage6",
         "capstone",
     ]
-    run = sub.add_parser("run", help="run a built-in example graph (scripted models)")
+    run = sub.add_parser("run", help="run a built-in example graph")
     run.add_argument("example", choices=examples)
     run.add_argument("--trace", type=Path, default=None, help="trace JSONL output path")
+    run.add_argument(
+        "--model",
+        default=None,
+        metavar="SPEC",
+        help=(
+            "run against a real model instead of scripted responses, e.g. "
+            "openrouter/anthropic/claude-haiku-4.5 or claude-cli/claude-sonnet-5"
+        ),
+    )
+    run.add_argument(
+        "--reviewer-model",
+        default=None,
+        metavar="SPEC",
+        help="model for verifier nodes; should be a different provider from --model",
+    )
+
+    md = sub.add_parser("models", help="show what a model spec resolves to")
+    md.add_argument("spec", nargs="?", default=None)
 
     tr = sub.add_parser("trace", help="pretty-print a trace JSONL file")
     tr.add_argument("path", type=Path)
@@ -194,10 +212,35 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "run":
         trace_path = args.trace or Path(tempfile.mkdtemp(prefix="grapharc-")) / "trace.jsonl"
+        if args.model:
+            from grapharc.cli.live import run_live
+
+            return run_live(
+                args.example,
+                trace_path,
+                model_spec=args.model,
+                reviewer_spec=args.reviewer_model,
+            )
         result = _run_example(args.example, trace_path)
         for key, value in result.items():
             print(f"{key}: {value}")
         print(f"\ntrace: {trace_path}")
+        return 0
+
+    if args.command == "models":
+        from grapharc.gateway import describe, openrouter_api_key, redact
+        from grapharc.gateway.registry import BACKENDS
+
+        if args.spec:
+            for key, value in describe(args.spec).items():
+                print(f"{key}: {value}")
+            return 0
+        print("backends:", ", ".join(BACKENDS))
+        print(f"openrouter key: {redact(openrouter_api_key())}")
+        print("\nexamples:")
+        print("  claude-cli/claude-sonnet-5              subscription, no API key")
+        print("  openrouter/anthropic/claude-haiku-4.5   ~400 models, one key")
+        print("  openrouter/openai/gpt-4o-mini:floor     cheapest provider for that model")
         return 0
 
     if args.command == "trace":

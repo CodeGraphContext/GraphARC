@@ -19,6 +19,9 @@ dependencies = [
 memory = ["neo4j>=5.20"]
 # Deferred direct-API backend (added when an API key exists to test it live).
 api = ["anthropic>=0.40"]
+openrouter = [
+    "langchain-openai>=0.2",
+]
 
 [dependency-groups]
 dev = [
@@ -39,9 +42,11 @@ packages = ["grapharc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# Live tests spend real money and real quota, so they are opt-in: run them
+# with `pytest -m live`. Without this they ran on every plain `pytest`.
+addopts = "-q -m 'not live'"
 markers = [
-    "live: tests that call a real model backend (deselected by default)",
+    "live: calls a real model backend; costs money. Opt in with `-m live`.",
 ]
 
 [tool.ruff]

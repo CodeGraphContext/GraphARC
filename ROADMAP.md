@@ -7,8 +7,9 @@ see [ASSESSMENT.md](ASSESSMENT.md) for how the current numbers were verified.
 **Legend:** `[x]` done · `[~]` partial · `[ ]` not started · **B** blocks other
 work · **!** known-false claim shipping today
 
-Overall: **~15% of the product**, and the finished 15% is the least
-differentiated part.
+Overall: **~20% of the product**. The model plane went from text-only to
+tool-calling, structured output, async, streaming, and multi-provider routing,
+which unblocks the agent node.
 
 ---
 
@@ -18,8 +19,9 @@ In order. Each unblocks more than it costs.
 
 1. **Fix the false security claim** (§0.1, §0.2) — a three-line stdlib escape
    disproves a README sentence that is shipping right now.
-2. **`bind_tools` on the gateway** (§2.1) — **B** hard-blocks every agent that
-   calls a tool, which is the entire product.
+2. ~~`bind_tools` on the gateway~~ — **done** via OpenRouter, verified live.
+   Next in its place: **auto-charge tokens** (§0.4), now proven broken by a live
+   run that reported zero spend while costing money.
 3. **Async through the kernel** (§1.1) — **B** blocks the HTTP API, concurrency,
    and streaming. Cannot be retrofitted cheaply later.
 4. **The `AgentNode`** (§4.1) — converts three orphaned subsystems into one
@@ -42,10 +44,12 @@ Ship-blockers. Every item verified by running code.
       tool returned a planted `sk-ant-…` secret over the result pipe.
 - [ ] **! 0.3 — Make `max_seconds` a real ceiling.** Checked *between* nodes, so
       a 1.5 s node completed under a 0.2 s budget. Needs a watchdog.
-- [ ] **! 0.4 — Charge tokens automatically.** `charge_tokens` has one caller:
+- [ ] **!B 0.4 — Charge tokens automatically.** `charge_tokens` has one caller:
       `charge_usage()` in `grapharc/testing.py` — the *test-doubles* module,
-      imported into all seven production examples. Move into the gateway via
-      langchain-core's `UsageMetadataCallbackHandler`.
+      imported into all seven production examples. **Confirmed live:** a real
+      capstone run over OpenRouter reported `spent: 0 tokens across 7 nodes`
+      while actually costing money, because `verify_claim` never charges.
+      Move into the gateway via langchain-core's `UsageMetadataCallbackHandler`.
 - [ ] **0.5 — Validate types at write time.** A field declared `int` accepted
       `"not-an-int"` and it escaped the graph boundary.
 - [ ] **! 0.6 — Delete or correct false README claims:** "validated routing"
@@ -55,8 +59,8 @@ Ship-blockers. Every item verified by running code.
 - [ ] **0.7 — Remove the Neo4j fiction.** A docstring promises an
       implementation "satisfies the same interface"; no implementation and no
       interface exist. `pyproject.toml` declares an extra nothing imports.
-- [ ] **0.8 — Fix `pytest` defaults.** `live` tests run by default and shell out
-      to the real `claude` binary; the marker description claims otherwise.
+- [x] **0.8 — Fix `pytest` defaults.** `addopts` now carries `-m 'not live'`;
+      live tests are opt-in via `pytest -m live`.
 - [ ] **0.9 — Fix `LICENSE` copyright** (says "CodeGraphContext") and the
       README clone URL (404s — wrong org).
 - [ ] **0.10 — Fix the gateway tempfile leak.** One orphaned `mkdtemp` per call.
@@ -89,24 +93,30 @@ The only mature subsystem. Its problem is what it *removes* from LangGraph.
       trace file on every `invoke`.
 - [ ] **1.8 — Make deep-copy opt-out-able** for large states.
 
-## 2. Model gateway — `[~] ~15%`
+## 2. Model gateway — `[~] ~60%`
 
-Text-only today, which disqualifies it for agent work.
+Was text-only, which disqualified it for agent work. OpenRouter now brings
+tool-calling, structured output, async, and streaming.
 
 - [x] Claude Code CLI adapter (tools disabled, argv array, stdin prompt)
 - [x] Correct cache-token accounting
-- [ ] **B 2.1 — `bind_tools`** — raises `NotImplementedError`. **No agent can
-      call a tool through this gateway.** Single highest-leverage fix.
-- [ ] **B 2.2 — `with_structured_output`** — raises `NotImplementedError`;
-      examples hand-roll JSON extraction from prose as a workaround.
-- [ ] **2.3 — `_stream` and `_agenerate`** — no token streaming, no async.
-- [ ] **2.4 — Provider adapters:** Anthropic API, OpenRouter, OpenAI-compatible,
-      local (Ollama/vLLM).
-- [ ] **2.5 — Retries, backoff, rate-limit handling** — none today.
-- [ ] **2.6 — Routing rules** (cost / latency / capability) and failover chains.
-- [ ] **2.7 — Enforced cost ceilings** — `cost_usd` is captured and never
-      budgeted against.
+- [x] **2.1 — `bind_tools`** — works on OpenRouter (verified live: a real
+      `tool_calls` payload). Still `NotImplementedError` on the Claude-CLI
+      backend, which is inherent to `claude -p`.
+- [x] **2.2 — `with_structured_output`** — works on OpenRouter, verified live
+      returning a parsed Pydantic model.
+- [x] **2.3 — `_stream` and `_agenerate`** — both work on OpenRouter.
+- [~] **2.4 — Provider adapters:** OpenRouter (~340 models across ~60 providers)
+      and Claude CLI done. Direct Anthropic API and local (Ollama/vLLM) pending.
+- [ ] **2.5 — Retries, backoff, rate-limit handling** — inherited from the
+      OpenAI SDK on OpenRouter; nothing on the CLI backend.
+- [x] **2.6 — Routing rules** — provider `order` / `sort` / `max_price` /
+      `require_parameters`, plus model-level `fallback_models` chains.
+- [ ] **2.7 — Enforced cost ceilings** — `cost_usd` is now captured per call by
+      both backends, and still never budgeted against. See §0.4.
 - [ ] **2.8 — Prompt caching support** and per-run model pinning.
+- [x] **2.9 — Backend registry** — `get_model("openrouter/anthropic/…")`; a
+      mistyped backend is rejected rather than folded into a model name.
 
 ## 3. Tool plane — `[~] ~30%`
 
@@ -186,8 +196,9 @@ Where the vision lives or dies. No prior art to copy.
 
 - [x] Demo CLI (`run` / `trace` / `metrics` / `viz`)
 - [ ] **9.1 — HTTP API** (depends on §1.1 async).
-- [ ] **9.2 — Real CLI:** `--model`, `--backend`, live runs. All eight `run`
-      commands hardcode `ScriptedChatModel` today.
+- [x] **9.2 — Real CLI:** `grapharc run <stage> --model <spec>
+      [--reviewer-model <spec>]` runs the example graphs against real models,
+      and `grapharc models` shows what a spec resolves to.
 - [ ] **9.3 — Cron schedules** and **9.4 — webhook triggers.**
 - [ ] **9.5 — Chat channels** (Slack / Discord).
 - [ ] **9.6 — Streaming output** to clients.
@@ -206,8 +217,9 @@ Where the vision lives or dies. No prior art to copy.
 - [x] Builds a clean wheel; 101 tests; CI; ruff clean
 - [ ] **11.1 — Publish to PyPI.** Not published; `git clone` is the only path.
 - [ ] **11.2 — Docs site** with runnable examples.
-- [ ] **11.3 — Live-model examples in CI** behind the `live` marker. Not one
-      shipped graph has run end-to-end against a real model.
+- [~] **11.3 — Live-model examples in CI** behind the `live` marker. Stage 5
+      and the capstone now run end-to-end against real cross-vendor models; CI
+      wiring still pending.
 - [ ] **11.4 — Benchmarks, including published losses.**
 - [ ] **11.5 — External security review** (after §0 and §3.2).
 - [ ] **11.6 — Classifiers, `[project.urls]`, contribution guide.**

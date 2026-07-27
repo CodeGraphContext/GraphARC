@@ -71,13 +71,35 @@ print(g.compile().invoke({"question": "meaning of life"}))
 The primary backend drives the **Claude Code CLI** (`claude -p`), so GraphARC runs on a Claude subscription with no API key. That CLI is a full agent, so the adapter invokes it as a pure inference endpoint: every tool disallowed, no settings sources loaded, no CLAUDE.md pickup, prompt via stdin, flags via an argv array — never a shell string. An injected "run this command" has no tool to run it with.
 
 ```python
-from grapharc.gateway import ClaudeCodeCLIChatModel
+from grapharc.gateway import get_model
 
-worker   = ClaudeCodeCLIChatModel(model="claude-sonnet-5")
-reviewer = ClaudeCodeCLIChatModel(model="claude-opus-5")  # different model breaks correlated agreement
+# Subscription, no API key — but text completion only.
+worker = get_model("claude-cli/claude-sonnet-5")
+
+# OpenRouter: ~340 models across ~60 providers behind one key, with
+# tool-calling, structured output, streaming, and async.
+worker   = get_model("openrouter/anthropic/claude-haiku-4.5")
+reviewer = get_model("openrouter/openai/gpt-4o-mini")   # a genuinely different vendor
 ```
 
-Caveats this design accepts openly: no prompt caching on this path (keep node contexts lean), subscription quota burn (budget caps are load-bearing), and provider volatility (the backend is a config swap).
+A spec is `backend/model`; a mistyped backend is rejected rather than quietly
+folded into a model name. `grapharc models` shows what a spec resolves to.
+
+Run any example graph against real models:
+
+```bash
+grapharc run stage5 --model openrouter/anthropic/claude-haiku-4.5 \
+                    --reviewer-model openrouter/openai/gpt-4o-mini
+```
+
+OpenRouter also carries routing: model-level `fallback_models` chains, provider
+`order` / `sort` / `max_price`, and per-call cost in the usage envelope.
+
+Caveats each backend accepts openly. **Claude CLI:** no tool-calling or
+structured output (inherent to `claude -p`), no prompt caching, and it spends
+subscription quota. **OpenRouter:** credit is reserved against `max_tokens`, so
+the default is deliberately modest. **Both:** cost is reported but not yet
+enforced — see [ROADMAP.md](ROADMAP.md) §0.4.
 
 ## Tests are gates
 
