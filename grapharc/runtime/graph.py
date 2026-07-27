@@ -3,12 +3,13 @@
 A thin wrapper over `langgraph.graph.StateGraph` that enforces what plain
 LangGraph leaves to convention:
 
-- **Typed edges** — state schemas are Pydantic models; node updates are
-  validated dicts, not free-form writes.
+- **Typed edges** — state schemas are Pydantic models; every value a node
+  returns is validated against the field's declared type before it is written.
 - **Write permissions** — every node declares which state fields it may write;
   an undeclared write raises instead of flowing downstream.
-- **Bounded work** — a per-run `BudgetMeter` is checked before every node; the
-  hard ceiling cannot be routed around.
+- **Bounded work** — a per-run `BudgetMeter` is checked before every node, model
+  calls charge it automatically, and `max_seconds` interrupts the running node;
+  the hard ceiling cannot be routed around.
 - **Traces** — every node execution is recorded (start/end/error, state delta,
   duration, tokens) as JSONL replay points.
 - **DAG mode** — `dag=True` rejects conditional edges and cycles at compile
@@ -27,14 +28,25 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from grapharc.observe.trace import TraceRecorder
-from grapharc.runtime.budget import Budget, BudgetExceeded, BudgetMeter
+from grapharc.runtime.budget import Budget, BudgetExceeded, BudgetMeter, deadline_guard
+from grapharc.runtime.usage import charging
 
 
 class WritePermissionError(Exception):
     """A node wrote a state field it never declared."""
+
+
+class StateTypeError(Exception):
+    """A node returned a value that its state field's declared type rejects.
+
+    LangGraph drops unknown keys before validating an update, so a declared
+    field carrying the wrong *value* used to sail through to the graph's output.
+    GraphARC validates each write against the schema at the node boundary
+    instead — the type annotation is the contract, not documentation.
+    """
 
 
 class GraphCycleError(Exception):
@@ -82,6 +94,27 @@ class RunContext:
 _NOOP_BUDGET = Budget()
 
 
+def _type_label(annotation: Any) -> str:
+    """Render an annotation the way an author wrote it: `int`, not `<class 'int'>`."""
+    if isinstance(annotation, type):
+        return annotation.__name__
+    return str(annotation).replace("typing.", "")
+
+
+def _short_repr(value: Any, limit: int = 120) -> str:
+    # An error message quotes the offending value; a rejected 40k-token string
+    # must not become the exception.
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _first_error(field: str, exc: ValidationError) -> str:
+    """Pydantic's first complaint, with the path inside the value it happened at."""
+    first = exc.errors()[0]
+    path = ".".join(str(part) for part in first["loc"])
+    return f"{first['msg']}" + (f" (at {field}.{path})" if path else "")
+
+
 class GraphARC:
     """Builder for a disciplined graph. Mirrors StateGraph's API where it can."""
 
@@ -102,6 +135,7 @@ class GraphARC:
         self._graph = StateGraph(state_schema)
         self._nodes: dict[str, set[str]] = {}
         self._static_edges: list[tuple[str, str]] = []
+        self._adapters: dict[str, TypeAdapter[Any]] = {}
 
     def add_node(
         self,
@@ -120,6 +154,8 @@ class GraphARC:
                 f"node {name!r} declares writes to unknown state fields: {sorted(unknown)}"
             )
         self._nodes[name] = writes_set
+        for field in sorted(writes_set):
+            self._build_adapter(field)
         self._graph.add_node(
             name, self._wrap(name, fn, writes_set), input_schema=input_schema
         )
@@ -169,6 +205,51 @@ class GraphARC:
         return CompiledGraphARC(self._graph.compile(checkpointer=checkpointer), self)
 
     # -- internals ---------------------------------------------------------
+
+    def _build_adapter(self, field: str) -> TypeAdapter[Any]:
+        """Compile a validator for one state field, at graph-build time.
+
+        `rebuild_annotation()` keeps the field's Pydantic constraints
+        (`Annotated[int, Field(gt=0)]`) while a reducer marker such as
+        `operator.add` is inert metadata Pydantic ignores. For a reduced field
+        that means the *update* is validated as a whole `T`, which is what
+        `operator.add` on a list or a number takes.
+        """
+        adapter = self._adapters.get(field)
+        if adapter is None:
+            annotation = self.state_schema.model_fields[field].rebuild_annotation()
+            try:
+                adapter = TypeAdapter(annotation)
+            except Exception as exc:
+                raise StateTypeError(
+                    f"state field {field!r} of {self.state_schema.__name__} declares "
+                    f"{annotation!r}, which cannot be validated standalone: {exc}"
+                ) from exc
+            self._adapters[field] = adapter
+        return adapter
+
+    def _validate_writes(self, node: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Return `result` with every value validated against its field's type.
+
+        The validated value replaces the raw one: a schema that says `int` must
+        mean the graph's output holds an `int`, not whatever coerced to one.
+        """
+        validated: dict[str, Any] = {}
+        for field, value in result.items():
+            try:
+                validated[field] = self._build_adapter(field).validate_python(value)
+            except ValidationError as exc:
+                # The bare annotation, not `rebuild_annotation()`: a reducer marker
+                # in the metadata is noise here, and Pydantic's own message already
+                # explains a violated constraint.
+                declared = self.state_schema.model_fields[field].annotation
+                raise StateTypeError(
+                    f"node {node!r} wrote {field!r} with a value the state schema "
+                    f"rejects: expected {_type_label(declared)}, got "
+                    f"{type(value).__name__} ({_short_repr(value)}); "
+                    f"{_first_error(field, exc)}"
+                ) from exc
+        return validated
 
     def _assert_acyclic(self) -> None:
         adjacency: dict[str, list[str]] = {}
@@ -239,7 +320,11 @@ class GraphARC:
             tokens_before = ctx.meter.tokens
             t0 = time.perf_counter()
             try:
-                result = fn(state, ctx) if wants_ctx else fn(state)
+                # `charging` meters model calls the node makes without asking it
+                # to; `deadline_guard` makes max_seconds bite inside the node
+                # rather than after it.
+                with charging(ctx.meter), deadline_guard(ctx.meter, what=f"node {name!r}"):
+                    result = fn(state, ctx) if wants_ctx else fn(state)
             except Exception as exc:
                 emit("error", duration_ms=(time.perf_counter() - t0) * 1000, error=repr(exc))
                 raise
@@ -260,6 +345,19 @@ class GraphARC:
                     )
                     emit("error", duration_ms=duration_ms, error=str(err))
                     raise err
+                try:
+                    result = self._validate_writes(name, result)
+                except StateTypeError as err:
+                    emit("error", duration_ms=duration_ms, error=str(err))
+                    raise
+
+            # Tokens are charged mid-node by the usage callback, so this is the
+            # first boundary at which a spend made inside the node can stop the run.
+            try:
+                ctx.meter.check_tokens()
+            except BudgetExceeded as exc:
+                emit("error", duration_ms=duration_ms, error=f"budget: {exc.reason}")
+                raise
 
             emit(
                 "end",
@@ -348,5 +446,6 @@ __all__ = [
     "GraphCycleError",
     "MissingRunContextError",
     "RunContext",
+    "StateTypeError",
     "WritePermissionError",
 ]

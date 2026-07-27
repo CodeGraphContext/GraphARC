@@ -1,7 +1,10 @@
 """Unit tests for the runtime discipline layer: write permissions, DAG mode, budgets, traces."""
 
+import operator
+from typing import Annotated
+
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from grapharc.runtime.budget import Budget, BudgetExceeded, BudgetMeter
 from grapharc.runtime.graph import (
@@ -10,6 +13,7 @@ from grapharc.runtime.graph import (
     GraphARC,
     GraphCycleError,
     MissingRunContextError,
+    StateTypeError,
     WritePermissionError,
 )
 from grapharc.runtime.state import GraphARCState
@@ -149,6 +153,77 @@ def test_in_place_mutation_of_nested_models_is_discarded():
     result = g.compile().invoke({"items": [Inner(text="original")]})
     assert result["downstream_saw"] == "original"
     assert result["items"][0].text == "original"
+
+
+class Typed(GraphARCState):
+    count: int = 0
+    label: str = ""
+    positive: Annotated[int, Field(gt=0)] = 1
+    items: Annotated[list[Inner], operator.add] = []
+    maybe: str | None = None
+
+
+def _typed_graph(fn, *, writes, trace=None):
+    g = GraphARC(Typed, name="typed", trace=trace)
+    g.add_node("n", fn, writes=writes)
+    g.add_edge(START, "n")
+    g.add_edge("n", END)
+    return g.compile()
+
+
+def test_a_declared_int_field_rejects_a_string():
+    """LangGraph drops unknown keys before validating, so a *declared* field
+    carrying the wrong value used to reach the graph's output untouched."""
+    compiled = _typed_graph(lambda s: {"count": "not-an-int"}, writes={"count"})
+    with pytest.raises(StateTypeError) as exc:
+        compiled.invoke({})
+    message = str(exc.value)
+    assert "'n'" in message and "'count'" in message
+    assert "expected int" in message and "got str" in message
+
+
+def test_type_violations_are_traced_like_any_other_contract_break(trace):
+    compiled = _typed_graph(lambda s: {"count": "not-an-int"}, writes={"count"}, trace=trace)
+    with pytest.raises(StateTypeError):
+        compiled.invoke({}, run_id="r1")
+    errors = [e for e in trace.read_events("r1") if e.phase == "error"]
+    assert errors and "expected int" in errors[0].error
+
+
+def test_a_well_typed_write_still_flows_through():
+    compiled = _typed_graph(lambda s: {"count": 7, "label": "fine"}, writes={"count", "label"})
+    result = compiled.invoke({})
+    assert result["count"] == 7
+    assert result["label"] == "fine"
+
+
+def test_the_value_that_lands_in_state_is_the_validated_one():
+    """`count: int` has to mean the output holds an int, not something that
+    merely could become one."""
+    result = _typed_graph(lambda s: {"count": "5"}, writes={"count"}).invoke({})
+    assert result["count"] == 5
+    assert isinstance(result["count"], int)
+
+
+def test_field_constraints_are_enforced_not_just_the_base_type():
+    compiled = _typed_graph(lambda s: {"positive": -3}, writes={"positive"})
+    with pytest.raises(StateTypeError, match="greater than 0"):
+        compiled.invoke({})
+
+
+def test_a_reduced_field_validates_the_update_it_is_handed():
+    compiled = _typed_graph(lambda s: {"items": [{"text": "ok"}]}, writes={"items"})
+    assert compiled.invoke({})["items"][0].text == "ok"
+
+    bad = _typed_graph(lambda s: {"items": [{"wrong": "shape"}]}, writes={"items"})
+    with pytest.raises(StateTypeError, match="'items'"):
+        bad.invoke({})
+
+
+def test_none_is_only_accepted_where_the_schema_allows_it():
+    assert _typed_graph(lambda s: {"maybe": None}, writes={"maybe"}).invoke({})["maybe"] is None
+    with pytest.raises(StateTypeError, match="'count'"):
+        _typed_graph(lambda s: {"count": None}, writes={"count"}).invoke({})
 
 
 def test_scripted_model_reports_usage():

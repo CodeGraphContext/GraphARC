@@ -79,8 +79,14 @@ class ScriptedChatModel(BaseChatModel):
 
 
 def charge_usage(ctx: Any, message: AIMessage) -> None:
-    """Charge an AIMessage's usage_metadata against a RunContext's budget meter."""
+    """Charge an AIMessage's usage_metadata against a RunContext's budget meter.
+
+    Redundant now that the runtime's usage callback meters every model call
+    automatically, and kept only so hand-metered nodes keep working. Naming the
+    message is what lets the meter recognise this as a re-report of a call it
+    already counted rather than a second, separate spend.
+    """
     usage = getattr(message, "usage_metadata", None) or {}
     total = usage.get("total_tokens")
     if total:
-        ctx.meter.charge_tokens(total)
+        ctx.meter.charge_tokens(total, source=message)

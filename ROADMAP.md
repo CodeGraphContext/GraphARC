@@ -7,9 +7,10 @@ see [ASSESSMENT.md](ASSESSMENT.md) for how the current numbers were verified.
 **Legend:** `[x]` done · `[~]` partial · `[ ]` not started · **B** blocks other
 work · **!** known-false claim shipping today
 
-Overall: **~20% of the product**. The model plane went from text-only to
-tool-calling, structured output, async, streaming, and multi-provider routing,
-which unblocks the agent node.
+Overall: **~30% of the product**. Section 0 is now clear: every correctness
+defect it listed was fixed and re-verified by running the original repro. The
+`AgentNode` exists, memory has a disk, and the sandbox survived a second
+adversarial pass that found a full escape the first one missed.
 
 ---
 
@@ -17,17 +18,17 @@ which unblocks the agent node.
 
 In order. Each unblocks more than it costs.
 
-1. **Fix the false security claim** (§0.1, §0.2) — a three-line stdlib escape
-   disproves a README sentence that is shipping right now.
-2. ~~`bind_tools` on the gateway~~ — **done** via OpenRouter, verified live.
-   Next in its place: **auto-charge tokens** (§0.4), now proven broken by a live
-   run that reported zero spend while costing money.
-3. **Async through the kernel** (§1.1) — **B** blocks the HTTP API, concurrency,
+1. **Prove the V0 gate** (§4.1) — a real model, through `AgentNode`, editing a
+   file and running a test under permission gating and a budget. Everything it
+   needs now exists; nothing has demonstrated it end to end.
+2. **Async through the kernel** (§1.1) — **B** blocks the HTTP API, concurrency,
    and streaming. Cannot be retrofitted cheaply later.
-4. **The `AgentNode`** (§4.1) — converts three orphaned subsystems into one
-   working agent. This is the milestone that turns a library into a runtime.
-5. **Admission checker** (§5.2) — the architectural crux and the only component
+3. **Wire the harness into an example graph** (§3.1) — the tool plane is
+   hardened and driveable, and still no shipped graph calls a tool.
+4. **Admission checker** (§5.2) — the architectural crux and the only component
    with no prior art to copy.
+5. **A container executor** (§3.2) — two adversarial passes have now found real
+   escapes in the audit-hook sandbox. It is defense in depth, not a boundary.
 
 ---
 
@@ -35,34 +36,34 @@ In order. Each unblocks more than it costs.
 
 Ship-blockers. Every item verified by running code.
 
-- [ ] **!B 0.1 — Close the `ctypes` sandbox escape.** `ctypes.CDLL("libc.so.6").system(...)`
-      runs arbitrary shell from inside a tool and was verified to create a file
-      outside the workspace. Hook `ctypes.dlopen` / `ctypes.dlsym` /
-      `ctypes.call_function` audit events. Until then the README's *"a tool
-      cannot read, list, or delete outside its workspace"* is false.
-- [ ] **! 0.2 — Scrub the child environment.** `fork` inherits the parent env; a
-      tool returned a planted `sk-ant-…` secret over the result pipe.
-- [ ] **! 0.3 — Make `max_seconds` a real ceiling.** Checked *between* nodes, so
-      a 1.5 s node completed under a 0.2 s budget. Needs a watchdog.
-- [ ] **!B 0.4 — Charge tokens automatically.** `charge_tokens` has one caller:
-      `charge_usage()` in `grapharc/testing.py` — the *test-doubles* module,
-      imported into all seven production examples. **Confirmed live:** a real
-      capstone run over OpenRouter reported `spent: 0 tokens across 7 nodes`
-      while actually costing money, because `verify_claim` never charges.
-      Move into the gateway via langchain-core's `UsageMetadataCallbackHandler`.
-- [ ] **0.5 — Validate types at write time.** A field declared `int` accepted
-      `"not-an-int"` and it escaped the graph boundary.
-- [ ] **! 0.6 — Delete or correct false README claims:** "validated routing"
-      (no validation exists), "crash-safe resume" (100% LangGraph), "durable
-      memory" (in-process dict), "independent verifier" (object-identity check
-      in an example), "kill the process mid-write" (no process is killed).
-- [ ] **0.7 — Remove the Neo4j fiction.** A docstring promises an
-      implementation "satisfies the same interface"; no implementation and no
-      interface exist. `pyproject.toml` declares an extra nothing imports.
+- [x] **0.1 — `ctypes` escape closed**, along with three more found during the
+      audit: `sqlite3.connect` (opens files in C, raising no `open` event),
+      `_posixsubprocess.fork_exec` (the C entry point under `subprocess`), and
+      compiled-extension imports from outside the runtime paths.
+- [x] **0.2 — Child environment scrubbed** to an allowlist, so a secret nobody
+      thought to name cannot leak just by being new.
+- [x] **0.1b — Runtime paths are now read-only.** Found by a reviewer *after*
+      the first fix: site-packages was writable, so a tool could drop a `.pth`
+      that executes arbitrary Python on every later interpreter start — a full
+      escape outliving the run. Reads and mutations now use separate grants.
+- [x] **0.3 — `max_seconds` interrupts a running node** (SIGALRM on the main
+      thread, async-exception injection elsewhere) and re-arms, so a node that
+      swallows one interrupt does not run free. Residual limits documented.
+- [x] **0.4 — Tokens charge automatically**, via a usage callback that meters
+      every model call inside a node, deduplicated by call identity rather than
+      by token count. `max_tokens` is enforced at `on_llm_end`, so overspend is
+      bounded by the one call that crosses the line rather than discovered a
+      node later. **Proven on the same live command that exposed it:** the
+      capstone went from `spent: 0 tokens` to `spent: 220 tokens`.
+- [x] **0.5 — Types validated at write time.** Remaining gap stated precisely
+      rather than papered over: annotation-carried constraints bite, but a state
+      model's own `@field_validator` does not run at write time.
+- [x] **0.6 — README claims corrected**, each disproof re-run against the tree.
+- [x] **0.7 — Neo4j fiction removed**; a real `ClaimStore` protocol now exists,
+      so "the same interface" names something.
 - [x] **0.8 — Fix `pytest` defaults.** `addopts` now carries `-m 'not live'`;
       live tests are opt-in via `pytest -m live`.
-- [ ] **0.9 — Fix `LICENSE` copyright** (says "CodeGraphContext") and the
-      README clone URL (404s — wrong org).
+- [x] **0.9 — `LICENSE` copyright and README clone URL corrected.**
 - [ ] **0.10 — Fix the gateway tempfile leak.** One orphaned `mkdtemp` per call.
 
 ---
@@ -118,9 +119,9 @@ tool-calling, structured output, async, and streaming.
 - [x] **2.9 — Backend registry** — `get_model("openrouter/anthropic/…")`; a
       mistyped backend is rejected rather than folded into a model name.
 
-## 3. Tool plane — `[~] ~30%`
+## 3. Tool plane — `[~] ~45%`
 
-Built and tested; **imported by zero graphs**.
+Hardened and now driveable by `AgentNode`; still imported by zero *example* graphs.
 
 - [x] Registry, deny→ask→allow permissions, hooks, approval gates
 - [x] Audit-hook executor: path confinement, network gating, spawn refusal,
@@ -135,14 +136,17 @@ Built and tested; **imported by zero graphs**.
 - [ ] **3.7 — Idempotency keys** for side-effecting tools.
 - [ ] **3.8 — Large-output offloading** (write to file, return a preview).
 
-## 4. Agent node — `[ ] 0%`
+## 4. Agent node — `[~] ~60%`
 
 The missing unit that makes everything else compose.
 
-- [ ] **B 4.1 — `AgentNode`:** observe → model → tool request → permission
-      check → sandboxed execute → verify → repeat, budgeted and traced.
-      *Done when:* it edits a file and runs a test against a real model, with
-      the tool call gated and the run inside a token budget.
+- [x] **4.1 — `AgentNode` built**: observe → model → tool request → permission
+      check → sandboxed execute → repeat, budgeted and traced. A denied tool is
+      fed back to the model rather than killing the run; malformed tool JSON is
+      reported back instead of silently reading as success; stall detection keys
+      on the tool *result*, so re-running a test suite is not mistaken for a
+      loop. **Still to prove the §4.1 gate: a real model editing a file and
+      running a test.**
 - [ ] **4.2 — Context management** (compaction, just-in-time retrieval).
 - [ ] **4.3 — Subagent spawning** with context isolation and summary-only return.
 - [ ] **4.4 — Skills / instruction packs** loaded on demand.
@@ -177,12 +181,12 @@ Where the vision lives or dies. No prior art to copy.
 - [ ] **7.3 — Policy versioning** and decision audit.
 - [ ] **7.4 — Multi-tenant scoping** with per-tenant budgets.
 
-## 8. Memory & artifacts — `[~] ~20%`
+## 8. Memory & artifacts — `[~] ~45%`
 
 - [x] Claims with provenance; supersession instead of overwrite
 - [x] Unicode-safe entity normalization
-- [ ] **B 8.1 — Persist to disk.** SQLite first. Today everything dies with the
-      process, which makes the one headline claim untrue.
+- [x] **8.1 — `SQLiteMemoryStore`**, same `ClaimStore` protocol, proven durable
+      across genuinely separate processes rather than merely across objects.
 - [ ] **8.2 — Artifact storage** (files an agent produces).
 - [ ] **8.3 — Real retrieval:** embeddings + hybrid search. Today it is a linear
       scan with exact string matching, labelled "GraphRAG".
