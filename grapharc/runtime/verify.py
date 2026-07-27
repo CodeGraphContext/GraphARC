@@ -22,11 +22,13 @@ looks safe and is useless.
 
 from __future__ import annotations
 
-import json
+import re
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
+
+from grapharc.runtime.parsing import extract_json
 
 MIN_CITATION_CHARS = 12
 CONTEXT_WINDOW_CHARS = 240
@@ -41,13 +43,30 @@ class Verdict(BaseModel):
     reason: str
 
 
-def _context_window(source_text: str, citation: str) -> str:
+def _find_span(source_text: str, citation: str) -> re.Match[str] | None:
+    """Locate a citation in the source, tolerant of whitespace only.
+
+    Real sources are line-wrapped, so a model that quotes a sentence perfectly
+    still writes `declares which` where the source holds `declares\\nwhich`.
+    Exact matching rejects that — correct work refused on a formatting artifact,
+    which is the false-reject failure mode this verifier exists to avoid.
+
+    Whitespace is the *only* latitude given: every non-space character must
+    still match exactly, so a paraphrase or an invented quote is still caught.
+    """
+    tokens = citation.split()
+    if not tokens:
+        return None
+    pattern = r"\s+".join(re.escape(t) for t in tokens)
+    return re.search(pattern, source_text)
+
+
+def _context_window(source_text: str, span: re.Match[str] | None) -> str:
     """The source span around the citation — mechanical extraction, no author context."""
-    idx = source_text.find(citation)
-    if idx < 0:
-        return citation
-    start = max(0, idx - CONTEXT_WINDOW_CHARS)
-    end = min(len(source_text), idx + len(citation) + CONTEXT_WINDOW_CHARS)
+    if span is None:
+        return ""
+    start = max(0, span.start() - CONTEXT_WINDOW_CHARS)
+    end = min(len(source_text), span.end() + CONTEXT_WINDOW_CHARS)
     return source_text[start:end]
 
 
@@ -78,7 +97,8 @@ def verify_claim(
                 f"({len(citation)} < {MIN_CITATION_CHARS} chars)"
             ),
         )
-    if citation not in source_text:
+    span = _find_span(source_text, citation)
+    if span is None:
         return Verdict(
             claim_text=text,
             citation=citation,
@@ -94,15 +114,15 @@ def verify_claim(
         "contradicts what the quote alone implies, the claim is NOT supported.\n"
         f"Claim: {text}\n"
         f"Evidence (verbatim from source): {citation}\n"
-        f"Surrounding source context: {_context_window(source_text, citation)}\n"
+        f"Surrounding source context: {_context_window(source_text, span)}\n"
         'Reply with JSON: {"supported": true|false, "reason": "..."}'
     )
     message = reviewer.invoke([HumanMessage(content=prompt)])
+    parsed = extract_json(message.content)
     try:
-        parsed = json.loads(str(message.content))
         raw_supported = parsed["supported"]
         reason = str(parsed.get("reason", ""))
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except (KeyError, TypeError):
         supported, reason = False, "reviewer reply unparseable — failing closed"
     else:
         # A quoted "false" is truthy in Python; only a real JSON boolean counts.

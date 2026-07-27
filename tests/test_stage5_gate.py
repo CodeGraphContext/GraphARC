@@ -141,6 +141,44 @@ def test_trivial_citation_is_rejected_before_the_model_is_consulted():
     assert reviewer.call_count == 0  # never consulted
 
 
+def test_line_wrapped_source_does_not_false_reject_a_correct_quote():
+    """Found by a live run: real sources are line-wrapped, so a model quoting a
+    sentence perfectly writes a space where the source has a newline. Rejecting
+    that is a false reject on a formatting artifact."""
+    source = (
+        "GraphARC is a toolkit built on LangGraph. Every node declares\n"
+        "which state fields it may write, and an undeclared write raises."
+    )
+    citation = "Every node declares which state fields it may write"
+    assert citation not in source  # exact matching would reject this
+
+    reviewer = ScriptedChatModel(responses=['{"supported": true, "reason": "ok"}'])
+    verdict = verify_claim(
+        reviewer,
+        text="Nodes declare their writes",
+        citation=citation,
+        source_text=source,
+    )
+    assert verdict.anchor_ok is True
+    assert verdict.accepted is True
+
+
+def test_whitespace_latitude_does_not_extend_to_paraphrase():
+    """Whitespace is the only latitude: every other character must still match."""
+    source = "Budgets place hard ceilings on iterations and tokens."
+    reviewer = ScriptedChatModel(responses=['{"supported": true, "reason": "ok"}'])
+    for fake in (
+        "Budgets place soft ceilings on iterations and tokens",
+        "Budgets  place  hard  limits  on  iterations",
+        "Budgets place hard ceilings on iteration and tokens",
+    ):
+        verdict = verify_claim(
+            reviewer, text="claim", citation=fake, source_text=source
+        )
+        assert verdict.anchor_ok is False, fake
+    assert reviewer.call_count == 0
+
+
 def test_gate_quote_mined_negation_reaches_the_reviewer_with_context():
     """A quote lifted out of a negated sentence exists verbatim, so the anchor
     passes — the reviewer must be shown the surrounding source to catch it."""

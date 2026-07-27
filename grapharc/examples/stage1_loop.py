@@ -12,8 +12,6 @@ That is the Stage 1 gate — being able to say exactly that.
 
 from __future__ import annotations
 
-import json
-
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
@@ -21,6 +19,7 @@ from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
 from grapharc.runtime.convergence import StopReason
 from grapharc.runtime.graph import END, START, CompiledGraphARC, GraphARC, RunContext
+from grapharc.runtime.parsing import extract_json
 from grapharc.runtime.state import GraphARCState
 from grapharc.testing import charge_usage
 
@@ -59,8 +58,8 @@ def build_stage1(
         message = model.invoke([HumanMessage(content=prompt)])
         charge_usage(ctx, message)
         try:
-            proposal = json.loads(str(message.content))["term"]
-        except (json.JSONDecodeError, KeyError, TypeError):
+            proposal = extract_json(message.content)["term"]
+        except (KeyError, TypeError):
             proposal = ""
         return {"proposal": proposal, "round": state.round + 1}
 

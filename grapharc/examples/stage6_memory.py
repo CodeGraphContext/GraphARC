@@ -9,8 +9,6 @@ superseded it, and avoids a known dead end.
 
 from __future__ import annotations
 
-import json
-
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
@@ -20,6 +18,7 @@ from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
 from grapharc.runtime.convergence import StopReason
 from grapharc.runtime.graph import END, START, CompiledGraphARC, GraphARC, RunContext
+from grapharc.runtime.parsing import extract_json
 from grapharc.runtime.state import GraphARCState
 from grapharc.testing import charge_usage
 
@@ -65,8 +64,8 @@ def build_stage6(
         message = model.invoke([HumanMessage(content=prompt)])
         charge_usage(ctx, message)
         try:
-            raw = json.loads(str(message.content))["claims"]
-        except (json.JSONDecodeError, KeyError, TypeError):
+            raw = extract_json(message.content)["claims"]
+        except (KeyError, TypeError):
             raw = []
         ids = []
         for item in raw:

@@ -10,8 +10,6 @@ in the source is rejected before any model opinion is consulted.
 
 from __future__ import annotations
 
-import json
-
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
@@ -20,6 +18,7 @@ from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
 from grapharc.runtime.convergence import StopReason
 from grapharc.runtime.graph import END, START, CompiledGraphARC, GraphARC, RunContext
+from grapharc.runtime.parsing import extract_json
 from grapharc.runtime.state import GraphARCState
 from grapharc.runtime.verify import Verdict, verify_claim
 from grapharc.testing import charge_usage
@@ -57,9 +56,9 @@ def build_stage5(
         message = author.invoke([HumanMessage(content=prompt)])
         charge_usage(ctx, message)
         try:
-            raw = json.loads(str(message.content))["claims"]
+            raw = extract_json(message.content)["claims"]
             claims = [Claim.model_validate(c) for c in raw]
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError):
             claims = []
         return {"claims": claims}
 

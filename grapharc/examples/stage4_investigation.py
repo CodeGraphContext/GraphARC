@@ -11,7 +11,6 @@ reason — without rediscovering the same dead ends until the budget is gone.
 
 from __future__ import annotations
 
-import json
 import re
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -21,6 +20,7 @@ from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
 from grapharc.runtime.convergence import ProgressGuard
 from grapharc.runtime.graph import END, START, CompiledGraphARC, GraphARC, RunContext
+from grapharc.runtime.parsing import extract_json
 from grapharc.runtime.state import GraphARCState
 from grapharc.testing import charge_usage
 
@@ -56,8 +56,8 @@ def build_stage4(
         message = model.invoke([HumanMessage(content=prompt)])
         charge_usage(ctx, message)
         try:
-            query = str(json.loads(str(message.content))["query"])
-        except (json.JSONDecodeError, KeyError, TypeError):
+            query = str(extract_json(message.content)["query"])
+        except (KeyError, TypeError):
             query = ""
         return {
             "query": query,
