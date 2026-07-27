@@ -16,8 +16,8 @@ from collections import Counter
 from pathlib import Path
 
 from grapharc.observe.trace import TraceRecorder
-from grapharc.runtime.graph import END, START, ArcGraph, CompiledArcGraph
-from grapharc.runtime.state import ArcState
+from grapharc.runtime.graph import END, START, CompiledGraphARC, GraphARC
+from grapharc.runtime.state import GraphARCState
 
 # Test injection point: when True, the report node crashes once after writing
 # the tmp file but before the atomic rename, then clears itself.
@@ -29,7 +29,7 @@ def crash_once_before_rename() -> None:
     _CRASH_BEFORE_RENAME = True
 
 
-class Stage0State(ArcState):
+class Stage0State(GraphARCState):
     doc_path: str
     report_path: str
     text: str = ""
@@ -69,8 +69,8 @@ def report(state: Stage0State) -> dict:
 
 def build_stage0(
     *, trace: TraceRecorder | None = None, checkpointer=None
-) -> CompiledArcGraph:
-    g = ArcGraph(Stage0State, name="stage0_dag", dag=True, trace=trace)
+) -> CompiledGraphARC:
+    g = GraphARC(Stage0State, name="stage0_dag", dag=True, trace=trace)
     g.add_node("load", load, writes={"text"})
     g.add_node("split", split, writes={"chunks"})
     g.add_node("count", count, writes={"counts"})

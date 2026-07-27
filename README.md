@@ -49,17 +49,17 @@ grapharc viz <path> <run-id>     # Mermaid diagram of the executed path
 Building a graph:
 
 ```python
-from grapharc import ArcGraph, ArcState, Budget
+from grapharc import GraphARC, GraphARCState, Budget
 from grapharc.runtime.graph import START, END
 
-class State(ArcState):
+class State(GraphARCState):
     question: str
     answer: str = ""
 
 def answer(state: State) -> dict:
     return {"answer": f"42 (asked: {state.question})"}
 
-g = ArcGraph(State, name="demo", budget=Budget(max_iterations=10))
+g = GraphARC(State, name="demo", budget=Budget(max_iterations=10))
 g.add_node("answer", answer, writes={"answer"})   # undeclared writes raise
 g.add_edge(START, "answer")
 g.add_edge("answer", END)

@@ -20,14 +20,14 @@ from langchain_core.messages import HumanMessage
 from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
 from grapharc.runtime.convergence import StopReason
-from grapharc.runtime.graph import END, START, ArcGraph, CompiledArcGraph, RunContext
-from grapharc.runtime.state import ArcState
+from grapharc.runtime.graph import END, START, CompiledGraphARC, GraphARC, RunContext
+from grapharc.runtime.state import GraphARCState
 from grapharc.testing import charge_usage
 
 MAX_NO_PROGRESS_ROUNDS = 2
 
 
-class Stage1State(ArcState):
+class Stage1State(GraphARCState):
     chunks: list[str]
     targets: list[str]
     pending: list[str] = []
@@ -46,7 +46,7 @@ def build_stage1(
     trace: TraceRecorder | None = None,
     checkpointer=None,
     budget: Budget | None = None,
-) -> CompiledArcGraph:
+) -> CompiledGraphARC:
     def start(state: Stage1State) -> dict:
         return {"pending": [t for t in state.targets if t not in state.found]}
 
@@ -106,7 +106,7 @@ def build_stage1(
 
         return finish
 
-    g = ArcGraph(Stage1State, name="stage1_loop", budget=budget, trace=trace)
+    g = GraphARC(Stage1State, name="stage1_loop", budget=budget, trace=trace)
     g.add_node("start", start, writes={"pending"})
     g.add_node("plan", plan, writes={"proposal", "round"})
     g.add_node("act", act, writes={"candidate"})

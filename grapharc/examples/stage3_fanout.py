@@ -22,8 +22,8 @@ from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
 from grapharc.runtime.convergence import StopReason
 from grapharc.runtime.fanout import WorkerResult, dedupe, run_guarded
-from grapharc.runtime.graph import END, START, ArcGraph, CompiledArcGraph, RunContext
-from grapharc.runtime.state import ArcState
+from grapharc.runtime.graph import END, START, CompiledGraphARC, GraphARC, RunContext
+from grapharc.runtime.state import GraphARCState
 from grapharc.testing import charge_usage
 
 DEFAULT_WORKER_TIMEOUT_SECONDS = 2.0
@@ -40,7 +40,7 @@ class WorkerPayload(BaseModel):
     hang_seconds: float = 0.0
 
 
-class Stage3State(ArcState):
+class Stage3State(GraphARCState):
     question: str
     chunks: list[str]
     n_workers: int = 3
@@ -65,7 +65,7 @@ def build_stage3(
     trace: TraceRecorder | None = None,
     checkpointer=None,
     budget: Budget | None = None,
-) -> CompiledArcGraph:
+) -> CompiledGraphARC:
     def prepare(state: Stage3State) -> None:
         return None
 
@@ -150,7 +150,7 @@ def build_stage3(
             "termination_reason": StopReason.TARGET_MET.value,
         }
 
-    g = ArcGraph(Stage3State, name="stage3_fanout", budget=budget, trace=trace)
+    g = GraphARC(Stage3State, name="stage3_fanout", budget=budget, trace=trace)
     g.add_node("prepare", prepare, writes=set())
     g.add_node("worker", worker, writes={"worker_results"}, input_schema=WorkerPayload)
     g.add_node(

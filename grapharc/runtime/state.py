@@ -12,7 +12,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 
-class ArcState(BaseModel):
+class GraphARCState(BaseModel):
     """Base class for graph state schemas."""
 
     model_config = ConfigDict(extra="forbid", validate_assignment=True)

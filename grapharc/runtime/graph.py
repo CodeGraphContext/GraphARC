@@ -1,4 +1,4 @@
-"""ArcGraph: LangGraph with graph-engineering discipline bolted on.
+"""GraphARC: LangGraph with graph-engineering discipline bolted on.
 
 A thin wrapper over `langgraph.graph.StateGraph` that enforces what plain
 LangGraph leaves to convention:
@@ -46,7 +46,7 @@ class MissingRunContextError(Exception):
 
     This happens when a compiled graph is driven through raw LangGraph entry
     points (`.inner.stream()`, `.inner.ainvoke()`, ...) instead of
-    `CompiledArcGraph.invoke()`/`.stream()`. GraphARC fails closed: budgets and
+    `CompiledGraphARC.invoke()`/`.stream()`. GraphARC fails closed: budgets and
     traces are part of the execution contract, so running without them is an
     error, not a silent downgrade.
     """
@@ -82,7 +82,7 @@ class RunContext:
 _NOOP_BUDGET = Budget()
 
 
-class ArcGraph:
+class GraphARC:
     """Builder for a disciplined graph. Mirrors StateGraph's API where it can."""
 
     def __init__(
@@ -110,7 +110,7 @@ class ArcGraph:
         *,
         writes: Iterable[str],
         input_schema: type[BaseModel] | None = None,
-    ) -> ArcGraph:
+    ) -> GraphARC:
         """Register a node. `input_schema` types a fan-out worker's Send payload
         (defaults to the graph state schema)."""
         writes_set = set(writes)
@@ -125,7 +125,7 @@ class ArcGraph:
         )
         return self
 
-    def add_edge(self, start: str, end: str) -> ArcGraph:
+    def add_edge(self, start: str, end: str) -> GraphARC:
         self._graph.add_edge(start, end)
         self._static_edges.append((start, end))
         return self
@@ -135,7 +135,7 @@ class ArcGraph:
         source: str,
         router: Callable[[Any], str],
         mapping: dict[str, str],
-    ) -> ArcGraph:
+    ) -> GraphARC:
         """Route on a validated event name returned by deterministic `router` code."""
         if self.dag:
             raise GraphCycleError(
@@ -148,7 +148,7 @@ class ArcGraph:
         self,
         source: str,
         dispatcher: Callable[[Any], list[tuple[str, BaseModel]]],
-    ) -> ArcGraph:
+    ) -> GraphARC:
         """Explicit parallelism: `dispatcher` returns (worker_node, payload) pairs,
         each dispatched as a parallel Send. Fan-out is a deliberate act — the
         default execution model stays serial."""
@@ -163,10 +163,10 @@ class ArcGraph:
         self._graph.add_conditional_edges(source, dispatch)
         return self
 
-    def compile(self, checkpointer: Any = None) -> CompiledArcGraph:
+    def compile(self, checkpointer: Any = None) -> CompiledGraphARC:
         if self.dag:
             self._assert_acyclic()
-        return CompiledArcGraph(self._graph.compile(checkpointer=checkpointer), self)
+        return CompiledGraphARC(self._graph.compile(checkpointer=checkpointer), self)
 
     # -- internals ---------------------------------------------------------
 
@@ -199,11 +199,11 @@ class ArcGraph:
         wants_ctx = len(inspect.signature(fn).parameters) >= 2
 
         def wrapped(state: Any, config: RunnableConfig) -> dict[str, Any] | None:
-            ctx: RunContext | None = config.get("configurable", {}).get("arc_ctx")
+            ctx: RunContext | None = config.get("configurable", {}).get("grapharc_ctx")
             if ctx is None:
                 raise MissingRunContextError(
                     f"node {name!r} executed without a GraphARC run context; drive the "
-                    "graph via CompiledArcGraph.invoke()/stream() — raw LangGraph entry "
+                    "graph via CompiledGraphARC.invoke()/stream() — raw LangGraph entry "
                     "points would silently bypass budgets and traces"
                 )
             step = ctx.next_step()
@@ -272,10 +272,10 @@ class ArcGraph:
         return wrapped
 
 
-class CompiledArcGraph:
+class CompiledGraphARC:
     """A compiled graph plus GraphARC run semantics (run ids, budgets, resume)."""
 
-    def __init__(self, inner: Any, arc: ArcGraph) -> None:
+    def __init__(self, inner: Any, arc: GraphARC) -> None:
         self.inner = inner
         self.arc = arc
         self.last_run: RunContext | None = None
@@ -298,7 +298,7 @@ class CompiledArcGraph:
             step_seed=step_seed,
         )
         self.last_run = ctx
-        config: dict[str, Any] = {"configurable": {"thread_id": thread, "arc_ctx": ctx}}
+        config: dict[str, Any] = {"configurable": {"thread_id": thread, "grapharc_ctx": ctx}}
         limit = (budget or self.arc.budget or _NOOP_BUDGET).max_concurrency
         if limit is not None:
             config["max_concurrency"] = limit
@@ -343,8 +343,8 @@ class CompiledArcGraph:
 __all__ = [
     "END",
     "START",
-    "ArcGraph",
-    "CompiledArcGraph",
+    "GraphARC",
+    "CompiledGraphARC",
     "GraphCycleError",
     "MissingRunContextError",
     "RunContext",

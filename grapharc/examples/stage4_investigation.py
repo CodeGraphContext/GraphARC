@@ -20,12 +20,12 @@ from langchain_core.messages import HumanMessage
 from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
 from grapharc.runtime.convergence import ProgressGuard
-from grapharc.runtime.graph import END, START, ArcGraph, CompiledArcGraph, RunContext
-from grapharc.runtime.state import ArcState
+from grapharc.runtime.graph import END, START, CompiledGraphARC, GraphARC, RunContext
+from grapharc.runtime.state import GraphARCState
 from grapharc.testing import charge_usage
 
 
-class Stage4State(ArcState):
+class Stage4State(GraphARCState):
     corpus: list[str]
     goal: str
     target_findings: int | None = None
@@ -45,7 +45,7 @@ def build_stage4(
     trace: TraceRecorder | None = None,
     checkpointer=None,
     budget: Budget | None = None,
-) -> CompiledArcGraph:
+) -> CompiledGraphARC:
     def propose(state: Stage4State, ctx: RunContext) -> dict:
         prompt = (
             f"You are investigating: {state.goal}\n"
@@ -97,7 +97,7 @@ def build_stage4(
 
         return _finish
 
-    g = ArcGraph(Stage4State, name="stage4_investigation", budget=budget, trace=trace)
+    g = GraphARC(Stage4State, name="stage4_investigation", budget=budget, trace=trace)
     g.add_node("propose", propose, writes={"query", "round", "tried_queries"})
     g.add_node("search", search, writes={"findings", "empty_rounds"})
     for reason in ("target_met", "no_progress", "max_iterations"):

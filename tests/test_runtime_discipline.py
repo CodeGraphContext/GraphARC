@@ -7,22 +7,22 @@ from grapharc.runtime.budget import Budget, BudgetExceeded, BudgetMeter
 from grapharc.runtime.graph import (
     END,
     START,
-    ArcGraph,
+    GraphARC,
     GraphCycleError,
     MissingRunContextError,
     WritePermissionError,
 )
-from grapharc.runtime.state import ArcState
+from grapharc.runtime.state import GraphARCState
 from grapharc.testing import ScriptedChatModel
 
 
-class S(ArcState):
+class S(GraphARCState):
     a: int = 0
     b: int = 0
 
 
 def test_undeclared_write_raises(trace):
-    g = ArcGraph(S, name="t", trace=trace)
+    g = GraphARC(S, name="t", trace=trace)
     g.add_node("n", lambda s: {"b": 1}, writes={"a"})
     g.add_edge(START, "n")
     g.add_edge("n", END)
@@ -33,13 +33,13 @@ def test_undeclared_write_raises(trace):
 
 
 def test_declaring_unknown_field_raises():
-    g = ArcGraph(S, name="t")
+    g = GraphARC(S, name="t")
     with pytest.raises(WritePermissionError, match="unknown state fields"):
         g.add_node("n", lambda s: None, writes={"nope"})
 
 
 def test_non_dict_return_raises():
-    g = ArcGraph(S, name="t")
+    g = GraphARC(S, name="t")
     g.add_node("n", lambda s: [1], writes={"a"})
     g.add_edge(START, "n")
     g.add_edge("n", END)
@@ -48,7 +48,7 @@ def test_non_dict_return_raises():
 
 
 def test_dag_mode_rejects_cycles():
-    g = ArcGraph(S, name="t", dag=True)
+    g = GraphARC(S, name="t", dag=True)
     g.add_node("x", lambda s: None, writes=set())
     g.add_node("y", lambda s: None, writes=set())
     g.add_edge(START, "x")
@@ -59,14 +59,14 @@ def test_dag_mode_rejects_cycles():
 
 
 def test_dag_mode_rejects_conditional_edges():
-    g = ArcGraph(S, name="t", dag=True)
+    g = GraphARC(S, name="t", dag=True)
     g.add_node("x", lambda s: None, writes=set())
     with pytest.raises(GraphCycleError, match="conditional"):
         g.add_conditional_edge("x", lambda s: "x", {"x": "x"})
 
 
 def test_budget_hard_ceiling_cannot_be_looped_past():
-    g = ArcGraph(S, name="t", budget=Budget(max_iterations=5))
+    g = GraphARC(S, name="t", budget=Budget(max_iterations=5))
     g.add_node("loop", lambda s: {"a": s.a + 1}, writes={"a"})
     g.add_edge(START, "loop")
     g.add_conditional_edge("loop", lambda s: "again", {"again": "loop", "done": END})
@@ -84,7 +84,7 @@ def test_budget_meter_token_ceiling():
 
 
 def test_trace_records_state_delta_and_steps(trace):
-    g = ArcGraph(S, name="traced", trace=trace)
+    g = GraphARC(S, name="traced", trace=trace)
     g.add_node("n1", lambda s: {"a": 1}, writes={"a"})
     g.add_node("n2", lambda s: {"b": 2}, writes={"b"})
     g.add_edge(START, "n1")
@@ -102,7 +102,7 @@ def test_trace_records_state_delta_and_steps(trace):
 
 def test_raw_langgraph_entry_points_fail_closed():
     """Driving the compiled graph via .inner bypasses budgets/traces — so it must raise."""
-    g = ArcGraph(S, name="t", budget=Budget(max_iterations=3))
+    g = GraphARC(S, name="t", budget=Budget(max_iterations=3))
     g.add_node("n", lambda s: {"a": s.a + 1}, writes={"a"})
     g.add_edge(START, "n")
     g.add_edge("n", END)
@@ -112,7 +112,7 @@ def test_raw_langgraph_entry_points_fail_closed():
 
 
 def test_stream_goes_through_the_disciplined_path():
-    g = ArcGraph(S, name="t", budget=Budget(max_iterations=5))
+    g = GraphARC(S, name="t", budget=Budget(max_iterations=5))
     g.add_node("loop", lambda s: {"a": s.a + 1}, writes={"a"})
     g.add_edge(START, "loop")
     g.add_conditional_edge("loop", lambda s: "again", {"again": "loop", "done": END})
@@ -124,7 +124,7 @@ class Inner(BaseModel):
     text: str
 
 
-class NestedState(ArcState):
+class NestedState(GraphARCState):
     items: list[Inner] = []
     downstream_saw: str = ""
 
@@ -140,7 +140,7 @@ def test_in_place_mutation_of_nested_models_is_discarded():
     def observe(state: NestedState) -> dict:
         return {"downstream_saw": state.items[0].text}
 
-    g = ArcGraph(NestedState, name="t")
+    g = GraphARC(NestedState, name="t")
     g.add_node("tamper", tamper, writes=set())
     g.add_node("observe", observe, writes={"downstream_saw"})
     g.add_edge(START, "tamper")

@@ -169,10 +169,10 @@ def test_metrics_and_mermaid_derive_from_the_trace(trace):
 def test_mermaid_labels_are_escaped_and_balanced(tmp_path, trace):
     """A run that errors is exactly when an operator needs the diagram — so a
     hostile error string must not break its syntax."""
-    from grapharc.runtime.graph import END, START, ArcGraph
-    from grapharc.runtime.state import ArcState
+    from grapharc.runtime.graph import END, START, GraphARC
+    from grapharc.runtime.state import GraphARCState
 
-    class S(ArcState):
+    class S(GraphARCState):
         a: int = 0
 
     nasty = 'boom [brackets] {braces} "quotes" (parens); ' + "x" * 400
@@ -180,7 +180,7 @@ def test_mermaid_labels_are_escaped_and_balanced(tmp_path, trace):
     def explode(state: S) -> dict:
         raise RuntimeError(nasty)
 
-    g = ArcGraph(S, name="exploder", trace=trace)
+    g = GraphARC(S, name="exploder", trace=trace)
     g.add_node("explode", explode, writes={"a"})
     g.add_edge(START, "explode")
     g.add_edge("explode", END)

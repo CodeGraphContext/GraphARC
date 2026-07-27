@@ -19,12 +19,12 @@ from grapharc.memory.store import Claim, MemoryStore
 from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
 from grapharc.runtime.convergence import StopReason
-from grapharc.runtime.graph import END, START, ArcGraph, CompiledArcGraph, RunContext
-from grapharc.runtime.state import ArcState
+from grapharc.runtime.graph import END, START, CompiledGraphARC, GraphARC, RunContext
+from grapharc.runtime.state import GraphARCState
 from grapharc.testing import charge_usage
 
 
-class Stage6State(ArcState):
+class Stage6State(GraphARCState):
     entities: list[str]
     source_name: str = ""
     source_text: str = ""
@@ -42,7 +42,7 @@ def build_stage6(
     trace: TraceRecorder | None = None,
     checkpointer=None,
     budget: Budget | None = None,
-) -> CompiledArcGraph:
+) -> CompiledGraphARC:
     def recall(state: Stage6State) -> dict:
         context = render_context(store, entities=state.entities)
         dead = [
@@ -96,7 +96,7 @@ def build_stage6(
             "termination_reason": StopReason.TARGET_MET.value,
         }
 
-    g = ArcGraph(Stage6State, name="stage6_memory", budget=budget, trace=trace)
+    g = GraphARC(Stage6State, name="stage6_memory", budget=budget, trace=trace)
     g.add_node("recall", recall, writes={"recalled", "avoided_dead_ends"})
     g.add_node("extract", extract, writes={"new_claim_ids"})
     g.add_node("answer", answer, writes={"answer", "termination_reason"})

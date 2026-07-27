@@ -24,8 +24,8 @@ from pydantic import BaseModel
 from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
 from grapharc.runtime.convergence import StopReason
-from grapharc.runtime.graph import END, START, ArcGraph, CompiledArcGraph, RunContext
-from grapharc.runtime.state import ArcState
+from grapharc.runtime.graph import END, START, CompiledGraphARC, GraphARC, RunContext
+from grapharc.runtime.state import GraphARCState
 from grapharc.testing import charge_usage
 
 
@@ -42,7 +42,7 @@ class Claim(BaseModel):
     citation: str  # must be a verbatim quote from the source
 
 
-class Stage2State(ArcState):
+class Stage2State(GraphARCState):
     source_path: str
     source_text: str = ""
     mode: Mode = Mode.INGESTING
@@ -62,7 +62,7 @@ def build_stage2(
     trace: TraceRecorder | None = None,
     checkpointer=None,
     budget: Budget | None = None,
-) -> CompiledArcGraph:
+) -> CompiledGraphARC:
     def ingest(state: Stage2State) -> dict:
         return {
             "source_text": Path(state.source_path).read_text(encoding="utf-8"),
@@ -124,7 +124,7 @@ def build_stage2(
             "termination_reason": reason.value,
         }
 
-    g = ArcGraph(Stage2State, name="stage2_claims", budget=budget, trace=trace)
+    g = GraphARC(Stage2State, name="stage2_claims", budget=budget, trace=trace)
     g.add_node("ingest", ingest, writes={"source_text", "mode"})
     g.add_node("extract", extract, writes={"claims", "attempts", "mode"})
     g.add_node("verify_citations", verify_citations, writes={"verified", "rejected", "feedback"})

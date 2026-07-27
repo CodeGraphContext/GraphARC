@@ -6,14 +6,14 @@ replay, and (eventually) durable graph memory.
 """
 
 from grapharc.runtime.budget import Budget, BudgetExceeded, BudgetMeter
-from grapharc.runtime.graph import ArcGraph, WritePermissionError
-from grapharc.runtime.state import ArcState
+from grapharc.runtime.graph import GraphARC, WritePermissionError
+from grapharc.runtime.state import GraphARCState
 
 __version__ = "0.1.0a0"
 
 __all__ = [
-    "ArcGraph",
-    "ArcState",
+    "GraphARC",
+    "GraphARCState",
     "Budget",
     "BudgetExceeded",
     "BudgetMeter",

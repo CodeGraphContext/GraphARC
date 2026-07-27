@@ -19,13 +19,13 @@ from grapharc.examples.stage2_claims import Claim
 from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
 from grapharc.runtime.convergence import StopReason
-from grapharc.runtime.graph import END, START, ArcGraph, CompiledArcGraph, RunContext
-from grapharc.runtime.state import ArcState
+from grapharc.runtime.graph import END, START, CompiledGraphARC, GraphARC, RunContext
+from grapharc.runtime.state import GraphARCState
 from grapharc.runtime.verify import Verdict, verify_claim
 from grapharc.testing import charge_usage
 
 
-class Stage5State(ArcState):
+class Stage5State(GraphARCState):
     source_text: str
     claims: list[Claim] = []
     verdicts: list[Verdict] = []
@@ -41,7 +41,7 @@ def build_stage5(
     trace: TraceRecorder | None = None,
     checkpointer=None,
     budget: Budget | None = None,
-) -> CompiledArcGraph:
+) -> CompiledGraphARC:
     if author is reviewer:
         raise ValueError(
             "author and reviewer must be different model instances: a model "
@@ -82,7 +82,7 @@ def build_stage5(
             "termination_reason": StopReason.TARGET_MET.value,
         }
 
-    g = ArcGraph(Stage5State, name="stage5_verifier", budget=budget, trace=trace)
+    g = GraphARC(Stage5State, name="stage5_verifier", budget=budget, trace=trace)
     g.add_node("draft", draft, writes={"claims"})
     g.add_node("verify", verify, writes={"verdicts"})
     g.add_node("report", report, writes={"accepted", "rejected", "termination_reason"})

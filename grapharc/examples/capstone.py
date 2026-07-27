@@ -25,8 +25,8 @@ from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
 from grapharc.runtime.convergence import StopReason
 from grapharc.runtime.fanout import WorkerResult, dedupe, run_guarded
-from grapharc.runtime.graph import END, START, ArcGraph, CompiledArcGraph, RunContext
-from grapharc.runtime.state import ArcState
+from grapharc.runtime.graph import END, START, CompiledGraphARC, GraphARC, RunContext
+from grapharc.runtime.state import GraphARCState
 from grapharc.runtime.verify import Verdict, verify_claim
 from grapharc.testing import charge_usage
 
@@ -39,7 +39,7 @@ class ShardPayload(BaseModel):
     timeout_seconds: float = 5.0
 
 
-class CapstoneState(ArcState):
+class CapstoneState(GraphARCState):
     question: str
     corpus: list[str]
     entities: list[str] = []
@@ -65,7 +65,7 @@ def build_capstone(
     trace: TraceRecorder | None = None,
     checkpointer=None,
     budget: Budget | None = None,
-) -> CompiledArcGraph:
+) -> CompiledGraphARC:
     if worker_model is reviewer_model:
         raise ValueError("worker and reviewer must be different model instances")
 
@@ -158,7 +158,7 @@ def build_capstone(
             ids.append(claim.id)
         return {"persisted_claim_ids": ids}
 
-    g = ArcGraph(CapstoneState, name="capstone", budget=budget, trace=trace)
+    g = GraphARC(CapstoneState, name="capstone", budget=budget, trace=trace)
     g.add_node("recall", recall, writes={"recalled"})
     g.add_node("plan", plan, writes={"source_text"})
     g.add_node("search", search, writes={"worker_results"}, input_schema=ShardPayload)
