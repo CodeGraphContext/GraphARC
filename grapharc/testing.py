@@ -1,0 +1,86 @@
+"""Test doubles for model-calling nodes.
+
+Gate tests run against scripted models by default (`--live` runs real ones):
+the gates verify *orchestration mechanics* — routing, budgets, traces, replay —
+which scripted responses exercise deterministically.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import Field, PrivateAttr
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, len(text) // 4)
+
+
+class ScriptedChatModel(BaseChatModel):
+    """A chat model that replays a fixed script of responses.
+
+    Each call returns the next scripted response, with usage_metadata attached
+    so token metering paths are exercised. Calls beyond the script raise by
+    default (`on_exhausted="raise"`) or repeat the last response
+    (`on_exhausted="repeat"`).
+    """
+
+    responses: list[str] = Field(default_factory=list)
+    on_exhausted: str = "raise"
+    _cursor: int = PrivateAttr(default=0)
+    _calls: list[list[BaseMessage]] = PrivateAttr(default_factory=list)
+
+    @property
+    def _llm_type(self) -> str:
+        return "grapharc-scripted"
+
+    @property
+    def calls(self) -> list[list[BaseMessage]]:
+        return self._calls
+
+    @property
+    def call_count(self) -> int:
+        return len(self._calls)
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self._calls.append(list(messages))
+        if self._cursor >= len(self.responses):
+            if self.on_exhausted == "repeat" and self.responses:
+                content = self.responses[-1]
+            else:
+                raise RuntimeError(
+                    f"ScriptedChatModel exhausted after {len(self.responses)} responses"
+                )
+        else:
+            content = self.responses[self._cursor]
+            self._cursor += 1
+
+        input_tokens = sum(_estimate_tokens(str(m.content)) for m in messages)
+        output_tokens = _estimate_tokens(content)
+        message = AIMessage(
+            content=content,
+            usage_metadata={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+        )
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+
+def charge_usage(ctx: Any, message: AIMessage) -> None:
+    """Charge an AIMessage's usage_metadata against a RunContext's budget meter."""
+    usage = getattr(message, "usage_metadata", None) or {}
+    total = usage.get("total_tokens")
+    if total:
+        ctx.meter.charge_tokens(total)

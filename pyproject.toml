@@ -1,0 +1,52 @@
+[project]
+name = "grapharc"
+version = "0.1.0a0"
+description = "GraphARC — a graph engineering toolkit: disciplined multi-agent graphs (typed state, budgets, verification, replay, durable memory) on top of LangGraph."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+authors = [{ name = "Shashank Shekhar Singh" }]
+keywords = ["agents", "graph-engineering", "langgraph", "multi-agent", "llm"]
+dependencies = [
+    "langgraph>=0.4",
+    "langgraph-checkpoint-sqlite>=2.0",
+    "langchain-core>=0.3",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+# Durable knowledge-graph backend (M4). Tests use the in-memory fallback.
+memory = ["neo4j>=5.20"]
+# Deferred direct-API backend (added when an API key exists to test it live).
+api = ["anthropic>=0.40"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-timeout>=2.3",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+grapharc = "grapharc.cli.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["grapharc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "live: tests that call a real model backend (deselected by default)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
