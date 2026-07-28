@@ -318,7 +318,7 @@ Re-derived on 2026-07-28 by running each item, not by reading the commit log.
 - **The Claude CLI backend is completion-only.** Tool calling and structured output need OpenRouter.
 - **A session turn is synchronous**, and a runner claim is a claim rather than a lease — nothing reclaims a session whose runner died holding it.
 
-**Verified this pass:** `pytest` → 1,327 passed, 10 deselected (the live ones); `ruff check .` clean; all eight `grapharc run` stages green; the wheel builds and imports all 93 modules in a clean virtualenv with `[all]`. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
+**Verified this pass:** `pytest` → 1,328 passed, 10 deselected (the live ones); `ruff check .` clean; all eight `grapharc run` stages green; the wheel builds and imports all 93 modules in a clean virtualenv with `[all]`. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
 
 [ROADMAP.md](ROADMAP.md) tracks what is built and what is not, item by item. [ASSESSMENT.md](ASSESSMENT.md) is an outside review that argued much of this repo is a thin wrapper on LangGraph — it describes an earlier state of the tree and is kept unedited on purpose, because the parts it got right are worth more than the parts it has outlived.
 

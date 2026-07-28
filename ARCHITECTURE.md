@@ -335,7 +335,7 @@ one well, the second one vaguely, and the third one not at all.
 ## 7. Where we are against this
 
 Re-derived on 2026-07-28 by executing each claim against the tree — not by
-reading the commit log. At that point `pytest` was **1,327 passed, 10
+reading the commit log. At that point `pytest` was **1,328 passed, 10
 deselected** (the live ones), `ruff check .` was clean, and the wheel built and
 imported all 93 modules in a clean virtualenv.
 
@@ -364,10 +364,10 @@ nodes' own `start`/`end` pairs and one `phase="stop"` event, all under one
 `run_id`. Round 7 is checked by the same checker as round 1 — there is no
 already-approved path.
 
-### The four gaps that matter
+### The gaps that matter
 
-Each of these is a subsystem that exists and works, sitting next to a subsystem
-that does not know it exists.
+The first four are seams: a subsystem that exists and works, sitting next to a
+subsystem that does not know it exists. They are ROADMAP §12.
 
 1. **Nothing shipped drives the loop.** `grapharc.planner` is imported by no
    other module in the package: no CLI command, no example graph, no session
@@ -387,7 +387,15 @@ that does not know it exists.
    does not use it — it has its own `InProcessRuntime` whose sessions die with
    the process, never evict, and record `message`/`approval` events without
    delivering them into a running graph. Stage ② holds; stage ① does not reach it.
-4. **Admission authorises a kind, not its arguments.** Stated in §2 and true in
+4. **The shipped graphs do not use durable memory.** `SQLiteMemoryStore` is
+   verified durable across separate processes, and every `grapharc run` command
+   still constructs the in-process `MemoryStore()`. Box ⑥'s "durable memory with
+   provenance" is true of the library and not of anything you can run.
+
+The fifth is not a seam but a boundary, and it is the one most likely to be
+over-read:
+
+5. **Admission authorises a kind, not its arguments.** Stated in §2 and true in
    code: a proposal carrying `args={"path": "/etc/passwd"}` is admitted, because
    no rule here can constrain `args`. `Materializer` defaults to
    `forward_args=False` and drops them, which is the right default — but

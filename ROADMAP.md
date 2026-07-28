@@ -11,7 +11,7 @@ claim against the tree rather than reading the commit log — the percentage is
 the fraction of *enumerated items* verified done, section by section, which is
 this project's own definition of scope and not the industry's.
 
-At that point: `pytest` → **1,327 passed, 10 deselected** (the live ones);
+At that point: `pytest` → **1,328 passed, 10 deselected** (the live ones);
 `ruff check .` clean; the wheel builds and imports all 93 modules in a clean
 virtualenv. Treat the test count as a snapshot rather than a fact about the
 project — `pytest` re-derives it in one command, which is the only reason it is
@@ -432,7 +432,7 @@ Everything here works and nothing calls it.
 
 ## 11. Product & distribution — `[~] ~35%`
 
-- [x] Builds a clean wheel; **1,327 tests**; CI; ruff clean. Verified in a fresh
+- [x] Builds a clean wheel; **1,328 tests**; CI; ruff clean. Verified in a fresh
       virtualenv: a bare wheel install imports 86 of 93 modules and runs
       `grapharc run stage0` — `gateway.openrouter` and the whole `server`
       package need their extras — and installing `[all]` imports all 93.
