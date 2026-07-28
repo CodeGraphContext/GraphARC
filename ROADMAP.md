@@ -6,7 +6,7 @@ described in [VISION.md](VISION.md). Status is measured, not aspirational.
 **Legend:** `[x]` done · `[~]` partial · `[ ]` not started · **B** blocks other
 work · **!** known-false claim shipping today
 
-Overall: **~65% of the list below**. Re-derived on 2026-07-28 by executing every
+Overall: **~69% of the list below** (71 of 103 enumerated items). Re-derived on 2026-07-28 by executing every
 claim against the tree rather than reading the commit log — the percentage is
 the fraction of *enumerated items* verified done, section by section, which is
 this project's own definition of scope and not the industry's.
@@ -17,50 +17,47 @@ virtualenv. Treat the test count as a snapshot rather than a fact about the
 project — `pytest` re-derives it in one command, which is the only reason it is
 quoted at all.
 
-**The number is generous in one specific way, so read it with this.** Two
-subsystems are built, tested, and imported by *nothing else in the package* —
-`planner/`, where no CLI command or example drives the governed loop, and
-`policy/`, which has no caller anywhere and no bridge from its TOML document to
-the `EdgePolicy` that admission actually consults. Two more are built and
-bypassed by the thing that should use them: `server/` ships its own in-process
-session runtime instead of the durable `session/` one, and the CLI hands graphs
-the in-process memory store instead of the SQLite one. Four seams. Code that
-works and is unreachable scores as built here and is worth less than that to a
-reader, which is what §12 exists to count and what the next-five list is
-entirely about.
+**The number used to be generous in one specific way, and mostly is not any
+more.** Four subsystems were built, tested and reachable by nothing: `planner/`
+had no command driving the governed loop, `policy/` had no caller and no bridge
+from its TOML document to the `EdgePolicy` admission consults, the CLI handed
+graphs the in-process memory store instead of the SQLite one, and no trace event
+carried the provider's cost. All four are closed — `grapharc plan`,
+`PolicyEngine.edge_policy()`, `grapharc run --memory`, and `cost_usd` on the
+`end` and `model` events. **One seam is left:** `server/` still ships its own
+in-process session runtime instead of the durable `session/` one (§12.3). Code
+that works and is unreachable scores as built here and is worth less than that
+to a reader, which is what §12 exists to count.
 
 ---
 
 ## Next five things
 
-In order. Each one connects two things that already work.
+In order.
 
-1. **Give the governed loop a surface** (§12.1) — **B**. `planner/` closes the
-   propose → admit → materialise → execute → replan cycle and no shipped code
-   path drives it. Until `grapharc plan <goal>` exists, the crux of the whole
-   architecture is a library API proven by tests, and a reader has to take it
-   on faith.
-2. **Bridge the policy document to admission** (§12.2) — `policy/` already
-   parses `node`, `edge`, `tool` and `spend` rules from TOML and produces a
-   `PermissionPolicy` the harness obeys. `AdmissionChecker` takes an
-   `EdgePolicy` hand-built in Python. Nothing joins them, so "declarative
-   governance" is a document that answers questions rather than one that
-   constrains a run.
-3. **Put the HTTP API on the real session layer** (§12.3) — `session/` is
-   durable and resumes across processes; `server/` uses its own
+1. **Push the code to the public remote** (§11.7) — **!**. Now the only
+   ship-blocker, and the first thing a reader hits. The install instruction in
+   the README does not work: `github.com/CodeGraphContext/GraphARC` `main` is at
+   `feef03d`, holding `LICENSE`, `README.md` and `.gitignore` and no source.
+   `git clone && uv sync --group dev` fails with *"No pyproject.toml found"*.
+   Everything else on this page is verified against a local tree the world
+   cannot fetch. 15 commits unpushed; `origin/main` is an ancestor of `HEAD`, so
+   a plain `git push` fast-forwards and needs no force.
+2. **Put the HTTP API on the real session layer** (§12.3) — the last seam.
+   `session/` is durable and resumes across processes; `server/` uses its own
    `InProcessRuntime` that does neither, and records approvals without
    delivering them. Two session layers, one seam.
-4. **Push the code to the public remote** (§11.7) — **!**. The install
-   instruction in the README does not work: `github.com/CodeGraphContext/GraphARC`
-   `main` is at `feef03d`, holding `LICENSE`, `README.md` and `.gitignore` and
-   no source. `git clone && uv sync --group dev` fails with *"No pyproject.toml
-   found"*. Everything else on this page is verified against a local tree that
-   the world cannot fetch.
-5. **Write `cost_usd` onto trace events** (§10.4) — both gateways capture the
-   provider's own per-call cost and no trace event carries it, so
-   `recorded_cost_usd` is always `None` and every money figure `observe.cost`
-   reports is an estimate from token counts. This is one argument at each
-   `trace.event(...)` call site.
+3. **Let admission constrain arguments** (§5.6) — **!**. The gap most likely to
+   be over-read: a rule reaches a node's *kind* and never its `args`, so
+   `args={"path": "/etc/passwd"}` is admitted on the strength of the kind.
+   `Materializer` drops args by default, which makes the default safe and the
+   opt-in sharp.
+4. **Route the tool plane through the document** (§7.5 remainder) — the edge
+   side now compiles to the admission gate, but nothing calls
+   `permission_policy()`, so `grapharc agent` is still governed by Python
+   objects rather than by the TOML file.
+5. **Publish to PyPI** (§11.1) — the workflow is tag-driven with Trusted
+   Publishing and fails closed without the browser-side setup; do §11.7 first.
 
 ---
 
@@ -339,12 +336,15 @@ Everything here works and nothing calls it.
 - [x] **7.4 — Multi-tenant scoping.** A declared tenant list makes a rule scoped
       to an unknown tenant a load error and a request naming one a recorded
       denial.
-- [ ] **B 7.5 — Nothing imports this package.** No bridge from `PolicyDocument`
-      to the `EdgePolicy` that `AdmissionChecker` consults, and no call from
-      `AgentNode` or the CLI to `permission_policy()`. Until that lands, the
-      governance a run is actually subject to is the `PermissionPolicy` and
-      `EdgePolicy` an operator wrote in Python — this document describes rules
-      that no execution path reads.
+- [x] **7.5 — The document reaches the gate.** `edge_policy(tenant=…)`
+      compiles `edge` rules into the `EdgePolicy` `AdmissionChecker` consults,
+      and `grapharc plan --policy` is a shipped caller, so this package is no
+      longer imported by nothing. What the compiled object still cannot carry is
+      what `permission_policy()` cannot either: the approver role and the audit
+      record, because `EdgePolicy.decide` returns a bare `Decision`. Admission
+      treats `ask` as not-yet-permitted. Still open: no call from `AgentNode` or
+      `grapharc agent` to `permission_policy()`, so the tool plane is still
+      governed by Python objects rather than by the document.
 
 ## 8. Memory & artifacts — `[~] ~85%`
 
@@ -377,10 +377,10 @@ Everything here works and nothing calls it.
       `max_tokens`, `max_dead_ends` and a `count_tokens` callable; the dead-end
       section is no longer uncapped.
 - [ ] **8.6 — Per-tenant/user memory scoping.**
-- [ ] **8.7 — Hand a durable store to the shipped graphs.** `grapharc run
-      stage6` and `grapharc run capstone` still construct the in-process
-      `MemoryStore()`, so the durable store exists and the CLI does not use it.
-      The `memory` extra still names Neo4j with nothing importing it.
+- [x] **8.7 — Hand a durable store to the shipped graphs.** `grapharc run
+      --memory PATH` gives `stage6` and `capstone` the `SQLiteMemoryStore`; the
+      in-process one remains the default so a plain run stays hermetic. The
+      `memory` extra still names Neo4j with nothing importing it.
 
 ## 9. Triggers & surfaces — `[~] ~55%`
 
@@ -420,13 +420,19 @@ Everything here works and nothing calls it.
       importing the module needs no OTel. Previously documented as unverified
       against the real SDK — verified during this pass against
       `opentelemetry-sdk` 1.44.0, with spans reaching an `InMemorySpanExporter`.
-- [~] **10.4 — Cost attribution** per run, thread (session) and node. Two gaps:
-      **nothing writes `cost_usd` onto a trace event**, so `recorded_cost_usd`
-      is always `None` and every figure reported is an estimate priced off total
-      tokens against a caller-supplied `RateCard`; and there is no tenant on a
-      trace event, so tenant attribution is not offered. Tokens are counted from
-      the same `end` events `metrics.summarize` uses, and the suite asserts the
-      two agree.
+- [~] **10.4 — Cost attribution** per run, thread (session) and node. The
+      price is now recorded, not guessed: both gateways publish the provider's
+      `cost_usd` through the same `llm_output` envelope, the runtime's usage
+      callback accumulates it per node and writes it onto the `end` event, and
+      an `AgentNode` writes the per-call figure onto each `model` event. A
+      backend that reports no price still falls back to a `RateCard` estimate,
+      and `recorded_cost_usd` and `estimated_cost_usd` never mix — a recorded
+      figure wins outright rather than being averaged with a guess. Tokens are
+      counted from the same events `metrics.summarize` uses — node `end` events
+      *plus* work outside any node span, which is what a `grapharc agent` run
+      consists of entirely — and the suite asserts the two agree. **One gap
+      left:** there is no tenant on a trace event, so tenant attribution is not
+      offered rather than being approximated.
 - [ ] **10.2 — Rollback** and versioned graph/prompt configs.
 - [ ] **10.5 — Alerting** on budget, failure, and verifier-drift.
 
@@ -453,25 +459,42 @@ Everything here works and nothing calls it.
 - [ ] **11.5 — External security review** (the audit-hook sandbox is defense in
       depth; §3.2's container executor is the boundary to review).
 
-## 12. Seams — `[ ] 0%`
+## 12. Seams — `[~] ~80%`
 
-New section, and the honest one. Each item is two working subsystems that do
-not know about each other; none of them is research, and all of them are worth
-more than another feature.
+Each item is two working subsystems that do not know about each other; none of
+them is research, and all of them are worth more than another feature. Four of
+the five are closed.
 
-- [ ] **B 12.1 — A surface for the governed loop.** `grapharc.planner` is
-      imported by no other module in the package. A `grapharc plan <goal>`
-      command, or an example graph, or a `GraphSpec` the session layer can
-      drive — anything that makes the propose→admit→execute→replan cycle
-      reachable without writing Python.
-- [ ] **B 12.2 — `PolicyDocument` → `EdgePolicy`.** See §7.5.
+- [x] **12.1 — A surface for the governed loop.** `grapharc plan <goal>` drives
+      propose → admit → materialise → execute → replan and prints every round,
+      its admission status and its rejection codes. Scripted by default, so it
+      costs nothing and is deterministic; `--model SPEC` swaps in a real
+      backend, `--registry module:attr` swaps in your own kinds (and, via
+      `STATE_SCHEMA` and `WRITES` on the same module, the schema they write to).
+      The shipped demo registers `deploy` and denies every edge into it, so the
+      default run shows round 1 refused on `edge_denied` and round 2 replanning
+      without it. `grapharc/examples/plan_incident.py` is the registry;
+      `tests/test_cli.py` pins the rounds, the stop reason and the exit codes.
+- [x] **12.2 — `PolicyDocument` → `EdgePolicy`.** `PolicyEngine.edge_policy(
+      tenant=…)` compiles the document's `edge` rules into the object
+      `AdmissionChecker` consults, mirroring `permission_policy()` for the
+      planner side; a test pins it to `check_edge` across an edge × tenant
+      matrix, and an undeclared tenant compiles to a policy that permits
+      nothing. `grapharc plan --policy PATH --tenant NAME` is the shipped
+      caller, and the end-to-end test is the one that matters: with a
+      `*->deploy` deny rule in the file round 1 is refused, and with the rule
+      removed the same run admits it. The document constrains the run.
 - [ ] **12.3 — The HTTP API on the real session layer.** `create_app(runtime=…)`
       already takes any `SessionRuntime`; what is missing is the implementation
       backed by `grapharc.session`, which would give the API durable sessions,
       cross-process resume, and approval events that are delivered rather than
       merely recorded.
-- [ ] **12.4 — A durable store for the shipped graphs.** See §8.7.
-- [ ] **12.5 — `cost_usd` onto trace events.** See §10.4.
+- [x] **12.4 — A durable store for the shipped graphs.** `grapharc run
+      --memory PATH` hands `stage6` and `capstone` a `SQLiteMemoryStore`.
+      In-process stays the default, so a run still writes nothing nobody asked
+      for. Proved across a real process boundary: two interpreters, one file,
+      and the second run recalls what the first persisted.
+- [x] **12.5 — `cost_usd` onto trace events.** See §10.4.
 
 ---
 

@@ -6,6 +6,10 @@ Alpha (`0.1.0a0`). **Not installable yet** — see [Install](#install), which is
 
 > *Graph engineering*: when one agent loop stops being enough, coordination becomes the engineering. Nodes do work (agent loops, model calls, deterministic functions, humans approving things), edges decide what runs next, and a typed shared state flows between them. GraphARC implements the discipline that makes such graphs production-grade rather than demos — the ideas emerging from the July 2026 loops-vs-graphs debate (Steinberger, Ng, et al.), the "Two Graphs, Two Jobs" split, and twenty years of pre-AI graph systems where every edge means something and every path can be explained.
 
+![The governed lifecycle: a trigger reaches a session, a planner proposes a subgraph, admission admits or refuses it, materialisation binds the build to that authorisation, and the executed graph feeds both an outcome and the next round of planning.](docs/diagrams/01-lifecycle.png)
+
+The two curves back to *③ PLAN* are the claim. Refusals return as traced reason codes, and work discovered mid-run **re-enters admission** — there is no already-approved path and no cached authorisation. Rendered from [`docs/diagrams/architecture.py`](docs/diagrams/architecture.py); [three more views](docs/diagrams/) cover the planes, the agent node, and which subsystems actually import which.
+
 ## What's here
 
 | | | |
@@ -20,7 +24,7 @@ Alpha (`0.1.0a0`). **Not installable yet** — see [Install](#install), which is
 | **Memory** | durable claims with provenance, artifacts, BM25F + graph retrieval | `grapharc.memory` |
 | **Observability** | replay, run diffing, OpenTelemetry spans, cost attribution | `grapharc.observe` |
 
-Two of those work and are wired to nothing — `planner` and `policy` are imported by no other module in the package. [ROADMAP.md](ROADMAP.md) §12 counts that as remaining work rather than hiding it, and [ARCHITECTURE.md](ARCHITECTURE.md) §7 re-derives every box above by running it.
+Every box above is now reachable from a shipped command. `planner` and `policy` were for a while built, tested and imported by nothing else in the package; `grapharc plan` drives the first and compiles the second's document into the gate. [ROADMAP.md](ROADMAP.md) §12 tracks the seams that remain — the HTTP API still runs its own in-process session layer instead of the durable one — and [ARCHITECTURE.md](ARCHITECTURE.md) §7 re-derives every box above by running it.
 
 ## What it adds on top of LangGraph
 
@@ -118,26 +122,71 @@ print(g.compile().invoke({"question": "meaning of life"}))
 
 The part with no prior art to copy, and the reason the rest exists. You cannot pre-author a graph for "investigate this incident" — the shape is discovered while working. So the graph is built at runtime, and a deterministic checker stands between building it and running it.
 
-```python
-from grapharc.planner import (
-    AdmissionChecker, CostEstimate, EdgePolicy, EdgeRule,
-    GovernedLoop, LoopLimits, Materializer, NodeRegistry, NodeSpec, PlannerNode,
-)
-from grapharc.harness.permissions import Decision
+Watch it happen first. This costs nothing and needs no key — the shipped planner is scripted, and its first proposal names the policy-denied `deploy` kind:
 
-registry = NodeRegistry([                       # the kinds a planner may propose
-    NodeSpec(name="search", factory=make_search, worst_case=CostEstimate(tokens=500)),
-    NodeSpec(name="edit",   factory=make_edit,   worst_case=CostEstimate(tokens=2000)),
-    NodeSpec(name="deploy", factory=make_deploy),
-])
-policy = EdgePolicy(rules=(                     # deny -> ask -> allow, unmatched is deny
+```bash
+grapharc plan "investigate the checkout outage"
+```
+
+```
+goal      : investigate the checkout outage
+model     : scripted
+registry  : grapharc.examples.plan_incident:build_registry
+kinds     : deploy, patch, triage, verify
+policy    : built-in demo (deny -> deploy, allow otherwise)
+
+stopped   : goal_met  (the goal check was satisfied)
+rounds    : 2 of max 8
+   round 1: rejected  nodes=2 executed=False  rejected: edge_denied
+   round 2: admitted  nodes=3 executed=True
+
+state     : goal='investigate the checkout outage' notes=['triage ran', 'patch ran', 'verify ran']
+```
+
+Round 1 wanted to deploy and **never executed**. Round 2 went through the *same* checker and ran. `--model SPEC` swaps in a real backend and changes none of the enforcement; `--policy policy.toml` moves the rules into a document.
+
+Here is the assembly, complete and runnable as written:
+
+```python
+from pydantic import BaseModel
+
+from grapharc.harness.permissions import Decision
+from grapharc.planner import (
+    AdmissionChecker, CostEstimate, EdgePolicy, EdgeRule, GovernedLoop,
+    LoopLimits, Materializer, NodeRegistry, NodeSpec, PlannerNode,
+)
+from grapharc.runtime.budget import Budget
+from grapharc.testing import ScriptedChatModel
+
+
+class State(BaseModel):
+    found: str = ""
+    fixed: str = ""
+
+
+def factory(spec):                              # bodies come from HERE, never a proposal
+    def body(state):
+        return {"found": "cause"} if spec.name == "search" else {"fixed": "patch"}
+    return body
+
+
+registry = NodeRegistry([                        # the kinds a planner may propose
+    NodeSpec(name="search", factory=factory, worst_case=CostEstimate(tokens=500)),
+    NodeSpec(name="edit",   factory=factory, worst_case=CostEstimate(tokens=2000)),
+    NodeSpec(name="deploy", factory=factory),
+]).freeze()
+policy = EdgePolicy(rules=(                      # deny -> ask -> allow, unmatched is deny
     EdgeRule(action=Decision.DENY, target="deploy"),
     EdgeRule(action=Decision.ALLOW),
 ))
 
+plan = '{"nodes": [{"name": "%s"}], "edges": [{"source": "__start__", "target": "%s"}]}'
 loop = GovernedLoop(
-    planner=PlannerNode(model, catalog=registry.catalog()),
-    checker=AdmissionChecker(registry=registry, edge_policy=policy, trace=trace),
+    planner=PlannerNode(
+        ScriptedChatModel(responses=[plan % ("deploy", "deploy"), plan % ("edit", "edit")]),
+        catalog=registry.catalog(),
+    ),
+    checker=AdmissionChecker(registry=registry, edge_policy=policy),
     materializer=Materializer(
         registry=registry, state_schema=State,
         writes={"search": {"found"}, "edit": {"fixed"}, "deploy": set()},
@@ -147,10 +196,25 @@ loop = GovernedLoop(
     goal_reached=lambda s: bool(s.fixed),
 )
 result = loop.run("find and fix the bug", State())
-print(result.stop)        # goal_met
+
+print(result.stop.value)
+for record in result.rounds:
+    print(record.round, record.admission.status.value, record.executed)
+print([r.code for r in result.rejections()])
 ```
 
-Run that against a planner whose first proposal names the policy-denied `deploy` kind and the rounds go: **rejected** on `policy/edge_denied` with the reason fed back, **admitted** and executed, **admitted** and executed, stop `goal_met`. The trace holds three `admission` events, three `round` events, the executed nodes' own `start`/`end` pairs and one `stop` event, all under one `run_id` — so *what it did*, *what it was allowed to do* and *why it stopped* are all answerable from the file alone. Round 7 is checked by the same checker as round 1; there is no already-approved path.
+Output:
+
+```
+goal_met
+1 rejected False
+2 admitted True
+['edge_denied']
+```
+
+The trace holds an `admission` event per round, a `round` event per round, the executed nodes' own `start`/`end` pairs and one `stop` event, all under one `run_id` — so *what it did*, *what it was allowed to do* and *why it stopped* are answerable from the file alone. Round 7 is checked by the same checker as round 1; there is no already-approved path.
+
+Both blocks above are executed by `tests/test_readme.py`, which byte-compares this page's output against a real run, so neither can rot quietly.
 
 **Five checks, all of which run on every proposal**, so a planner gets the complete list of objections rather than the first one: is every node's kind in the registry, is every edge permitted between the kinds it joins, does the worst case fit what is *left* of the budget, is the nesting within the depth limit, and is it acyclic.
 
@@ -170,7 +234,7 @@ Three limits, because this is exactly the sort of claim people over-read:
 
 **`parent_depth` is the caller's word.** The checker cannot see how deep the run actually is, so a caller that always passes `0` has no recursion limit beyond the nesting visible inside a single proposal.
 
-**Nothing shipped drives this.** `grapharc.planner` is imported by no other module in the package — no CLI command, no example graph. It is a library API with a test suite, not something you can invoke and watch. That is [ROADMAP.md](ROADMAP.md) §12.1 and the top of the fix list after distribution.
+**One surface, one demo registry.** `grapharc plan` drives the loop, and the kinds it plans over come from `grapharc/examples/plan_incident.py` unless you point `--registry module:attr` at your own. That module is also where a custom registry declares its `STATE_SCHEMA` and `WRITES`; a registry alone is not enough, because a kind nobody declared writes for may write nothing. There is no session-backed or HTTP-backed planning surface yet — [ROADMAP.md](ROADMAP.md) §12.3.
 
 ## The model gateway
 
@@ -203,7 +267,7 @@ OpenRouter also carries routing: model-level `fallback_models` chains, provider 
 
 **Cost ceilings are enforced, on both sides of a call.** A `SpendMeter` refuses before a call once the ceiling is reached, and after a call it charges the cost and *then* raises if that crossed the line — so overspend is bounded by the single call that crossed it rather than discovered a node later. The limit worth stating: a call whose cost the provider does not report cannot be charged, and those land in `unpriced_calls` rather than being guessed at. `unpriced_calls > 0` means the ceiling saw less than the whole bill.
 
-Caveats each backend accepts openly. **Claude CLI:** `bind_tools` and `with_structured_output` raise `NotImplementedError` — the adapter implements neither, so what you get is LangChain's `BaseChatModel` default, and `claude -p` in the tool-free mode GraphARC drives it in offers nothing to implement them with. GraphARC also has no cache control on this path — the CLI decides and the usage envelope reports what it did — and calls spend subscription quota. **OpenRouter:** credit is reserved against `max_tokens`, so the default is deliberately modest. **Both:** the per-call `cost_usd` is captured and budgeted against, but it is never written onto a trace event — so `observe.cost` reports an *estimate* priced off token counts, and `recorded_cost_usd` is always `None`. See [ROADMAP.md](ROADMAP.md) §10.4.
+Caveats each backend accepts openly. **Claude CLI:** `bind_tools` and `with_structured_output` raise `NotImplementedError` — the adapter implements neither, so what you get is LangChain's `BaseChatModel` default, and `claude -p` in the tool-free mode GraphARC drives it in offers nothing to implement them with. GraphARC also has no cache control on this path — the CLI decides and the usage envelope reports what it did — and calls spend subscription quota. **OpenRouter:** credit is reserved against `max_tokens`, so the default is deliberately modest. **Both:** the per-call `cost_usd` is captured, budgeted against, *and* written onto the trace, so `observe.cost` reports a recorded figure rather than an estimate whenever the provider gave one. See [ROADMAP.md](ROADMAP.md) §10.4 for what is still missing (a tenant on the event).
 
 ## Independent verification
 
@@ -215,6 +279,10 @@ Caveats each backend accepts openly. **Claude CLI:** `bind_tools` and `with_stru
 - **Independence is enforced in two places, both worth knowing exactly.** `build_stage5` and `build_capstone` refuse the *same object* for author and reviewer — an identity check, which will not catch two separate instances of the same model. The CLI does the stronger check: `different_providers()` compares backend and model author, and `grapharc run … --model … --reviewer-model …` warns when the pair shares a vendor, because correlated agreement is exactly what the verifier exists to prevent.
 
 ## Tools and the harness
+
+![Inside an agent node: task and context, recall memory, model call, then a permission decision that either denies the call back to the model, routes it to a human, or lets it reach the sandbox; execution is followed by a budget check and an evidence check before any result leaves.](docs/diagrams/03-agent-node.png)
+
+Every diamond above is code, not prompt text. The `deny` branch is the one to look at: a refused tool never reaches the sandbox and its schema is never shown to the model, so the model is not asked to be well-behaved about a tool it cannot see.
 
 Seven core tools — `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `run_command`. `grapharc agent <task>` registers them into a `ToolRegistry` that an `AgentNode` then drives, so the CLI path is the worked example. `grapharc/examples/agent_fixit.py` is a shipped *graph* that calls tools, though it defines its own inline rather than using these; the other example stages call no tools at all.
 
@@ -264,7 +332,7 @@ grapharc metrics trace.jsonl <run-id>         # tokens, retries, termination rea
 
 **Spans are optional by construction.** One root span per run, one child per node execution, with `AgentNode` sub-steps parented by inference — and a sub-step whose parent cannot be identified is parented to the run span rather than to a guess. The OpenTelemetry dependency is confined behind a Protocol, so importing the module needs no OTel installed. This was carried as unverified against the real SDK for a while; it has now been run against `opentelemetry-sdk` 1.44.0 with spans arriving at a real exporter.
 
-**Cost attribution is per run, thread and node** — and it is an estimate. Tokens are counted from the same `end` events `metrics` uses, and the suite asserts the two agree, so a cost report and an audit trail cannot drift apart. But nothing writes the provider's `cost_usd` onto a trace event, so `recorded_cost_usd` is always `None` and the money figure is tokens priced against a `RateCard` you supply. There is also no tenant on a trace event, so per-tenant attribution is not offered rather than being approximated.
+**Cost attribution is per run, thread and node**, and it distinguishes what was measured from what was guessed. Tokens are counted from the same events `metrics` uses — node `end` events plus work that happened outside any node span, which is what a `grapharc agent` run is entirely made of — and the suite asserts the two agree, so a cost report and an audit trail cannot drift apart. The provider's own `cost_usd` is written onto the trace, so `recorded_cost_usd` holds a real figure when the backend reported one; a backend that reports none falls back to tokens priced against a `RateCard` you supply, and the two never mix. There is still no tenant on a trace event, so per-tenant attribution is not offered rather than being approximated.
 
 ## Tests are gates
 
@@ -300,12 +368,10 @@ Re-derived on 2026-07-28 by running each item, not by reading the commit log.
 - **You cannot install this.** The source is not on the public remote — see [Install](#install). Nothing else on this page matters until that is fixed.
 - **Not on PyPI.** The wheel builds and works; nobody can fetch it.
 
-**Built and unreachable** — the honest headline, and [ROADMAP.md](ROADMAP.md) §12 counts it as work rather than hiding it.
+**Built and unreachable** — this used to be the honest headline, four subsystems deep. One seam is left.
 
-- **Nothing shipped drives the governed loop.** `grapharc.planner` is imported by no other module in the package: no CLI command, no example graph. The propose→admit→execute→replan cycle is a library API with a test suite.
-- **Nothing imports the policy engine.** No bridge from its TOML document to the admission checker's edge policy; no caller from the agent or the CLI.
-- **The HTTP API does not use the durable session layer.** It has its own in-process one.
-- **The shipped graphs use the in-process memory store**, though a durable one exists.
+- **The HTTP API does not use the durable session layer.** It has its own `InProcessRuntime`, whose sessions die with the process and whose approvals are recorded without being delivered. [ROADMAP.md](ROADMAP.md) §12.3.
+- *Closed:* `grapharc plan` drives the governed loop; `PolicyEngine.edge_policy()` compiles the TOML document into the gate `AdmissionChecker` consults, and `grapharc plan --policy` is the caller; `grapharc run --memory PATH` hands the shipped graphs the durable SQLite store.
 
 **Real limits of things that do work**
 
@@ -314,7 +380,7 @@ Re-derived on 2026-07-28 by running each item, not by reading the commit log.
 - **`run_command` is not confined.** Argv-only and never a shell, but the child is an ordinary process with your privileges.
 - **`interrupt()` suspends but cannot be resumed.** LangGraph's native interrupt stops the graph and shows on `get_state`, and there is no supported resume path — resuming means passing a `Command` as *input*, which is closed by design. Use the session layer's approval gate for human-in-the-loop.
 - **Still unwrapped from LangGraph:** `retry_policy`, `cache_policy`, `durability`, subgraphs. `.inner` reaches them, but execution entry points there fail closed, so `.inner` is an inspection escape hatch and not a way to run the graph.
-- **Cost is an estimate on the trace.** Ceilings are enforced against the provider's real `cost_usd`, but no trace event carries it, so `observe.cost` prices off token counts.
+- **Cost is recorded when a backend reports one, estimated when it does not.** Both gateways publish the provider's `cost_usd` through the same `llm_output` envelope, the runtime's usage callback writes it onto the node's `end` event, and an agent's `model` events carry the per-call breakdown. A backend that reports no price still falls back to a `RateCard` estimate, and the two figures stay apart — `recorded_cost_usd` is never a guess. Still missing: no tenant on a trace event, so per-tenant attribution is not offered.
 - **The Claude CLI backend is completion-only.** Tool calling and structured output need OpenRouter.
 - **A session turn is synchronous**, and a runner claim is a claim rather than a lease — nothing reclaims a session whose runner died holding it.
 

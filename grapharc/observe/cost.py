@@ -105,11 +105,17 @@ class NodeCost(BaseModel):
 
 
 class ModelCallCost(BaseModel):
-    """One model call inside a node, as a node reported it.
+    """One model call, as whatever made it reported it.
 
-    A breakdown *within* `NodeCost`, never an addition to it: the runtime
-    charges the enclosing node's meter for calls made inside it, so the same
-    tokens appear in both. Summing the two would double the bill.
+    With a `parent_node`, this is a breakdown *within* that `NodeCost`, never
+    an addition to it: the runtime charges the enclosing node's meter for calls
+    made inside it, so the same tokens appear in both, and summing the two
+    would double the bill.
+
+    With `parent_node` None, the call happened outside any node span — the
+    shape `grapharc agent` produces, driving an `AgentNode` against a bare
+    `RunContext`. Nothing else counts those tokens, so they *are* added to the
+    run total, and no `NodeCost` reports them.
     """
 
     node: str
@@ -312,8 +318,44 @@ def _price_run(run: ReplayedRun, rates: RateCard | None) -> RunCost:
         entry.unpriced_tokens += unpriced_here
         unpriced += unpriced_here
 
+    # Spend that happened outside any node span. `grapharc agent` drives an
+    # `AgentNode` with no enclosing graph, so every event it writes is an
+    # orphan; charging only `per_node` billed such a run at zero. Orphans are
+    # disjoint from every execution's `sub_events`, so this adds and never
+    # double-counts. They get no `per_node` entry and raise no execution count:
+    # no kernel node ran, and `RunCost` must keep agreeing with `RunMetrics`
+    # on `executions` and `per_node`.
+    orphan_tokens = 0
+    orphan_ms = 0.0
+    for sub in run.orphan_sub_events:
+        orphan_tokens += sub.tokens or 0
+        orphan_ms += sub.duration_ms or 0.0
+        if sub.phase != "model":
+            continue
+        sub_estimate = (
+            None if sub.cost_usd is not None else card.price(sub.tokens or 0, sub.model)
+        )
+        calls.append(
+            ModelCallCost(
+                node=sub.node,
+                parent_node=None,
+                step=sub.step,
+                tokens=sub.tokens or 0,
+                duration_ms=sub.duration_ms,
+                model=sub.model,
+                recorded_cost_usd=sub.cost_usd,
+                estimated_cost_usd=sub_estimate,
+            )
+        )
+        if sub.cost_usd is not None:
+            recorded_total.append(sub.cost_usd)
+        elif sub_estimate is not None:
+            estimated_total.append(sub_estimate)
+        else:
+            unpriced += sub.tokens or 0
+
     per_node = [nodes[name] for name in order]
-    total_ms = sum(n.duration_ms for n in per_node)
+    total_ms = sum(n.duration_ms for n in per_node) + orphan_ms
     for entry in per_node:
         entry.duration_ms = round(entry.duration_ms, 2)
     return RunCost(
@@ -322,7 +364,7 @@ def _price_run(run: ReplayedRun, rates: RateCard | None) -> RunCost:
         thread_id=run.thread_id,
         executions=sum(n.executions for n in per_node),
         errors=sum(n.errors for n in per_node),
-        tokens=sum(n.tokens for n in per_node),
+        tokens=sum(n.tokens for n in per_node) + orphan_tokens,
         duration_ms=round(total_ms, 2),
         recorded_cost_usd=_combine(*recorded_total),
         estimated_cost_usd=_combine(*estimated_total),

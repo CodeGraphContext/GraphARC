@@ -427,11 +427,14 @@ class AgentNode:
             # backend including the shipped OpenRouter one). Reading only
             # `tool_calls` would take a broken request for "the model is done".
             invalid_calls = list(getattr(message, "invalid_tool_calls", None) or [])
+            price, model_name = self._last_price(model)
             self._emit(
                 ctx,
                 "model",
                 duration_ms=duration_ms,
                 tokens=tokens,
+                cost_usd=price,
+                model=model_name,
                 state_delta={
                     "iteration": iterations,
                     "tool_calls": len(tool_calls),
@@ -526,6 +529,27 @@ class AgentNode:
                 f"so it cannot drive a tool loop ({len(schemas)} tools are visible "
                 "to it); use a tool-calling backend such as openrouter/*"
             ) from exc
+
+    @staticmethod
+    def _last_price(model: Any) -> tuple[float | None, str | None]:
+        """What the last call to `model` cost, if the backend reported it.
+
+        Read off the backend's `last_usage` envelope — the uniform shape both
+        shipped gateways publish — rather than off the message, because a
+        `cost` is a property of the call the provider billed and not of the
+        text it returned. A model that publishes no envelope yields `(None,
+        None)`, which records the call as unpriced instead of free.
+
+        The value is *this call's* price, not a running total: it is read
+        immediately after `invoke()` returns, and both gateways overwrite the
+        envelope per call.
+        """
+        usage = getattr(model, "last_usage", None)
+        if not isinstance(usage, dict):
+            return None, None
+        cost = usage.get("cost_usd")
+        name = usage.get("model")
+        return (None if cost is None else float(cost)), (None if name is None else str(name))
 
     def _charge_tokens(self, ctx: RunContext, message: AIMessage) -> int:
         """Charge this turn's reported usage, and report it for the trace.

@@ -791,3 +791,115 @@ def test_refusing_approval_stops_the_tool_running(engine):
         harness.call("deploy_prod", {})
     assert ran == []
     assert engine.audit.entries(kind="approval")[-1].granted is False
+
+
+# --------------------------------------------------------------------------
+# §7.5 / §12.2 — `edge_policy()`. The document already understood `edge` rules
+# and `AdmissionChecker` already consulted an `EdgePolicy`; nothing joined
+# them, so a TOML file could answer questions about a transition but could not
+# stop one. The tests mirror the `permission_policy` ones deliberately: the
+# compiled object has to agree with the engine, or the two answers drift.
+# --------------------------------------------------------------------------
+
+_EDGE_MATRIX = [
+    ("plan", "deploy_prod"),
+    ("plan", "read_file"),
+    ("__start__", "plan"),
+    ("deploy_prod", "__end__"),
+    ("shell_worker", "deploy_prod"),
+    ("unheard_of", "also_unheard_of"),
+]
+
+
+@pytest.mark.parametrize("tenant", ["default", "acme", "globex", "not-a-customer"])
+def test_the_compiled_edge_policy_agrees_with_the_engine(engine, tenant):
+    """Same tenant, same answer, for every edge in the matrix."""
+    policy = engine.edge_policy(tenant=tenant)
+    for source, target in _EDGE_MATRIX:
+        assert policy.decide(source, target) is engine.check_edge(
+            source, target, tenant=tenant
+        ).effect, f"{source}->{target} for {tenant!r}"
+
+
+def test_an_undeclared_tenant_compiles_to_a_policy_that_permits_nothing(engine):
+    policy = engine.edge_policy(tenant="not-a-customer")
+
+    assert policy.rules == ()
+    assert policy.default is Decision.DENY
+    assert policy.decide("anything", "anywhere") is Decision.DENY
+
+
+def test_the_compiled_edge_policy_carries_the_documents_default():
+    """An `allow`-defaulting document must not compile to a denying policy."""
+    engine = PolicyEngine.from_toml(
+        'version = "1"\ndefault = "allow"\n'
+        '[[rule]]\nid = "e"\nresource = "edge"\nmatch = "*->deploy"\neffect = "deny"\n'
+    )
+    policy = engine.edge_policy()
+
+    assert policy.decide("plan", "deploy") is Decision.DENY
+    assert policy.decide("plan", "patch") is Decision.ALLOW
+
+
+def test_each_side_of_an_edge_rule_is_matched_separately():
+    """A `*` on one side must not swallow the arrow and match the other."""
+    engine = PolicyEngine.from_toml(
+        'version = "1"\ndefault = "allow"\n'
+        '[[rule]]\nid = "e"\nresource = "edge"\nmatch = "triage->*"\neffect = "deny"\n'
+    )
+    policy = engine.edge_policy()
+
+    assert policy.decide("triage", "anything") is Decision.DENY
+    assert policy.decide("other", "triage") is Decision.ALLOW
+
+
+def test_tool_rules_do_not_leak_into_the_edge_policy():
+    """Widening what an agent may call must not widen what a planner may wire."""
+    engine = PolicyEngine.from_toml(
+        'version = "1"\ndefault = "deny"\n'
+        '[[rule]]\nid = "t"\nresource = "tool"\nmatch = "*"\neffect = "allow"\n'
+    )
+    policy = engine.edge_policy()
+
+    assert policy.rules == ()
+    assert policy.decide("a", "b") is Decision.DENY
+
+
+def test_the_document_stops_a_planner_wiring_a_denied_transition():
+    """End to end: the TOML file, not Python, is what refuses the edge."""
+    from grapharc.planner import (
+        AdmissionChecker,
+        NodeRegistry,
+        NodeSpec,
+        ProposedEdge,
+        ProposedNode,
+        Subgraph,
+    )
+
+    engine = PolicyEngine.from_toml(
+        'version = "1"\ndefault = "allow"\n'
+        '[[rule]]\nid = "no-deploy"\nresource = "edge"\n'
+        'match = "*->deploy"\neffect = "deny"\n'
+    )
+    gate = AdmissionChecker(
+        registry=NodeRegistry([NodeSpec(name="triage"), NodeSpec(name="deploy")]),
+        edge_policy=engine.edge_policy(),
+    )
+
+    refused = gate.check(
+        Subgraph(
+            # Renamed instance, denied kind — the rule is about what a node *is*.
+            nodes=(ProposedNode(name="triage"), ProposedNode(name="ship", kind="deploy")),
+            edges=(ProposedEdge(source="triage", target="ship"),),
+        )
+    )
+    admitted = gate.check(
+        Subgraph(
+            nodes=(ProposedNode(name="triage"),),
+            edges=(ProposedEdge(source="__start__", target="triage"),),
+        )
+    )
+
+    assert not refused.admitted
+    assert any(r.code == "edge_denied" for r in refused.rejections)
+    assert admitted.admitted

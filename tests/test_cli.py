@@ -885,3 +885,210 @@ def test_diff_against_the_shipped_engine(two_runs, capsys):
     differs, differing_payload, _ = call_json(["diff", str(two_runs), "a", "c"], capsys)
     assert (same, identical_payload["identical"]) == (0, True)
     assert (differs, differing_payload["identical"]) == (1, False)
+
+
+# --------------------------------------------------------------------------
+# §12.4 / §8.7 — `--memory PATH`. The durable claim store existed and no
+# shipped command used one, so every `grapharc run` forgot everything the
+# moment it exited. The property below is the only one that matters: a second
+# run, in a second process, recalls what the first one persisted.
+# --------------------------------------------------------------------------
+
+
+def test_run_without_memory_stays_in_process_and_writes_no_file(tmp_path, capsys):
+    """The default must not start writing files nobody asked for."""
+    code, _, _ = call(["run", "capstone", "--trace", str(tmp_path / "t.jsonl")], capsys)
+
+    assert code == 0
+    assert list(tmp_path.glob("*.sqlite")) == []
+
+
+def test_run_with_memory_persists_claims_to_the_named_store(tmp_path, capsys):
+    store = tmp_path / "claims.sqlite"
+
+    code, payload, _ = call_json(
+        ["run", "capstone", "--trace", str(tmp_path / "t.jsonl"), "--memory", str(store)],
+        capsys,
+    )
+
+    assert code == 0
+    assert payload["result"]["persisted_claim_ids"]
+    assert store.exists()
+
+
+def test_a_second_run_recalls_what_the_first_one_persisted(tmp_path, capsys):
+    """Durability, stated as the behaviour a reader would check."""
+    store = tmp_path / "claims.sqlite"
+    args = ["run", "capstone", "--trace", str(tmp_path / "t.jsonl"), "--memory", str(store)]
+
+    _, first, _ = call_json([*args], capsys)
+    _, second, _ = call_json([*args], capsys)
+
+    assert "No prior knowledge" in first["result"]["recalled"]
+    assert "No prior knowledge" not in second["result"]["recalled"]
+    assert first["result"]["persisted_claim_ids"] != second["result"]["persisted_claim_ids"]
+
+
+def test_the_durable_store_survives_a_real_process_boundary(tmp_path):
+    """Two interpreters, one file — an in-process dict cannot fake this."""
+    store = tmp_path / "claims.sqlite"
+    cmd = [
+        sys.executable, "-m", "grapharc.cli.main", "run", "capstone",
+        "--json", "--trace", str(tmp_path / "t.jsonl"), "--memory", str(store),
+    ]
+    first = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    second = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert "No prior knowledge" not in json.loads(second.stdout)["result"]["recalled"]
+
+
+# --------------------------------------------------------------------------
+# §12.1 — `grapharc plan`. The governed loop existed, was tested, and no
+# shipped command drove it, so the crux of the architecture was reachable only
+# by importing the library. These pin the surface *and* the two properties it
+# exists to make visible: a refusal is recorded, and a later round re-enters
+# the gate rather than inheriting round 1's answer.
+# --------------------------------------------------------------------------
+
+_DENY_DEPLOY = """version = "1"
+default = "allow"
+
+[[rule]]
+id = "no-deploy"
+resource = "edge"
+match = "*->deploy"
+effect = "deny"
+"""
+
+_PERMISSIVE = 'version = "1"\ndefault = "allow"\n'
+
+
+def test_plan_runs_the_governed_loop_and_reports_every_round(tmp_path, capsys):
+    code, out, _ = call(["plan", "look into the outage", "--trace", str(tmp_path / "t.jsonl")], capsys)
+
+    assert code == 0
+    assert "goal_met" in out
+    assert "round 1: rejected" in out
+    assert "edge_denied" in out
+    assert "round 2: admitted" in out
+
+
+def test_plan_json_carries_the_rounds_and_the_stop_reason(tmp_path, capsys):
+    code, payload, _ = call_json(
+        ["plan", "look into the outage", "--trace", str(tmp_path / "t.jsonl")], capsys
+    )
+
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["stop"] == "goal_met"
+    assert payload["rejections"] == ["edge_denied"]
+    assert [r["status"] for r in payload["rounds"]] == ["rejected", "admitted"]
+    assert payload["rounds"][0]["executed"] is False
+    assert payload["rounds"][1]["executed"] is True
+    assert "deploy" in payload["kinds"], "the denied kind is registered — it is the edge that fails"
+
+
+def test_a_policy_document_is_what_refuses_the_transition(tmp_path, capsys):
+    """§12.2 end to end: the TOML file constrains the run, not Python."""
+    doc = tmp_path / "policy.toml"
+    doc.write_text(_DENY_DEPLOY, encoding="utf-8")
+
+    code, payload, _ = call_json(
+        ["plan", "look into the outage", "--policy", str(doc),
+         "--trace", str(tmp_path / "t.jsonl")],
+        capsys,
+    )
+
+    assert code == 0
+    assert payload["rejections"] == ["edge_denied"]
+    assert str(doc) in payload["policy"]
+
+
+def test_a_permissive_document_admits_what_the_strict_one_refused(tmp_path, capsys):
+    """The control for the test above: without the rule, round 1 runs."""
+    doc = tmp_path / "permissive.toml"
+    doc.write_text(_PERMISSIVE, encoding="utf-8")
+
+    code, payload, _ = call_json(
+        ["plan", "look into the outage", "--policy", str(doc),
+         "--trace", str(tmp_path / "t.jsonl")],
+        capsys,
+    )
+
+    assert code == 0
+    assert payload["rejections"] == []
+    assert payload["rounds"][0]["status"] == "admitted"
+    assert payload["rounds"][0]["executed"] is True
+
+
+def test_plan_stops_short_with_a_reason_and_a_failure_code(tmp_path, capsys):
+    """One round is not enough to reach the goal; that is a stop, not a crash."""
+    code, payload, _ = call_json(
+        ["plan", "look into the outage", "--max-rounds", "1",
+         "--trace", str(tmp_path / "t.jsonl")],
+        capsys,
+    )
+
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["stop"] == "max_rounds"
+
+
+def test_plan_refuses_a_registry_that_does_not_resolve(tmp_path, capsys):
+    code, _, err = call(
+        ["plan", "x", "--registry", "no.such.module:thing", "--trace", str(tmp_path / "t.jsonl")],
+        capsys,
+    )
+
+    assert code == 2
+    assert "--registry" in err
+
+
+def test_plan_refuses_a_registry_target_with_no_colon(tmp_path, capsys):
+    code, _, err = call(
+        ["plan", "x", "--registry", "grapharc.examples", "--trace", str(tmp_path / "t.jsonl")],
+        capsys,
+    )
+
+    assert code == 2
+    assert "module:attr" in err
+
+
+def test_plan_refuses_a_policy_file_that_is_not_there(tmp_path, capsys):
+    code, _, err = call(
+        ["plan", "x", "--policy", str(tmp_path / "nope.toml"), "--trace", str(tmp_path / "t.jsonl")],
+        capsys,
+    )
+
+    assert code == 2
+    assert "--policy" in err
+
+
+def test_every_plan_round_is_auditable_from_the_trace_alone(tmp_path, capsys):
+    trace_path = tmp_path / "t.jsonl"
+    call(["plan", "look into the outage", "--trace", str(trace_path), "--run-id", "p1"], capsys)
+
+    events = TraceRecorder(trace_path).read_events("p1")
+    phases = [e.phase for e in events]
+
+    assert trace_path.exists()
+    assert "admission" in phases, "the gate's decision has to be on the record"
+    # The refusal is a first-class event, not an absence of one.
+    assert any(e.phase == "admission" and (e.error or "") for e in events) or any(
+        "rejected" in str(e.state_delta or {}) for e in events
+    )
+
+
+def test_the_shipped_command_is_what_finally_imports_the_policy_package(tmp_path, capsys):
+    """ROADMAP §7.5 was "nothing imports this package". This is the importer."""
+    import grapharc.cli.plan as plan_module
+
+    doc = tmp_path / "policy.toml"
+    doc.write_text(_DENY_DEPLOY, encoding="utf-8")
+
+    policy, description = plan_module.resolve_edge_policy(doc, tenant="default")
+
+    assert policy.rules, "the document's edge rules must reach the admission gate"
+    assert "tenant 'default'" in description

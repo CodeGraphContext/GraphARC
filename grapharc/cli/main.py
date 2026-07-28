@@ -52,7 +52,25 @@ EXAMPLES = (
 )
 
 
-def _run_example(name: str, trace_path: Path) -> dict:
+def _memory_store(path: Path | None):
+    """The claim store the shipped graphs get.
+
+    In-process by default, so `grapharc run` stays hermetic and repeatable and
+    writes nothing a caller did not ask for. Given `--memory PATH`, the durable
+    SQLite backend instead — the same store the memory tests prove survives a
+    process restart. This is the only difference between a demo that forgets
+    and one whose claims are still there on the next run.
+    """
+    if path is None:
+        from grapharc.memory import MemoryStore
+
+        return MemoryStore()
+    from grapharc.memory import SQLiteMemoryStore
+
+    return SQLiteMemoryStore(path)
+
+
+def _run_example(name: str, trace_path: Path, memory_path: Path | None = None) -> dict:
     trace = TraceRecorder(trace_path)
     workdir = Path(tempfile.mkdtemp(prefix=f"grapharc-{name}-"))
     if name == "stage0":
@@ -145,10 +163,9 @@ def _run_example(name: str, trace_path: Path) -> dict:
         )
     if name == "stage6":
         from grapharc.examples.stage6_memory import build_stage6
-        from grapharc.memory import MemoryStore
         from grapharc.testing import ScriptedChatModel
 
-        store = MemoryStore()
+        store = _memory_store(memory_path)
         model = ScriptedChatModel(
             responses=[
                 json.dumps(
@@ -174,7 +191,6 @@ def _run_example(name: str, trace_path: Path) -> dict:
         )
     if name == "capstone":
         from grapharc.examples.capstone import DEMO_CORPUS, build_capstone
-        from grapharc.memory import MemoryStore
         from grapharc.testing import ScriptedChatModel
 
         worker = ScriptedChatModel(
@@ -184,7 +200,7 @@ def _run_example(name: str, trace_path: Path) -> dict:
             responses=['{"supported": true, "reason": "quote supports it"}'],
             on_exhausted="repeat",
         )
-        return build_capstone(worker, reviewer, MemoryStore(), trace=trace).invoke(
+        return build_capstone(worker, reviewer, _memory_store(memory_path), trace=trace).invoke(
             {
                 "question": "How does GraphARC bound work with budgets?",
                 "corpus": DEMO_CORPUS,
@@ -220,8 +236,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
             model_spec=args.model,
             reviewer_spec=args.reviewer_model,
             as_json=args.json,
+            memory_path=args.memory,
         )
-    result = _run_example(args.example, trace_path)
+    result = _run_example(args.example, trace_path, memory_path=args.memory)
     payload = {
         "ok": True,
         "command": "run",
@@ -233,6 +250,23 @@ def _cmd_run(args: argparse.Namespace) -> int:
     lines += ["", f"trace: {trace_path}"]
     emit(payload, lines, as_json=args.json)
     return EXIT_OK
+
+
+def _cmd_plan(args: argparse.Namespace) -> int:
+    from grapharc.cli.plan import plan
+
+    return plan(
+        args.goal,
+        model_spec=args.model,
+        registry_target=args.registry,
+        policy_path=args.policy,
+        tenant=args.tenant,
+        trace_path=args.trace,
+        run_id=args.run_id,
+        max_rounds=args.max_rounds,
+        max_tokens=args.max_tokens,
+        as_json=args.json,
+    )
 
 
 def _cmd_models(args: argparse.Namespace) -> int:
@@ -428,7 +462,64 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SPEC",
         help="model for verifier nodes; should be a different provider from --model",
     )
+    run.add_argument(
+        "--memory",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "persist claims to a durable SQLite store at PATH instead of the "
+            "in-process one, so stage6 and capstone remember across runs"
+        ),
+    )
     run.set_defaults(handler=_cmd_run)
+
+    from grapharc.cli.plan import DEFAULT_REGISTRY
+
+    plan = sub.add_parser(
+        "plan", parents=[common], help="drive the governed planning loop against a goal"
+    )
+    plan.add_argument("goal", help="what the planner should plan for")
+    plan.add_argument(
+        "--model",
+        default=None,
+        metavar="SPEC",
+        help="plan with a real model instead of the scripted demo planner",
+    )
+    plan.add_argument(
+        "--registry",
+        default=DEFAULT_REGISTRY,
+        metavar="MODULE:ATTR",
+        help="the node kinds a planner may propose (default: %(default)s)",
+    )
+    plan.add_argument(
+        "--policy",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="TOML policy document whose edge rules become the admission gate's EdgePolicy",
+    )
+    plan.add_argument(
+        "--tenant",
+        default="default",
+        metavar="NAME",
+        help="tenant to compile --policy for (default: %(default)s)",
+    )
+    plan.add_argument("--trace", type=Path, default=None, help="trace JSONL output path")
+    plan.add_argument("--run-id", default=None, help="name this run")
+    plan.add_argument(
+        "--max-rounds",
+        type=int,
+        default=8,
+        help="planning rounds the loop may take (default: %(default)s)",
+    )
+    plan.add_argument(
+        "--max-tokens",
+        type=int,
+        default=100_000,
+        help="run token ceiling across every round (default: %(default)s)",
+    )
+    plan.set_defaults(handler=_cmd_plan)
 
     agent = sub.add_parser(
         "agent", parents=[common], help="run an agent node against a task with the core tools"

@@ -31,6 +31,13 @@ class ScriptedChatModel(BaseChatModel):
 
     responses: list[str] = Field(default_factory=list)
     on_exhausted: str = "raise"
+    # Set `cost_usd` to make this double report a per-call price the way a real
+    # backend does, through the same `llm_output` envelope OpenRouter uses. Left
+    # None, the model reports no cost at all — which is also a real case, and the
+    # one that makes `observe.cost` fall back to a rate-card estimate.
+    cost_usd: float | None = None
+    model_name: str = "scripted"
+    last_usage: dict[str, Any] | None = Field(default=None, exclude=True)
     _cursor: int = PrivateAttr(default=0)
     _calls: list[list[BaseMessage]] = PrivateAttr(default_factory=list)
 
@@ -75,7 +82,24 @@ class ScriptedChatModel(BaseChatModel):
                 "total_tokens": input_tokens + output_tokens,
             },
         )
-        return ChatResult(generations=[ChatGeneration(message=message)])
+        # The same usage envelope both real gateways publish, so a caller that
+        # reads a price off this double reads it the way it reads a real one.
+        self.last_usage = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "cost_usd": self.cost_usd,
+            "model": self.model_name,
+        }
+        if self.cost_usd is None:
+            return ChatResult(generations=[ChatGeneration(message=message)])
+        return ChatResult(
+            generations=[ChatGeneration(message=message)],
+            llm_output={
+                "token_usage": {"cost": self.cost_usd},
+                "model_name": self.model_name,
+            },
+        )
 
 
 def charge_usage(ctx: Any, message: AIMessage) -> None:

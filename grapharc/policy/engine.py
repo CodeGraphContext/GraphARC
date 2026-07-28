@@ -207,6 +207,47 @@ class PolicyEngine:
         ]
         return PermissionPolicy(rules=rules, default=self._document.default)
 
+    def edge_policy(self, *, tenant: str = DEFAULT_TENANT) -> Any:
+        """Compile this document's `edge` rules for `tenant` into an `EdgePolicy`.
+
+        The counterpart of `permission_policy()` for the *planner* side: it
+        turns the declarative document into the object `AdmissionChecker`
+        actually consults, so a TOML file can constrain what a planner is
+        allowed to wire instead of only answering questions about it. Without
+        this, "declarative governance" stopped at the tool plane and every
+        admission gate had its `EdgePolicy` hand-built in Python.
+
+        The result answers exactly as `check_edge` does for the same tenant, and
+        a test pins the two together across an edge × tenant matrix. It carries
+        the same two losses `permission_policy()` does: no approver role and no
+        audit record, because `EdgePolicy.decide` returns a bare `Decision`.
+        Admission treats `ASK` as not-yet-permitted; route the approval through
+        the session layer, then re-check.
+
+        Kinds, not instance names. An `edge` rule's `match` is
+        `"<source><arrow><target>"` and each side becomes an fnmatch pattern
+        over a **registry kind**, which is what the checker resolves before
+        deciding — so renaming an instance cannot walk around a denial.
+        """
+        # Imported here rather than at module scope: `policy` is the declarative
+        # layer and may depend on the enforcement objects, but paying for the
+        # planner package on every `import grapharc.policy` is not worth it.
+        from grapharc.planner.admission import EdgePolicy, EdgeRule
+
+        if not self._document.declares_tenant(tenant):
+            # `check_edge` denies an undeclared tenant outright; the compiled
+            # policy has to agree, or the two answers diverge.
+            return EdgePolicy(rules=(), default=Decision.DENY)
+        rules = []
+        for rule in self._by_resource[ResourceKind.EDGE]:
+            if not rule.matches_tenant(tenant):
+                continue
+            source, _, target = rule.match.partition(EDGE_ARROW)
+            rules.append(
+                EdgeRule(action=rule.effect, source=source.strip(), target=target.strip())
+            )
+        return EdgePolicy(rules=tuple(rules), default=self._document.default)
+
     def approval_router(
         self,
         handlers: Mapping[str, ApprovalHandler],

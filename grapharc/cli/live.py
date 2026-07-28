@@ -17,7 +17,6 @@ from pathlib import Path
 
 from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit
 from grapharc.gateway import different_providers, get_model
-from grapharc.memory import MemoryStore
 from grapharc.observe.metrics import summarize
 from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
@@ -39,6 +38,7 @@ def run_live(
     model_spec: str,
     reviewer_spec: str | None = None,
     as_json: bool = False,
+    memory_path: Path | None = None,
 ) -> int:
     """Run one example against real models. Returns the process exit code.
 
@@ -83,7 +83,7 @@ def run_live(
         "trace": str(trace_path),
     }
 
-    result = _build_and_run(example, model, reviewer, trace, run_id)
+    result = _build_and_run(example, model, reviewer, trace, run_id, memory_path)
     if result is None:
         emit(
             {"ok": False, **header, "error": f"'{example}' has no live wiring yet"},
@@ -113,7 +113,9 @@ def run_live(
     return EXIT_OK
 
 
-def _build_and_run(example, model, reviewer, trace, run_id):
+def _build_and_run(example, model, reviewer, trace, run_id, memory_path=None):
+    from grapharc.cli.main import _memory_store
+
     common = {"trace": trace, "budget": LIVE_BUDGET}
 
     if example == "stage1":
@@ -157,7 +159,7 @@ def _build_and_run(example, model, reviewer, trace, run_id):
     if example == "stage6":
         from grapharc.examples.stage6_memory import build_stage6
 
-        return build_stage6(model, MemoryStore(), **common).invoke(
+        return build_stage6(model, _memory_store(memory_path), **common).invoke(
             {
                 "entities": ["GraphARC"],
                 "source_name": "plan.md",
@@ -169,7 +171,7 @@ def _build_and_run(example, model, reviewer, trace, run_id):
     if example == "capstone":
         from grapharc.examples.capstone import DEMO_CORPUS, build_capstone
 
-        return build_capstone(model, reviewer, MemoryStore(), **common).invoke(
+        return build_capstone(model, reviewer, _memory_store(memory_path), **common).invoke(
             {
                 "question": "How does GraphARC bound work with budgets?",
                 "corpus": DEMO_CORPUS,

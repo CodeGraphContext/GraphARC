@@ -66,6 +66,18 @@ is why the Claude-CLI gateway backend exists. Run tests with
 `.venv/bin/python -m pytest`. **Never run `pytest -m live` casually — those call
 paid APIs and cost real money.**
 
+> **The subscription buys inference, not agency.** `ClaudeCodeCLIChatModel`
+> implements no `bind_tools`, so it **cannot drive `grapharc agent`** — the very
+> milestone this handoff leads with. That is deliberate, not unfinished: `claude
+> -p` is itself a full agent with its own tools and its own loop, and letting it
+> call tools would put the control plane inside a subprocess GraphARC cannot see
+> or veto, which is the architecture this project exists to replace. So the
+> adapter strips it to pure inference (`--disallowedTools`, `--setting-sources
+> ""`, empty cwd, no session). Consequence to plan around: any node that needs a
+> model to *think* runs free on `claude-cli`; any node that needs a model to
+> *drive tools* needs OpenRouter and real money. `grapharc agent` refuses with a
+> clear error rather than degrading.
+
 > ### The `-qq` trap — read this before you believe a test run
 >
 > `addopts` in `pyproject.toml` is `-q -m 'not live' --strict-markers
@@ -284,23 +296,41 @@ choose which one that is.
 
 `ARCHITECTURE.md` §7 is the current, re-derived gap analysis — **read it rather
 than trusting a copy here**, since a copy is exactly what went stale last time.
-In one line each, the five gaps it names:
+Four of the five gaps that version named are now closed. What is left:
 
-1. **Nothing shipped drives the loop.** `grapharc.planner` is imported by no
-   other module: no CLI command, no example, no session graph. The cycle is a
-   library API proven by tests, not something a reader can invoke and watch.
-   **This is the highest-value thing left.**
-2. **Policy does not reach admission.** `grapharc.policy` parses a TOML document
-   that already understands `node`/`edge`/`tool`/`spend` rules;
-   `AdmissionChecker` takes an `EdgePolicy` assembled in Python. No bridge.
-3. **The HTTP API and the session runtime are two different things.**
+1. **The HTTP API and the session runtime are two different things.**
    `grapharc/server` has its own `InProcessRuntime` whose sessions die with the
-   process. The durable, cross-process `grapharc/session` is not what it uses.
-4. **The shipped graphs do not use durable memory.** Every `grapharc run`
-   constructs the in-process `MemoryStore()`, though `SQLiteMemoryStore` is
-   verified durable across processes.
-5. **Admission authorises a kind, not its arguments** — a boundary, not a seam,
+   process and whose approvals are recorded without being delivered. The
+   durable, cross-process `grapharc/session` is not what it uses. **The last
+   seam, and the highest-value thing left** (ROADMAP §12.3).
+2. **Admission authorises a kind, not its arguments** — a boundary, not a seam,
    and the one most likely to be over-read. See *Known limits*.
+3. **The source is not on the public remote.** 15 commits unpushed; the
+   documented install fails at `uv sync`. `origin/main` is an ancestor of HEAD,
+   so a plain `git push` fast-forwards.
+
+Closed since, each with a shipped caller and tests:
+
+- **`grapharc plan <goal>`** drives propose → admit → materialise → execute →
+  replan, printing every round and its rejection codes. Scripted and free by
+  default; `--model` for a real backend, `--registry module:attr` for your own
+  kinds. `grapharc/examples/plan_incident.py` is the demo registry, built so the
+  default run *shows* a refusal: `deploy` is registered and every edge into it
+  denied, so round 1 is refused on `edge_denied` and round 2 replans without it.
+- **`PolicyEngine.edge_policy(tenant=…)`** compiles the TOML document's `edge`
+  rules into the `EdgePolicy` `AdmissionChecker` consults, and `grapharc plan
+  --policy` is the caller. The test that matters: with a `*->deploy` deny rule in
+  the file round 1 is refused; delete the rule and the same run admits it. The
+  document constrains the run rather than answering questions about one.
+- **`grapharc run --memory PATH`** hands `stage6` and `capstone` the durable
+  `SQLiteMemoryStore`. In-process stays the default. Proved across a real
+  process boundary, not just in one interpreter.
+- **`cost_usd` on trace events.** Both gateways publish the provider's price
+  through the same `llm_output` envelope; the runtime's usage callback writes it
+  onto the node's `end` event and an agent writes the per-call figure onto each
+  `model` event. `recorded_cost_usd` is a measurement again, and a backend that
+  reports no price still falls back to a `RateCard` estimate without the two
+  mixing.
 
 ---
 

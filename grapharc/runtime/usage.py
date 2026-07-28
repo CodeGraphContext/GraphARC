@@ -69,6 +69,31 @@ class MeterCallbackHandler(BaseCallbackHandler):
         super().__init__()
         self.meter = meter
         self.calls = 0
+        # The provider's own price for the calls seen in this scope, and the
+        # models that charged it. `None` until some call reports one, because a
+        # backend that reports no price must not be recorded as having cost
+        # zero — that is the difference between a measurement and a guess, and
+        # `observe.cost` keeps recorded and estimated figures apart.
+        self.cost_usd: float | None = None
+        self.models: list[str] = []
+
+    def _record_price(self, response: LLMResult) -> None:
+        """Accumulate the price a backend reported through `llm_output`.
+
+        Both shipped gateways publish the same envelope: `token_usage.cost` and
+        `model_name`. Reading the envelope rather than the model object keeps
+        this working for a call made deep inside library code the node merely
+        called, which is the whole reason this handler exists.
+        """
+        info = response.llm_output or {}
+        cost = (info.get("token_usage") or {}).get("cost")
+        if cost is None:
+            cost = info.get("cost_usd")
+        if cost is not None:
+            self.cost_usd = (self.cost_usd or 0.0) + float(cost)
+        name = info.get("model_name")
+        if name and str(name) not in self.models:
+            self.models.append(str(name))
 
     def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
         charged = 0
@@ -83,6 +108,7 @@ class MeterCallbackHandler(BaseCallbackHandler):
                     charged += total
         if charged:
             self.calls += 1
+        self._record_price(response)
         # Enforced here, not at the node boundary: this is the last moment
         # before the node is free to make another call. Overspend is bounded by
         # the call that crossed the line.

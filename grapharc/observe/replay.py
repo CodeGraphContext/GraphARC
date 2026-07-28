@@ -129,13 +129,27 @@ class ReplayedRun(BaseModel):
 
     @property
     def tokens(self) -> int:
-        """Total tokens, counted the way `metrics.summarize` counts them."""
-        return sum(e.tokens for e in self.executions if e.ok)
+        """Total tokens, counted the way `metrics.summarize` counts them.
+
+        Node totals plus orphans. A run with no node spans at all — `grapharc
+        agent` drives an `AgentNode` with no enclosing graph — holds every
+        token it spent in `orphan_sub_events`, and reporting zero for it was
+        the audit trail contradicting itself. The two sets are disjoint, so
+        nothing is counted twice.
+        """
+        return sum(e.tokens for e in self.executions if e.ok) + sum(
+            e.tokens or 0 for e in self.orphan_sub_events
+        )
 
     @property
     def node_ms(self) -> float:
-        """Summed node durations. Under fan-out this exceeds the wall clock."""
-        return round(sum(e.duration_ms or 0.0 for e in self.executions if e.ok), 2)
+        """Summed node durations, plus work outside any node. Under fan-out
+        this exceeds the wall clock."""
+        return round(
+            sum(e.duration_ms or 0.0 for e in self.executions if e.ok)
+            + sum(e.duration_ms or 0.0 for e in self.orphan_sub_events),
+            2,
+        )
 
     @property
     def wall_ms(self) -> float | None:

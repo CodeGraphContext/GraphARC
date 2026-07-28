@@ -633,6 +633,7 @@ class GraphARC:
         emit: Callable[..., None],
         duration_ms: float,
         tokens_before: int,
+        usage: Any = None,
     ) -> Any:
         """Everything both node wrappers do after the node body returns."""
         delta: dict[str, Any] | None = None
@@ -651,11 +652,18 @@ class GraphARC:
             emit("error", duration_ms=duration_ms, error=f"budget: {exc.reason}")
             raise
 
+        # The provider's own price for every model call made inside this node,
+        # collected by the usage callback. Left None when no backend reported
+        # one, so `observe.cost` can keep a measured figure apart from a
+        # rate-card estimate instead of recording a guess as a fact.
+        models = getattr(usage, "models", ())
         emit(
             "end",
             state_delta=delta,
             duration_ms=duration_ms,
             tokens=ctx.meter.tokens - tokens_before,
+            cost_usd=getattr(usage, "cost_usd", None),
+            model=models[0] if len(models) == 1 else None,
         )
         return result
 
@@ -673,7 +681,7 @@ class GraphARC:
                     # `charging` is a contextvar, and asyncio copies the context
                     # into every task it spawns, so a model call awaited anywhere
                     # under this node still reports to this run's meter.
-                    with charging(ctx.meter):
+                    with charging(ctx.meter) as usage:
                         async with _async_deadline(ctx.meter, what=f"node {name!r}"):
                             result = await (fn(state, ctx) if wants_ctx else fn(state))
                 except BaseException as exc:
@@ -690,6 +698,7 @@ class GraphARC:
                     emit=emit,
                     duration_ms=(time.perf_counter() - t0) * 1000,
                     tokens_before=tokens_before,
+                    usage=usage,
                 )
 
             return awrapped
@@ -702,7 +711,10 @@ class GraphARC:
                 # `charging` meters model calls the node makes without asking it
                 # to; `deadline_guard` makes max_seconds bite inside the node
                 # rather than after it.
-                with charging(ctx.meter), deadline_guard(ctx.meter, what=f"node {name!r}"):
+                with (
+                    charging(ctx.meter) as usage,
+                    deadline_guard(ctx.meter, what=f"node {name!r}"),
+                ):
                     result = fn(state, ctx) if wants_ctx else fn(state)
             except Exception as exc:
                 emit("error", duration_ms=(time.perf_counter() - t0) * 1000, error=repr(exc))
@@ -715,6 +727,7 @@ class GraphARC:
                 emit=emit,
                 duration_ms=(time.perf_counter() - t0) * 1000,
                 tokens_before=tokens_before,
+                usage=usage,
             )
 
         return wrapped

@@ -303,4 +303,12 @@ class ClaudeCodeCLIChatModel(BaseChatModel):
         }
         self.spend.charge(cost_usd, model=self.model)
         message = AIMessage(content=text, usage_metadata=usage_metadata)
-        return ChatResult(generations=[ChatGeneration(message=message)])
+        # `llm_output` carries the price in the same shape OpenRouter uses, so
+        # the runtime's usage callback can record what a node's calls cost
+        # without knowing which backend served them. Without it, a node calling
+        # this backend would trace `cost_usd: None` while the CLI reported a
+        # figure it had already charged to the spend meter.
+        return ChatResult(
+            generations=[ChatGeneration(message=message)],
+            llm_output={"token_usage": {"cost": cost_usd}, "model_name": self.model},
+        )

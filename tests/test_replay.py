@@ -41,7 +41,7 @@ from grapharc.observe.cost import (
     by_node,
     tokens_by_model,
 )
-from grapharc.observe.metrics import summarize
+from grapharc.observe.metrics import summarize, to_mermaid
 from grapharc.observe.otel import (
     ListSpanExporter,
     NullSpanExporter,
@@ -62,8 +62,8 @@ from grapharc.observe.replay import (
     replay_thread,
 )
 from grapharc.observe.trace import TraceEvent, TraceRecorder
-from grapharc.runtime.budget import Budget
-from grapharc.runtime.graph import END, START, GraphARC
+from grapharc.runtime.budget import Budget, BudgetMeter
+from grapharc.runtime.graph import END, START, GraphARC, RunContext
 from grapharc.runtime.state import GraphARCState
 from grapharc.testing import ScriptedChatModel
 
@@ -1120,3 +1120,198 @@ def test_spans_are_empty_when_no_timestamp_can_be_parsed(trace):
     assert to_spans(trace, "r1") == []
     assert replay(trace, "r1").wall_ms is None
     assert Span(name="n", span_id="s", start_unix_nano=1, end_unix_nano=3).duration_ns == 2
+
+
+# --------------------------------------------------------------------------
+# A run with no kernel span: `grapharc agent` drives an AgentNode directly
+# against a RunContext, so nothing ever emits "start"/"end". Every event is an
+# orphan sub-event, and a reader that only understands node spans reports the
+# run as empty — which is what the CLI's own help forbids: "metrics and the
+# audit trail cannot disagree: there is only one record."
+# --------------------------------------------------------------------------
+
+
+def _standalone_agent_run(trace, run_id="cli1"):
+    """Reproduce `grapharc agent`: an AgentNode driven with no enclosing graph."""
+    harness, model = _tool_agent()
+    node = AgentNode(model, harness, name="agent", trace=trace)
+    ctx = RunContext(run_id=run_id, graph="cli-agent", meter=BudgetMeter(Budget()))
+    result = node.run("add 2 and 3", ctx)
+    return result
+
+
+def test_a_run_with_no_kernel_span_still_records_its_events(trace):
+    """The premise of the other tests here: the trace itself is not empty."""
+    _standalone_agent_run(trace)
+    events = trace.read_events("cli1")
+
+    assert [e.phase for e in events] == ["model", "tool", "model", "stop"]
+    assert sum(e.tokens or 0 for e in events) > 0
+    assert not any(e.phase in ("start", "end") for e in events)
+
+
+def test_metrics_do_not_report_a_spending_run_as_zero(trace):
+    """`tokens: 0` for a run that spent tokens is the audit trail disagreeing."""
+    _standalone_agent_run(trace)
+    events = trace.read_events("cli1")
+    spent = sum(e.tokens or 0 for e in events)
+
+    metrics = summarize(trace, "cli1")
+
+    assert metrics is not None
+    assert metrics.tokens == spent
+    assert metrics.duration_ms > 0
+
+
+def test_metrics_report_why_a_spanless_run_stopped(trace):
+    """`termination_reason` lives on the agent's "stop" event, not on an "end"."""
+    result = _standalone_agent_run(trace)
+
+    metrics = summarize(trace, "cli1")
+
+    assert metrics.termination_reason == result.termination_reason.value
+
+
+def test_metrics_name_the_work_a_spanless_run_did(trace):
+    """`nodes_executed` is 0 with no kernel node — the phase counts carry it."""
+    _standalone_agent_run(trace)
+
+    metrics = summarize(trace, "cli1")
+
+    assert metrics.nodes_executed == 0, "no kernel node ran; that stays true"
+    assert metrics.events == 4
+    assert metrics.per_phase == {"model": 2, "tool": 1, "stop": 1}
+
+
+def test_viz_renders_the_path_of_a_spanless_run(trace):
+    """A run that did work must not render as `no events`."""
+    _standalone_agent_run(trace)
+
+    diagram = to_mermaid(trace, "cli1")
+
+    assert "no events" not in diagram
+    assert "agent:add" in diagram
+    assert diagram.count("-->") >= 3
+
+
+def test_cost_and_metrics_agree_on_a_run_with_no_kernel_span(trace):
+    """The invariant this module exists to protect, on the spanless path."""
+    _standalone_agent_run(trace)
+
+    cost = attribute(trace, "cli1")
+    metrics = summarize(trace, "cli1")
+
+    assert cost.tokens == metrics.tokens
+    assert cost.tokens > 0
+
+
+def test_orphan_model_calls_are_still_attributed_and_priced(trace):
+    """A model call outside any node is still a model call that cost money."""
+    _standalone_agent_run(trace)
+
+    cost = attribute(trace, "cli1", rates=RateCard(default=1.0))
+
+    assert [c.tokens for c in cost.model_calls] != []
+    assert cost.estimated_cost_usd is not None
+    assert cost.estimated_cost_usd > 0
+
+
+# --------------------------------------------------------------------------
+# §10.4 / §12.5 — recorded cost. Both gateways capture the provider's own
+# per-call price; until this landed nothing carried it onto a trace event, so
+# `recorded_cost_usd` was always None and every money figure `observe.cost`
+# reported was a rate-card estimate priced off token counts.
+# --------------------------------------------------------------------------
+
+
+def _priced_graph(trace, cost_usd=0.0025):
+    """A one-node graph whose node calls a model that reports a real price."""
+    model = ScriptedChatModel(responses=["priced"], cost_usd=cost_usd, model_name="acme/fast")
+    g = GraphARC(S, name="demo", trace=trace)
+    g.add_node("think", lambda s: {"answer": model.invoke("go").content}, writes={"answer"})
+    g.add_edge(START, "think")
+    g.add_edge("think", END)
+    return g.compile()
+
+
+def test_a_nodes_end_event_carries_the_price_its_model_calls_reported(trace):
+    _priced_graph(trace).invoke({"question": "why"}, run_id="r1")
+
+    ends = [e for e in trace.read_events("r1") if e.phase == "end"]
+
+    assert [e.cost_usd for e in ends] == [pytest.approx(0.0025)]
+    assert ends[0].model == "acme/fast"
+
+
+def test_a_reported_price_is_reported_as_recorded_never_as_an_estimate(trace):
+    """The distinction `observe.cost` exists to keep: measured vs. guessed."""
+    _priced_graph(trace).invoke({"question": "why"}, run_id="r1")
+
+    cost = attribute(trace, "r1", rates=RateCard(default=999.0))
+
+    assert cost.recorded_cost_usd == pytest.approx(0.0025)
+    # A rate card that would price this absurdly is not consulted at all: a
+    # recorded price wins over an estimate rather than being averaged with it.
+    assert cost.estimated_cost_usd is None
+    assert cost.unpriced_tokens == 0
+    assert cost.complete
+
+
+def test_a_backend_that_reports_no_price_still_falls_back_to_an_estimate(trace):
+    """The pre-existing path must keep working; None is not zero."""
+    _linear_graph(trace).invoke({"question": "why"}, run_id="r1")
+
+    cost = attribute(trace, "r1", rates=RateCard(default=1.0))
+
+    assert cost.recorded_cost_usd is None
+    assert cost.estimated_cost_usd is not None
+
+
+def test_prices_from_several_nodes_add_up_across_the_run(trace):
+    model = ScriptedChatModel(
+        responses=["a", "b"], on_exhausted="repeat", cost_usd=0.001, model_name="acme/fast"
+    )
+    g = GraphARC(S, name="demo", trace=trace)
+    g.add_node("one", lambda s: {"answer": model.invoke("x").content}, writes={"answer"})
+    g.add_node("two", lambda s: {"hops": 1, "answer": model.invoke("y").content},
+               writes={"hops", "answer"})
+    g.add_edge(START, "one")
+    g.add_edge("one", "two")
+    g.add_edge("two", END)
+    g.compile().invoke({"question": "why"}, run_id="r1")
+
+    cost = attribute(trace, "r1")
+
+    assert cost.recorded_cost_usd == pytest.approx(0.002)
+    assert cost.node("one").recorded_cost_usd == pytest.approx(0.001)
+    assert cost.node("two").recorded_cost_usd == pytest.approx(0.001)
+
+
+def test_an_agents_model_events_carry_the_price_of_each_call(trace):
+    """The per-call breakdown, not just the node total."""
+    harness, model = _tool_agent()
+    model.cost_usd = 0.0004
+    model.model_name = "acme/fast"
+    node = AgentNode(model, harness, name="agent", trace=trace)
+    ctx = RunContext(run_id="cli1", graph="cli-agent", meter=BudgetMeter(Budget()))
+    node.run("add 2 and 3", ctx)
+
+    models = [e for e in trace.read_events("cli1") if e.phase == "model"]
+
+    assert models, "the agent must record its model calls"
+    assert all(e.cost_usd == pytest.approx(0.0004) for e in models)
+    assert all(e.model == "acme/fast" for e in models)
+
+
+def test_a_spanless_agent_run_reports_recorded_cost_not_an_estimate(trace):
+    """§12.5 and the spanless-run fix have to hold at the same time."""
+    harness, model = _tool_agent()
+    model.cost_usd = 0.0004
+    node = AgentNode(model, harness, name="agent", trace=trace)
+    ctx = RunContext(run_id="cli1", graph="cli-agent", meter=BudgetMeter(Budget()))
+    node.run("add 2 and 3", ctx)
+
+    cost = attribute(trace, "cli1", rates=RateCard(default=999.0))
+
+    assert cost.recorded_cost_usd is not None
+    assert cost.recorded_cost_usd > 0

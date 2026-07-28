@@ -366,20 +366,24 @@ already-approved path.
 
 ### The gaps that matter
 
-The first four are seams: a subsystem that exists and works, sitting next to a
-subsystem that does not know it exists. They are ROADMAP §12.
+One seam is left: a subsystem that exists and works, sitting next to a
+subsystem that does not know it exists. It is ROADMAP §12.3. Two gaps that were
+here are closed, and are recorded below so the shape of the fix is not lost.
 
-1. **Nothing shipped drives the loop.** `grapharc.planner` is imported by no
-   other module in the package: no CLI command, no example graph, no session
-   graph. The cycle above is a library API proven by tests and by the run
-   described above — not something a reader can invoke and watch. Until there
-   is a `grapharc plan`-shaped entry point, ①→③ is a diagram, not a path.
-2. **Policy does not reach admission.** `AdmissionChecker` takes an `EdgePolicy`
-   assembled in Python. `grapharc.policy` parses a TOML document that already
-   understands `node`, `edge`, `tool` and `spend` rules — and there is no bridge
-   between the two, nor any caller of either from the agent or the CLI. Box ④
-   is enforced by code an operator writes in Python, not by the declarative
-   document that was built for it.
+1. *Closed — the loop has a surface.* `grapharc plan <goal>` drives propose →
+   admit → materialise → execute → replan and prints every round with its
+   admission status and rejection codes. ①→③ is a path, not a diagram.
+   `grapharc/examples/plan_incident.py` supplies the kinds; `--registry
+   module:attr` replaces them, along with the `STATE_SCHEMA` and `WRITES` a
+   registry needs to be usable.
+2. *Closed — policy reaches admission.* `PolicyEngine.edge_policy(tenant=…)`
+   compiles the document's `edge` rules into the `EdgePolicy` the checker
+   consults, mirroring `permission_policy()` on the tool side, and `grapharc
+   plan --policy` calls it. Box ④ can now be enforced by the declarative
+   document. What the compiled object still cannot carry is the approver role
+   and the audit record, because `EdgePolicy.decide` returns a bare `Decision`;
+   and nothing yet routes the *tool* plane through the document, so `grapharc
+   agent` is still governed by Python objects.
 3. **The HTTP API and the session runtime are two different things.**
    `grapharc/session` gives durable, cross-process sessions: verified by running
    one interpreter to an approval hold and resuming it by id in a second, with
@@ -387,10 +391,11 @@ subsystem that does not know it exists. They are ROADMAP §12.
    does not use it — it has its own `InProcessRuntime` whose sessions die with
    the process, never evict, and record `message`/`approval` events without
    delivering them into a running graph. Stage ② holds; stage ① does not reach it.
-4. **The shipped graphs do not use durable memory.** `SQLiteMemoryStore` is
-   verified durable across separate processes, and every `grapharc run` command
-   still constructs the in-process `MemoryStore()`. Box ⑥'s "durable memory with
-   provenance" is true of the library and not of anything you can run.
+4. *Closed — the shipped graphs can use durable memory.* `grapharc run
+   --memory PATH` hands `stage6` and `capstone` a `SQLiteMemoryStore`, verified
+   across a real process boundary; in-process remains the default so a plain run
+   writes nothing nobody asked for. Box ⑥'s "durable memory with provenance" is
+   now true of something you can run.
 
 The fifth is not a seam but a boundary, and it is the one most likely to be
 over-read:
