@@ -6,13 +6,13 @@ described in [VISION.md](VISION.md). Status is measured, not aspirational.
 **Legend:** `[x]` done · `[~]` partial · `[ ]` not started · **B** blocks other
 work · **!** known-false claim shipping today
 
-Overall: **~69% of the list below** (71 of 103 enumerated items). Re-derived on 2026-07-28 by executing every
+Overall: **~70% of the list below** (72 of 103 enumerated items). Re-derived on 2026-07-28 by executing every
 claim against the tree rather than reading the commit log — the percentage is
 the fraction of *enumerated items* verified done, section by section, which is
 this project's own definition of scope and not the industry's.
 
-At that point: `pytest` → **1,328 passed, 10 deselected** (the live ones);
-`ruff check .` clean; the wheel builds and imports all 93 modules in a clean
+At that point: `pytest` → **1,381 passed, 10 deselected** (the live ones);
+`ruff check .` clean; the wheel builds and imports all 94 submodules in a clean
 virtualenv. Treat the test count as a snapshot rather than a fact about the
 project — `pytest` re-derives it in one command, which is the only reason it is
 quoted at all.
@@ -35,29 +35,25 @@ to a reader, which is what §12 exists to count.
 
 In order.
 
-1. **Push the code to the public remote** (§11.7) — **!**. Now the only
-   ship-blocker, and the first thing a reader hits. The install instruction in
-   the README does not work: `github.com/CodeGraphContext/GraphARC` `main` is at
-   `feef03d`, holding `LICENSE`, `README.md` and `.gitignore` and no source.
-   `git clone && uv sync --group dev` fails with *"No pyproject.toml found"*.
-   Everything else on this page is verified against a local tree the world
-   cannot fetch. 15 commits unpushed; `origin/main` is an ancestor of `HEAD`, so
-   a plain `git push` fast-forwards and needs no force.
-2. **Put the HTTP API on the real session layer** (§12.3) — the last seam.
+1. **Put the HTTP API on the real session layer** (§12.3) — the last seam.
    `session/` is durable and resumes across processes; `server/` uses its own
    `InProcessRuntime` that does neither, and records approvals without
    delivering them. Two session layers, one seam.
-3. **Let admission constrain arguments** (§5.6) — **!**. The gap most likely to
+2. **Let admission constrain arguments** (§5.6) — **!**. The gap most likely to
    be over-read: a rule reaches a node's *kind* and never its `args`, so
    `args={"path": "/etc/passwd"}` is admitted on the strength of the kind.
    `Materializer` drops args by default, which makes the default safe and the
    opt-in sharp.
-4. **Route the tool plane through the document** (§7.5 remainder) — the edge
+3. **Route the tool plane through the document** (§7.5 remainder) — the edge
    side now compiles to the admission gate, but nothing calls
    `permission_policy()`, so `grapharc agent` is still governed by Python
    objects rather than by the TOML file.
-5. **Publish to PyPI** (§11.1) — the workflow is tag-driven with Trusted
-   Publishing and fails closed without the browser-side setup; do §11.7 first.
+4. **Publish to PyPI** (§11.1) — the workflow is tag-driven with Trusted
+   Publishing and fails closed until a human creates a GitHub environment named
+   `pypi` and a PyPI trusted publisher naming this repo and `release.yml`. Prove
+   it first with `workflow_dispatch` + `dry_run: true`.
+5. **Decide the version.** `0.1.0a0` today; `0.1.0` is the honest next step —
+   a `1.0` implies API stability that several days-old subsystems do not have.
 
 ---
 
@@ -392,7 +388,7 @@ Everything here works and nothing calls it.
       404 on an unknown session or graph and 422 on input that fails the
       graph's state schema. Behind the `server` extra; importing the rest of
       GraphARC does not import FastAPI.
-- [x] **9.2 — Real CLI: nine commands**, `run` / `agent` / `serve` / `models` /
+- [x] **9.2 — Real CLI: ten commands**, `run` / `plan` / `agent` / `serve` / `models` /
       `replay` / `diff` / `trace` / `metrics` / `viz`, every one of them with
       `--json`. In JSON mode the failure is the document rather than a line on
       stderr, and exit codes are part of the interface: `0` did the job, `1` ran
@@ -438,8 +434,8 @@ Everything here works and nothing calls it.
 
 ## 11. Product & distribution — `[~] ~35%`
 
-- [x] Builds a clean wheel; **1,328 tests**; CI; ruff clean. Verified in a fresh
-      virtualenv: a bare wheel install imports 86 of 93 modules and runs
+- [x] Builds a clean wheel; **1,381 tests**; CI; ruff clean. Verified in a fresh
+      virtualenv: a bare wheel install imports most of the 94 submodules and runs
       `grapharc run stage0` — `gateway.openrouter` and the whole `server`
       package need their extras — and installing `[all]` imports all 93.
 - [x] **11.6 — Classifiers, `[project.urls]`, contribution guide.** Every URL
@@ -449,11 +445,13 @@ Everything here works and nothing calls it.
       deselected by default. CI wiring still pending (it needs a key in secrets).
 - [~] **11.2 — Docs site.** A cookbook is landing under `docs/cookbook/`; no
       published site.
-- [ ] **! 11.7 — Push the source to the public remote.** `origin/main` is at
-      `feef03d` and holds `LICENSE`, `README.md` and `.gitignore` — no
-      `pyproject.toml` and no `grapharc/`. The documented install path therefore
-      fails at `uv sync`. This is the single most consequential false claim in
-      the tree, because it is the first one a reader tests.
+- [x] **11.7 — The source is on the public remote.** `git clone
+      https://github.com/CodeGraphContext/GraphARC && uv sync --group dev` works;
+      verified by cloning into a scratch directory and finding `pyproject.toml`
+      and the `grapharc/` package. This was the single most consequential false
+      claim in the tree for most of the project's life, because it was the first
+      one a reader hit.
+
 - [ ] **11.1 — Publish to PyPI.**
 - [ ] **11.4 — Benchmarks, including published losses.**
 - [ ] **11.5 — External security review** (the audit-hook sandbox is defense in

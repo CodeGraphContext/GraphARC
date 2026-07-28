@@ -966,7 +966,9 @@ _PERMISSIVE = 'version = "1"\ndefault = "allow"\n'
 
 
 def test_plan_runs_the_governed_loop_and_reports_every_round(tmp_path, capsys):
-    code, out, _ = call(["plan", "look into the outage", "--trace", str(tmp_path / "t.jsonl")], capsys)
+    code, out, _ = call(
+        ["plan", "look into the outage", "--trace", str(tmp_path / "t.jsonl")], capsys
+    )
 
     assert code == 0
     assert "goal_met" in out
@@ -1058,7 +1060,8 @@ def test_plan_refuses_a_registry_target_with_no_colon(tmp_path, capsys):
 
 def test_plan_refuses_a_policy_file_that_is_not_there(tmp_path, capsys):
     code, _, err = call(
-        ["plan", "x", "--policy", str(tmp_path / "nope.toml"), "--trace", str(tmp_path / "t.jsonl")],
+        ["plan", "x", "--policy", str(tmp_path / "nope.toml"),
+         "--trace", str(tmp_path / "t.jsonl")],
         capsys,
     )
 

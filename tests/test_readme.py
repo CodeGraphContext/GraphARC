@@ -86,7 +86,9 @@ def test_the_python_block_reaches_no_live_backend():
         assert forbidden not in code, forbidden
 
 
-@pytest.mark.parametrize("path", ["docs/diagrams/01-lifecycle.png", "docs/diagrams/03-agent-node.png"])
+@pytest.mark.parametrize(
+    "path", ["docs/diagrams/01-lifecycle.png", "docs/diagrams/03-agent-node.png"]
+)
 def test_every_image_the_readme_embeds_exists(path):
     """A README that renders a broken image is a broken README."""
     text = README.read_text(encoding="utf-8")

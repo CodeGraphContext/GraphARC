@@ -47,18 +47,18 @@ Full design: `ARCHITECTURE.md`. Thesis and honest scope: `VISION.md`.
 | Repo | `/home/shashank/Desktop/GraphARC`, branch `main` | |
 | Remote | `github.com/CodeGraphContext/GraphARC` | `git remote -v` |
 | HEAD | see `git log -1`; it moved four times during the last session | `git log -1` |
-| **Unpushed** | **14 commits.** `origin/main` is still at `feef03d` "Initial commit". | `git log origin/main..HEAD` |
-| Tests | **1,339 passed, 10 deselected** (live) | `.venv/bin/python -m pytest` |
+| **Unpushed** | **none** — `origin/main` and `HEAD` agree; the source is public at last. | `git log origin/main..HEAD` |
+| Tests | **1,381 passed, 10 deselected** (live) | `.venv/bin/python -m pytest` |
 | Lint | clean | `.venv/bin/python -m ruff check .` |
-| Build | wheel + sdist; 93 modules import from the wheel in a clean venv | `uv build` |
+| Build | wheel + sdist; all 94 submodules import from the wheel with `[all]` | `uv build` |
 | Version | `0.1.0a0` — **not yet bumped for release** | |
 | Python | 3.12+ declared; dev venv is 3.14 | |
 
-**Pushing is safe and needs no force.** `origin/main` (`feef03d`) *is* an
-ancestor of HEAD, so a plain `git push` fast-forwards. This is worth stating
-because the history *was* rewritten (see below) — but only across commits the
-remote had never seen, so nothing on the remote is being overwritten. Verify
-before pushing: `git merge-base --is-ancestor origin/main HEAD && echo safe`.
+**The source is public now.** For most of this project's life `origin/main` held
+only `LICENSE`, `README.md` and `.gitignore`, so the documented `git clone && uv
+sync` failed and every other verified claim sat in a tree nobody could fetch.
+That was the ship-blocker; it is closed, and a fresh clone was checked to contain
+`pyproject.toml` and the package.
 
 **Environment:** `.env` holds an OpenRouter key (gitignored, never committed).
 The user has a Claude Max 20x subscription and **no Anthropic API key** — which
@@ -132,24 +132,24 @@ Source lines excluding tests (`find grapharc/<pkg> -name '*.py' | xargs cat | wc
 ```
 grapharc/
   planner/   2696  proposals, admission, materialisation, the governed loop
-  harness/   2165  tool registry, permissions, sandbox, container executor, AgentNode
+  harness/   2189  tool registry, permissions, sandbox, container executor, AgentNode
   memory/    2165  claims with provenance, SQLite, traversal, contradiction detection
   session/   2084  long-lived, cross-process resume, interrupt, human approval
-  runtime/   1921  graph kernel: typed state, declared writes, budgets, async, traces
-  observe/   1708  JSONL traces, replay, metrics, OTel, cost attribution
-  cli/       1549  nine commands (run agent serve models replay diff trace metrics viz), --json on each
+  runtime/   1960  graph kernel: typed state, declared writes, budgets, async, traces
+  observe/   1801  JSONL traces, replay, metrics, OTel, cost attribution
+  cli/       1849  ten commands (run plan agent serve models replay diff trace metrics viz), --json on each
   server/    1320  FastAPI + SSE
-  examples/  1244  stages 0-6, capstone, agent_fixit
-  gateway/   1215  model plane: Claude CLI + OpenRouter, retries, cost ceilings
+  examples/  1445  stages 0-6, capstone, agent_fixit, plan_incident
+  gateway/   1223  model plane: Claude CLI + OpenRouter, retries, cost ceilings
   tools/     1054  seven core tools with workspace confinement
-  policy/     867  TOML rules, approval routing, decision audit
+  policy/     908  TOML rules, approval routing, decision audit
 ```
 
 `planner/` is now the **largest** subsystem. One handoff ago it was 1,409 lines
 and ranked sixth *smallest* of twelve — not the thinnest, but the one whose
 central claim was unbuilt. That inversion is the story of the last session.
 
-38 test files. `tests/test_planner_loop.py` (62 tests) is the one to read first
+38 test files. `tests/test_planner_loop.py` (63 tests) is the one to read first
 if you are touching the gate. The seven core tools are `read_file`,
 `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `run_command`
 (`grapharc.tools.CORE_TOOL_NAMES`).
@@ -305,9 +305,9 @@ Four of the five gaps that version named are now closed. What is left:
    seam, and the highest-value thing left** (ROADMAP §12.3).
 2. **Admission authorises a kind, not its arguments** — a boundary, not a seam,
    and the one most likely to be over-read. See *Known limits*.
-3. **The source is not on the public remote.** 15 commits unpushed; the
-   documented install fails at `uv sync`. `origin/main` is an ancestor of HEAD,
-   so a plain `git push` fast-forwards.
+3. **Not on PyPI.** The wheel builds, installs and runs;
+   `.github/workflows/release.yml` fails closed until a human does the
+   browser-side Trusted Publishing setup. See *Suggested next steps*.
 
 Closed since, each with a shipped caller and tests:
 
@@ -417,14 +417,13 @@ here.
 
 ## Suggested next steps
 
-1. **Give the loop a surface.** A `grapharc plan` command or an example graph
-   that a reader can run and watch. This converts the project's single most
-   defensible claim from a test fixture into a demo. Nothing else comes close in
-   value. (ROADMAP §12.1)
-2. **Decide the version and push.** 14 commits are unpushed, and they are the
-   whole project — there is no second copy anywhere. I would argue for
-   `0.1.0`, not `1.0.0` — a 1.0 implies API stability and several subsystems are
-   days old.
+1. **Put the HTTP API on the real session layer** (ROADMAP §12.3). The last
+   seam: `grapharc/server` has its own `InProcessRuntime` whose sessions die
+   with the process and whose approvals are recorded without being delivered,
+   while the durable `grapharc/session` sits next to it unused.
+   `create_app(runtime=…)` already takes any `SessionRuntime`.
+2. **Decide the version.** `0.1.0a0` today. I would argue for `0.1.0`, not
+   `1.0.0` — a 1.0 implies API stability and several subsystems are days old.
 3. **Publish to PyPI.** `.github/workflows/release.yml` is tag-driven
    (`v*`) and uses Trusted Publishing, so **no token exists anywhere**. Before a
    tag can publish, a human must do two things in a browser:

@@ -174,9 +174,16 @@ Three predictions that did **not** come true, which is the part worth keeping:
 - **Nothing predicted the seams.** The failure mode this document warned about
   was writing the essay before the code. The one it actually hit is subtler:
   building four subsystems that each work and wiring none of them to each
-  other. `planner/` and `policy/` are imported by no other module in the
-  package. That is not a design flaw and it is not vapour — it is a fifth of
-  the remaining work, and it was invisible from here.
+  other. For a while `planner/` and `policy/` were imported by no other module
+  in the package — the governed loop had no command driving it and the policy
+  document had no path to the gate it was written for. That was never a design
+  flaw and never vapour; it was a fifth of the remaining work, and it was
+  invisible from here. Four of the five seams are now closed (`grapharc plan`,
+  `PolicyEngine.edge_policy()`, `grapharc run --memory`, `cost_usd` on trace
+  events) and one is left: the HTTP API still runs its own in-process session
+  layer beside the durable one. The lesson to carry is not the fix but the
+  blind spot — "works" and "reachable" are different properties, and only the
+  second one a reader can see.
 
 ---
 

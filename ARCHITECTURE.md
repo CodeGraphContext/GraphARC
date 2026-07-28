@@ -335,9 +335,9 @@ one well, the second one vaguely, and the third one not at all.
 ## 7. Where we are against this
 
 Re-derived on 2026-07-28 by executing each claim against the tree — not by
-reading the commit log. At that point `pytest` was **1,328 passed, 10
+reading the commit log. At that point `pytest` was **1,381 passed, 10
 deselected** (the live ones), `ruff check .` was clean, and the wheel built and
-imported all 93 modules in a clean virtualenv.
+imported all 94 submodules in a clean virtualenv.
 
 | Stage | Status | The honest edge |
 |---|---|---|

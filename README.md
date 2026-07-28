@@ -2,7 +2,7 @@
 
 **A governed agent runtime built on [LangGraph](https://github.com/langchain-ai/langgraph).** A planner *proposes* a subgraph, a deterministic checker *admits* it, and only then does anything execute — so every transition was permitted, every loop was bounded, and afterwards you can prove what happened and why it stopped. Underneath that sits the discipline layer it grew out of: typed state contracts, per-node write permissions, enforced budgets, and JSONL traces that double as replay points.
 
-Alpha (`0.1.0a0`). **Not installable yet** — see [Install](#install), which is honest about why.
+Alpha (`0.1.0a0`). Installable from source; not on PyPI yet — see [Install](#install).
 
 > *Graph engineering*: when one agent loop stops being enough, coordination becomes the engineering. Nodes do work (agent loops, model calls, deterministic functions, humans approving things), edges decide what runs next, and a typed shared state flows between them. GraphARC implements the discipline that makes such graphs production-grade rather than demos — the ideas emerging from the July 2026 loops-vs-graphs debate (Steinberger, Ng, et al.), the "Two Graphs, Two Jobs" split, and twenty years of pre-AI graph systems where every edge means something and every path can be explained.
 
@@ -58,9 +58,7 @@ Three of those need their edges stated, because the gap is where people get hurt
 
 ## Install
 
-**This does not work yet, and pretending otherwise is the fastest way to lose a reader.** The public remote — `github.com/CodeGraphContext/GraphARC` — is at commit `feef03d` and contains `LICENSE`, `README.md` and `.gitignore`. There is no `pyproject.toml` and no `grapharc/` package there, so a fresh clone followed by `uv sync` fails with *"No pyproject.toml found in current directory or any parent directory."* Everything else on this page was verified by running it against a local tree that has not been pushed. That is [ROADMAP.md](ROADMAP.md) §11.7, and it is the top of the fix list.
-
-Once the source is on the remote, this is the path — it is the one CI uses, so it is exercised, just not from a clone:
+This works now. It did not for most of the project's life — the public remote held only `LICENSE`, `README.md` and `.gitignore`, so a clone had no `pyproject.toml` to sync and the instruction below was fiction. The source is pushed; a fresh clone was verified to contain `pyproject.toml` and the `grapharc/` package.
 
 ```bash
 git clone https://github.com/CodeGraphContext/GraphARC
@@ -69,7 +67,7 @@ uv sync --group dev              # Python >= 3.12
 uv sync --all-extras --group dev # everything: openrouter, server, otel, mcp, api
 ```
 
-Not on PyPI either. The wheel does build: `uv build` produces one that installs into a clean virtualenv, imports 86 of the package's 93 modules bare (`gateway.openrouter` and the whole `server` package need their extras; `[all]` imports all 93), and runs `grapharc run stage0`.
+Not on PyPI yet. The wheel does build: `uv build` produces one that installs into a clean virtualenv, imports every one of the package's 94 submodules with `[all]` (`gateway.openrouter` and the whole `server` package need their extras, so a bare install imports fewer), and runs `grapharc run stage0`.
 
 ## Quickstart
 
@@ -365,8 +363,8 @@ Re-derived on 2026-07-28 by running each item, not by reading the commit log.
 
 **Distribution**
 
-- **You cannot install this.** The source is not on the public remote — see [Install](#install). Nothing else on this page matters until that is fixed.
-- **Not on PyPI.** The wheel builds and works; nobody can fetch it.
+- **Not on PyPI.** The wheel builds, installs and runs; `.github/workflows/release.yml` is tag-driven with Trusted Publishing and fails closed until a human does the browser-side setup (a GitHub environment named `pypi`, and a PyPI trusted publisher naming this repo and workflow).
+- *Fixed:* the source **is** on the public remote now, so the documented `git clone && uv sync` path works. It was the ship-blocker for most of this project's life.
 
 **Built and unreachable** — this used to be the honest headline, four subsystems deep. One seam is left.
 
@@ -384,7 +382,7 @@ Re-derived on 2026-07-28 by running each item, not by reading the commit log.
 - **The Claude CLI backend is completion-only.** Tool calling and structured output need OpenRouter.
 - **A session turn is synchronous**, and a runner claim is a claim rather than a lease — nothing reclaims a session whose runner died holding it.
 
-**Verified this pass:** `pytest` → 1,328 passed, 10 deselected (the live ones); `ruff check .` clean; all eight `grapharc run` stages green; the wheel builds and imports all 93 modules in a clean virtualenv with `[all]`. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
+**Verified this pass:** `pytest` → 1,381 passed, 10 deselected (the live ones); `ruff check .` clean; all eight `grapharc run` stages green and `grapharc plan` green; the wheel builds and imports all 94 submodules in a clean virtualenv with `[all]`. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
 
 [ROADMAP.md](ROADMAP.md) tracks what is built and what is not, item by item. [ASSESSMENT.md](ASSESSMENT.md) is an outside review that argued much of this repo is a thin wrapper on LangGraph — it describes an earlier state of the tree and is kept unedited on purpose, because the parts it got right are worth more than the parts it has outlived.
 
