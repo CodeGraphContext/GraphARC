@@ -1,8 +1,10 @@
 # GraphARC — the golden stage
 
-The target architecture. This is what GraphARC is *trying to become*, not what
-it is today ([ROADMAP.md](ROADMAP.md) tracks the distance; [ASSESSMENT.md](ASSESSMENT.md)
-is honest about the gap). Read [VISION.md](VISION.md) first for the thesis.
+The target architecture. Most of it now exists: §7 re-derives every box against
+the tree by running it, and says plainly which ones are still diagrams.
+([ROADMAP.md](ROADMAP.md) tracks the remaining distance; [ASSESSMENT.md](ASSESSMENT.md)
+is an outside review of an earlier state of this repo, kept on purpose.) Read
+[VISION.md](VISION.md) first for the thesis.
 
 **The one-sentence version:** a request enters, a planner *proposes* a subgraph,
 an admission gate *authorizes* it, and only then does anything execute — so
@@ -90,9 +92,10 @@ discovered mid-run doesn't bypass the gate — it re-enters through it.
 
 ## 2. The admission cycle — the crux
 
-This is the component with no prior art to copy, and where most of the risk
-lives. It is what lets the topology be dynamic without the governance being
-advisory.
+The component with no prior art to copy, and where most of the risk lived. It
+is what lets the topology be dynamic without the governance being advisory.
+This cycle is implemented — `grapharc/planner/` — and §7 records the run that
+demonstrates it end to end.
 
 ```mermaid
 flowchart LR
@@ -123,6 +126,36 @@ them directly. Dynamism lives in construction, governance lives in admission.
 the shape is discovered while working. Fully dynamic loops can't tell you what
 they were allowed to do. This splits the difference: the planner is as free as
 you like, and nothing it invents runs until a deterministic checker says yes.
+
+**How the invariant is actually held**, since "may never execute" is the sort of
+promise a design document makes and code quietly breaks:
+
+- A `Subgraph` is a Pydantic model with `extra="forbid"`. A proposal carrying a
+  `body` or an `fn` is a `ValidationError`, so there is no channel through which
+  a planner could hand over a callable at all. Every node body comes from the
+  operator's `NodeSpec.factory`, registered before any planning happened.
+- Every gate keys on the registry `kind`, never on the instance `name` a planner
+  invented. `ProposedNode(name="harmless_helper", kind="deploy")` is refused by
+  a rule denying `deploy`; renaming cannot launder a kind, and naming an
+  instance after a permitted kind cannot borrow its permission.
+- Worst-case cost is summed from the registry's own figures for the kinds
+  proposed. A proposal cannot claim to be cheap.
+- `Materializer.materialize(admitted, proposal)` takes the `AdmissionResult`
+  first and matches it to the proposal *by fingerprint*. A result that
+  authorised a different proposal raises `NotAdmitted`; so does a result whose
+  status was `rejected`. There is no overload that accepts a bare `Subgraph`.
+- Once built, a body that returns `Command(goto=…)` is confined to destinations
+  the admitted proposal declared an edge to, raising `UnadmittedTransition`
+  otherwise. The admitted *edge set* bounds dynamic routing, not merely the
+  admitted node set.
+
+And the edge the gate does not cover, stated here rather than discovered later:
+**admission authorises a kind, never that kind's arguments.** No rule can
+constrain `ProposedNode.args`, so a proposal carrying
+`args={"path": "/etc/passwd"}` is admitted on the strength of its kind alone.
+`Materializer` therefore drops `args` by default (`forward_args=False`); turning
+that on hands a model's unchecked dictionary to a factory, and gating it is
+then the factory's job.
 
 ---
 
@@ -301,20 +334,76 @@ one well, the second one vaguely, and the third one not at all.
 
 ## 7. Where we are against this
 
-| Stage | Status |
-|---|---|
-| ① Triggers | demo CLI only |
-| ② Session runtime | not started |
-| ③ Planner | not started |
-| ④ **Admission** | **not started — the crux** |
-| ⑤ Execution graph | kernel ~70%; agent nodes 0% |
-| ⑥ Outcome | traces yes; durable memory no |
-| Model plane | ~15% — text-only, no tool-calling |
-| Tool plane | ~30% — built, wired to nothing |
-| Memory plane | ~20% — dies with the process |
-| Policy | not started |
-| Observability | ~20% |
+Re-derived on 2026-07-28 by executing each claim against the tree — not by
+reading the commit log. At that point `pytest` was **1,327 passed, 10
+deselected** (the live ones), `ruff check .` was clean, and the wheel built and
+imported all 93 modules in a clean virtualenv.
 
-The shortest path onto this diagram is §4 — the agent node — because it is the
-first box that requires the model plane, tool plane, and kernel to work
-together at all. See [ROADMAP.md](ROADMAP.md).
+| Stage | Status | The honest edge |
+|---|---|---|
+| ① Triggers | **CLI (9 commands) + HTTP API with SSE** | no cron, no webhook, no chat channel |
+| ② Session runtime | **built and durable** | the HTTP API does not use it — see below |
+| ③ Planner | **built** — `PlannerNode.propose()` emits a typed `Subgraph` and runs nothing | |
+| ④ **Admission** | **built** — five checks, model-free, every decision traced | authorises a *kind*, never its arguments |
+| ⑤ Execution graph | **kernel async and complete enough to serve; `AgentNode` drives tools** | `interrupt()` suspends but has no supported resume |
+| ⑥ Outcome | **replay, diff, OTel spans, cost attribution, durable claims + artifacts** | no `cost_usd` is ever written to a trace, so money is an estimate |
+| Model plane | **tool-calling, structured output, streaming, async, retries, enforced cost ceilings** | two backends (Claude CLI, OpenRouter); no direct Anthropic, no local |
+| Tool plane | **seven core tools, workspace-confined; container executor exists** | the default audit-hook executor is still not a kernel boundary |
+| Memory plane | **SQLite claims + artifacts, BM25F + graph traversal, contradiction detection** | the CLI still hands graphs the in-process store |
+| Policy | **TOML document, tiered decisions, approval routing, digest-stamped audit log** | nothing in the package calls it |
+| Observability | **replay · diff · spans · cost, all off the one trace file** | no rollback, no versioned configs, no alerting |
+
+**The loop in §2 is closed.** `planner.propose → checker.check → materializer →
+execute → observe → replan` runs today as `GovernedLoop.run()`. Driven with a
+scripted planner whose first proposal names a policy-denied `deploy` node, the
+observed behaviour is: round 1 rejected on `policy/edge_denied` with the reason
+handed back as the planner's next feedback; round 2 admitted, materialised and
+executed; round 3 admitted and executed; stop reason `goal_met`. The trace holds
+three `phase="admission"` events, three `phase="round"` events, the executed
+nodes' own `start`/`end` pairs and one `phase="stop"` event, all under one
+`run_id`. Round 7 is checked by the same checker as round 1 — there is no
+already-approved path.
+
+### The four gaps that matter
+
+Each of these is a subsystem that exists and works, sitting next to a subsystem
+that does not know it exists.
+
+1. **Nothing shipped drives the loop.** `grapharc.planner` is imported by no
+   other module in the package: no CLI command, no example graph, no session
+   graph. The cycle above is a library API proven by tests and by the run
+   described above — not something a reader can invoke and watch. Until there
+   is a `grapharc plan`-shaped entry point, ①→③ is a diagram, not a path.
+2. **Policy does not reach admission.** `AdmissionChecker` takes an `EdgePolicy`
+   assembled in Python. `grapharc.policy` parses a TOML document that already
+   understands `node`, `edge`, `tool` and `spend` rules — and there is no bridge
+   between the two, nor any caller of either from the agent or the CLI. Box ④
+   is enforced by code an operator writes in Python, not by the declarative
+   document that was built for it.
+3. **The HTTP API and the session runtime are two different things.**
+   `grapharc/session` gives durable, cross-process sessions: verified by running
+   one interpreter to an approval hold and resuming it by id in a second, with
+   each node appearing exactly once in the append-only log. `grapharc/server`
+   does not use it — it has its own `InProcessRuntime` whose sessions die with
+   the process, never evict, and record `message`/`approval` events without
+   delivering them into a running graph. Stage ② holds; stage ① does not reach it.
+4. **Admission authorises a kind, not its arguments.** Stated in §2 and true in
+   code: a proposal carrying `args={"path": "/etc/passwd"}` is admitted, because
+   no rule here can constrain `args`. `Materializer` defaults to
+   `forward_args=False` and drops them, which is the right default — but
+   `forward_args=True` hands the planner's unchecked dictionary straight to a
+   factory, and at that point the gate has authorised the verb and not the
+   object.
+
+### Where the invariants of §6 actually stand
+
+| # | Invariant | Holds? |
+|---|---|---|
+| 1 | No transition executes that the graph did not permit | **Yes, within a materialised subgraph** — a body's `Command(goto=…)` is confined to the admitted edge set, raising `UnadmittedTransition` otherwise |
+| 2 | No work happens that the budget did not authorize | **Yes for tokens, iterations and wall-clock**; USD ceilings are enforced by `SpendMeter` on calls the provider prices, and unpriced calls are counted rather than guessed |
+| 3 | A node may propose, never directly execute, new topology | **Yes** — `Subgraph` forbids extra fields, so a proposal has no channel for a callable; every body comes from the operator's `NodeSpec.factory` |
+| 4 | Every rejection, stop, and refusal is recorded with a reason | **Yes** — `phase="admission"` for every decision, `phase="stop"` with a `LoopStop`, and a `StopReason` on every convergence exit |
+| 5 | Any run can be replayed and attributed after the fact | **Reconstructed, not re-executed.** `replay()` rebuilds the node sequence, folded state and timing off the JSONL; it calls no model, tool or node. Attribution is per run, thread and node — there is no tenant on a trace event |
+
+The shortest path onto this diagram is no longer a subsystem — it is a *seam*.
+See [ROADMAP.md](ROADMAP.md).

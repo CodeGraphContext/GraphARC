@@ -88,6 +88,25 @@ settled and several subsystems are partial — see *Known gaps*.
   against remaining budget, and depth/size against `AdmissionLimits`. Rejections
   are structured (`Rejection`, `AdmissionResult.feedback()`) and can be fed back
   to the planner.
+- `Materializer.materialize(admitted, proposal)` is the only path from an
+  admitted proposal to a runnable graph. It takes the `AdmissionResult` first,
+  refuses one that is not `ADMITTED`, and matches it to the proposal by content
+  fingerprint, so what runs is what was admitted. Node bodies come from the
+  `NodeRegistry` and nowhere else — a proposal names a kind and can never supply
+  a body — and a body returning `Command(goto=…)` is confined to destinations
+  the admitted proposal declared an edge to (`UnadmittedTransition`).
+- `GovernedLoop.run` closes the cycle: propose → admit → materialise → execute →
+  observe → replan, until a `LoopStop` says why it ended. Every round goes
+  through the same checker against the same registry and edge policy; there is
+  no "already approved" path, so work discovered mid-run cannot bypass the gate.
+  Rounds share one `BudgetMeter`, and with a `TraceRecorder` each round and the
+  stop are recorded as trace events.
+
+### Documentation
+
+- `docs/cookbook/` — six sections, every snippet executed and its real output
+  pasted rather than written by hand. `tests/test_cookbook_*.py` re-runs each
+  snippet and byte-compares it against the page, so a rotted example fails CI.
 
 ### Sessions — `grapharc.session`
 
