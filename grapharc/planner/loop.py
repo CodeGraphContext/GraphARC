@@ -12,7 +12,11 @@ gate:
 **The property this exists to hold.** Work discovered mid-run does not bypass
 admission. Round 7's proposal is checked by the same `AdmissionChecker`, against
 the same registry and edge policy, as round 1's — there is no "already approved"
-path and no cached authorisation. An executing node cannot add topology to the
+path and no cached authorisation. "The same registry" means the same *object*,
+which is not the same as the same contents: `NodeRegistry` is mutable, and a
+node body could widen the allowlist between rounds. Call `registry.freeze()`
+before handing it to the checker and that reading collapses into the other one.
+An executing node cannot add topology to the
 run either: the loop's only source of topology is `planner.propose`, so what a
 node discovers reaches the next round as *state*, which the planner may read and
 the checker still judges. That is what makes the design general-purpose rather
@@ -33,8 +37,15 @@ budget spent, no progress, human halt — plus the three a real driver needs:
 within the limit), and `planning_failed` (the model's replies could not be
 turned into a proposal at all). What this does *not* promise is that `run()`
 never raises: an unusable model *reply* is data and becomes a round record, but
-an exception raised by the planner object or the checker itself propagates. The
-loop records stops; it does not launder a broken component into one.
+an exception raised by *your own code* propagates. That means the planner object
+and the checker, and equally the `goal_reached`, `observe` and `progress`
+callbacks — all of them run on the loop's thread and none of them is wrapped.
+The loop records stops; it does not launder a broken component into one.
+
+The line is drawn at what a *model* can cause. Anything a planner's reply can
+produce — unparseable output, a refused proposal, a name the orchestrator
+reserves, a subgraph that will not build, a body that raises — becomes a round
+record and a `LoopStop`. Anything your code does is yours.
 
 **Bounds come from `runtime.budget`, not from here.** A single `BudgetMeter` for
 the whole run holds the ceilings on tokens, iterations and wall-clock; each

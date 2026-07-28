@@ -1,6 +1,13 @@
 # GraphARC — handoff
 
-Everything needed to pick this up in a fresh session. Written 2026-07-28.
+Everything needed to pick this up in a fresh session. Rewritten 2026-07-28,
+after the governed loop landed.
+
+**How to read this.** Numbers here are snapshots and rot fast — the last version
+of this file went stale in under a day. Where a fact is re-derivable, the
+command is given next to it; run the command rather than trusting the number.
+Where a fact is *not* re-derivable from the tree — why a decision was made, what
+was already tried and failed — that is what this document is actually for.
 
 ---
 
@@ -19,13 +26,15 @@ control flow implicit and scattered               every loop explicit, bounded, 
 "be careful" in the system prompt                 enforcement in code, on the edge
 ```
 
-The differentiator is not "we use a graph library." It is that **no transition executes
-that the graph did not permit, and no work happens that the budget did not authorize** —
-whether the topology was authored up front or constructed at runtime.
+The differentiator is not "we use a graph library." It is that **no transition
+executes that the graph did not permit, and no work happens that the budget did
+not authorize** — whether the topology was authored up front or constructed at
+runtime.
 
-The wedge: **unattended agents that touch real systems**, where "the model usually behaves"
-is not an acceptable safety argument, and where after an incident you must answer *what did
-it do*, *what was it allowed to do*, and *why did it stop*.
+The wedge: **unattended agents that touch real systems**, where "the model
+usually behaves" is not an acceptable safety argument, and where after an
+incident you must answer *what did it do*, *what was it allowed to do*, and *why
+did it stop*.
 
 Full design: `ARCHITECTURE.md`. Thesis and honest scope: `VISION.md`.
 
@@ -33,118 +42,287 @@ Full design: `ARCHITECTURE.md`. Thesis and honest scope: `VISION.md`.
 
 ## Where things stand
 
-| | |
-|---|---|
-| Repo | `/home/shashank/Desktop/GraphARC`, branch `main` |
-| Remote | `github.com/CodeGraphContext/GraphARC` |
-| HEAD | `a9315e5` — "v1: async kernel, admission checker, sessions, HTTP API, tools, policy, ops" |
-| Tests | **1,082 passing**, 10 live tests deselected by default |
-| Lint | clean (`ruff`) |
-| Build | wheel + sdist build; 90 modules import from the wheel in a clean venv |
-| Version | `0.1.0a0` — **not yet bumped for release** |
-| Python | 3.12+ (dev venv is 3.14) |
+| | | re-derive with |
+|---|---|---|
+| Repo | `/home/shashank/Desktop/GraphARC`, branch `main` | |
+| Remote | `github.com/CodeGraphContext/GraphARC` | `git remote -v` |
+| HEAD | `857f620`, plus the planner hardening below | `git log -1` |
+| **Unpushed** | **13 commits.** `origin/main` is still at `feef03d` "Initial commit". | `git log origin/main..HEAD` |
+| Tests | **1,338 passed, 10 deselected** (live) | `.venv/bin/python -m pytest` |
+| Lint | clean | `.venv/bin/python -m ruff check .` |
+| Build | wheel + sdist; 93 modules import from the wheel in a clean venv | `uv build` |
+| Version | `0.1.0a0` — **not yet bumped for release** | |
+| Python | 3.12+ declared; dev venv is 3.14 | |
 
-**Environment:** `.env` holds an OpenRouter key (gitignored, never committed). The user has a
-Claude Max 20x subscription and **no Anthropic API key** — which is why the Claude-CLI gateway
-backend exists. Run tests with `.venv/bin/python -m pytest`. **Never run `pytest -m live`
-casually — those call paid APIs.**
+**Pushing is safe and needs no force.** `origin/main` (`feef03d`) *is* an
+ancestor of HEAD, so a plain `git push` fast-forwards. This is worth stating
+because the history *was* rewritten (see below) — but only across commits the
+remote had never seen, so nothing on the remote is being overwritten. Verify
+before pushing: `git merge-base --is-ancestor origin/main HEAD && echo safe`.
 
-### Twelve subsystems
+**Environment:** `.env` holds an OpenRouter key (gitignored, never committed).
+The user has a Claude Max 20x subscription and **no Anthropic API key** — which
+is why the Claude-CLI gateway backend exists. Run tests with
+`.venv/bin/python -m pytest`. **Never run `pytest -m live` casually — those call
+paid APIs and cost real money.**
+
+> ### The `-qq` trap — read this before you believe a test run
+>
+> `addopts` in `pyproject.toml` is `-q -m 'not live' --strict-markers
+> --strict-config`. Two traps live in that one line.
+>
+> **1. `pytest -q` becomes `-qq`** and pytest then **silently drops the summary
+> line**: a fully passing run prints dots and then nothing, which reads exactly
+> like a run that died. Cost real time to diagnose, twice.
+>
+> **2. `-o addopts=""` also clears `-m 'not live'`** — so the "fix" for trap 1
+> runs the ten live tests against paid OpenRouter and Claude endpoints. This
+> already happened: three verification agents were told to use `-o addopts=""`
+> to recover the summary line and spent the user's money doing it. The `skipif`
+> guards do not save you, because `config.openrouter_api_key()` reads `.env`
+> directly and finds the key.
+>
+> **Use bare `.venv/bin/python -m pytest`.** If you must override addopts,
+> always write `-o addopts="" -m "not live"` — never the first half alone.
+
+### History rewrite, already done
+
+The README once said "*inspired by* (never copied from)". The user judged the
+parenthetical bad-looking and asked for it to be erased from history, not merely
+deleted going forward. Done via `filter-branch --tree-filter`, then
+`refs/original/`, the backup tag, the stash and the reflog were purged and
+`gc --prune=now` run. Verified unreachable from every ref:
+
+```bash
+git log --all -S "not copied from"      # must print nothing
+```
+
+Attribution to OpenClaw, Hermes, Claude Code and OpenRouter is intact and
+should stay — the architecture genuinely draws on them. Only the parenthetical
+went.
+
+---
+
+## Twelve subsystems
+
+Source lines excluding tests (`find grapharc/<pkg> -name '*.py' | xargs cat | wc -l`):
 
 ```
 grapharc/
-  runtime/    graph kernel: typed state, declared writes, budgets, async, traces
-  planner/    proposals + admission checker      <- THE CRUX, see gap below
-  harness/    tool registry, permissions, sandbox, container executor, AgentNode
-  gateway/    model plane: Claude CLI + OpenRouter, retries, cost ceilings
-  memory/     claims with provenance, SQLite, traversal, contradiction detection
-  session/    long-lived, cross-process resume, interrupt, human approval
-  server/     FastAPI + SSE
-  policy/     TOML rules, approval routing, decision audit
-  observe/    JSONL traces, replay, metrics, OTel, cost attribution
-  tools/      seven core tools with workspace confinement
-  cli/        nine commands, --json on every one
-  examples/   stages 0-6, capstone, agent_fixit
+  planner/   2554  proposals, admission, materialisation, the governed loop
+  harness/   2165  tool registry, permissions, sandbox, container executor, AgentNode
+  memory/    2165  claims with provenance, SQLite, traversal, contradiction detection
+  session/   2084  long-lived, cross-process resume, interrupt, human approval
+  runtime/   1921  graph kernel: typed state, declared writes, budgets, async, traces
+  observe/   1708  JSONL traces, replay, metrics, OTel, cost attribution
+  cli/       1549  nine commands (run agent serve models replay diff trace metrics viz), --json on each
+  server/    1320  FastAPI + SSE
+  examples/  1244  stages 0-6, capstone, agent_fixit
+  gateway/   1215  model plane: Claude CLI + OpenRouter, retries, cost ceilings
+  tools/     1054  seven core tools with workspace confinement
+  policy/     867  TOML rules, approval routing, decision audit
 ```
 
----
+`planner/` is now the **largest** subsystem. In the previous handoff it was the
+thinnest, and that inversion is the story of the last session.
 
-## THE BIGGEST REMAINING GAP
-
-**The propose → admit → execute → replan loop is only half built.**
-
-`grapharc/planner/` can turn a model's output into a typed `Subgraph` proposal
-(`PlannerNode`) and can validate it (`AdmissionChecker` — registry, policy, budget, depth,
-acyclicity). Verified by grep: the only `.invoke` calls in the package are the planner's own
-model calls.
-
-What does **not** exist as of `a9315e5`:
-- nothing **materializes** an admitted proposal into a runnable graph
-- nothing runs the **execute → observe → replan** cycle
-
-So `ARCHITECTURE.md` Figure 2 is implemented from "propose" to "admit" and stops exactly
-where the thesis gets interesting. **This is the single most valuable thing left.**
-
-> **In flight when this was written:** an agent was adding `grapharc/planner/materialize.py`
-> and `loop.py` to close it. `materialize.py` exists uncommitted. **Verify what actually
-> landed before trusting this section** — check for `loop.py`, then grep the package for a
-> replan cycle and for materialization refusing an unadmitted proposal.
-
-The two properties that must hold, and that the verifier was told to attack:
-1. Node bodies come **only** from the `NodeRegistry`. A proposal names a *kind*; it can never
-   supply a body. That is the boundary.
-2. Every replanning round **re-enters admission**. Work discovered mid-run must not bypass
-   the gate — that is what makes the design general-purpose rather than a flowchart.
+38 test files. `tests/test_planner_loop.py` (62 tests) is the one to read first
+if you are touching the gate. The seven core tools are `read_file`,
+`write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `run_command`
+(`grapharc.tools.CORE_TOOL_NAMES`).
 
 ---
 
-## Other work in flight (uncommitted)
+## What changed since the last handoff
 
-- `docs/cookbook/` — six sections, every snippet required to be *executed* and its real
-  output pasted in, each backed by `tests/test_cookbook_*.py` so the docs cannot rot. The
-  six test files exist uncommitted; the `.md` files were still being written.
-- `README.md` / `ROADMAP.md` / `VISION.md` / `ARCHITECTURE.md` — a truth pass. These are
-  **stale and now UNDERCLAIM**: they still say async, sessions, the HTTP API, the container
-  executor, tools, and policy are "not started" when HEAD contains all of them.
-  `ARCHITECTURE.md` §7 "Where we are against this" is the stalest thing in the repo.
+Two commits, both worth reading before you touch anything:
 
-Check `git status` first. If these are half-landed, finish or discard them before building
-anything new.
+- **`7add137` — the governed loop, and a cookbook that runs.**
+- **`857f620` — corrected test count; ARCHITECTURE §7 gained a fifth gap.**
+
+### The loop is closed
+
+The previous handoff's headline was *"THE BIGGEST REMAINING GAP: the propose →
+admit → execute → replan loop is only half built."* **It is now built.** Two
+modules did it:
+
+`grapharc/planner/materialize.py` — `Materializer.materialize(admitted, proposal)`
+is the *only* path from an admitted proposal to a runnable graph. The
+authorisation is the first argument; a non-`ADMITTED` result is refused; the
+proposal is matched to the result by **content fingerprint**, so "what ran is
+what was admitted" is a checked equality rather than a convention. Node bodies
+come from the `NodeRegistry` and nowhere else — a proposal names a *kind* and
+has no field a body could arrive in.
+
+`grapharc/planner/loop.py` — `GovernedLoop.run()` drives propose → admit →
+materialise → execute → observe → replan until a `LoopStop` says why it ended.
+Every round goes through the same checker against the same registry and policy.
+**There is no already-approved path**, so work discovered mid-run cannot bypass
+the gate.
+
+### That claim was attacked, not assumed
+
+Thirteen attempts to get unauthorized work executed: **ten refused, three
+succeeded.** The ten first, then the three — which are the more instructive
+half, because two were fixable and one redraws the boundary.
+
+Refused:
+
+| attack | refused by |
+|---|---|
+| raw callable in `args` | not JSON-serialisable → no fingerprint → **never reaches admission at all** |
+| `args={"body":…,"factory":…}` on kind `fetch` | registry's `fetch` body built regardless |
+| node named `__start__` / `__end__` / `""` | schema `ValidationError` |
+| duplicate node names | schema `ValidationError` |
+| `AdmissionResult` for P1 used to build P2 | `NotAdmitted` (fingerprint mismatch) |
+| mutate the proposal in place after `check()` | `NotAdmitted` |
+| body returns `Command(goto="secret")` | `UnadmittedTransition` |
+| body writes an undeclared field | `WritePermissionError` |
+| a node name in the orchestrator's `__` namespace | `ValidationError`; the loop stops `planning_failed` |
+| **through the loop:** behave in round 1, then rename `deploy` to round 1's instance name | refused *every* round; stop = `admission_refused` |
+
+### Three attacks that SUCCEEDED — and what they actually mean
+
+An adversarial verifier beat me on three, and the distinction between them
+matters more than the count.
+
+- **Hand-build an `AdmissionResult`** with `status=ADMITTED` and a matching
+  fingerprint, for a proposal the real checker rejected → **it materialises and
+  runs.** My own version of this attack "passed" only because I used an
+  *unregistered kind*, so it died at the registry lookup for an unrelated
+  reason. With a registered-but-policy-denied kind, it runs. **This is not
+  fixable and is not a hole:** an `AdmissionResult` is ordinary Pydantic data,
+  and anyone who can construct one already has the interpreter. The gate is
+  between the **planner and the operator**, not between the operator and
+  itself — a planner emits JSON and has no channel to build a Python object.
+  Now documented in `materialize.py`'s docstring rather than left to be
+  over-read.
+- **Subclass `Subgraph` and override `fingerprint()`** to return an admitted
+  proposal's hash → used to run a denied `deploy`. **Fixed**: the check now
+  calls the unbound `Subgraph.fingerprint(proposal)`, so it hashes what the
+  object holds rather than what it reports.
+- **Widen the registry between rounds.** "Every round is checked against the
+  same registry" meant the same *object*; `register()` stayed callable, so a
+  node body could add a kind that round 2 is then admitted against. **Fixed**:
+  `NodeRegistry.freeze()` added, and `loop.py` now points at it.
+
+The security claim that survives all of this, stated exactly: **a planner
+cannot get unauthorized work executed.** Claims about an operator being unable
+to bypass their own gate were never true and are no longer implied.
+
+The last one had no test. It now does —
+`test_a_later_round_cannot_rename_its_way_past_a_denial_the_first_round_respected`
+— and it was mutation-checked: with the denial removed, `deploy`'s body runs
+three times, so the assertion genuinely distinguishes the two worlds.
+
+### The cookbook
+
+`docs/cookbook/`, six pages, 112 recipes:
+
+| page | recipes | lines |
+|---|---|---|
+| `01-basics.md` | 20 | 1505 |
+| `02-models.md` | 13 | 977 |
+| `03-agents-and-tools.md` | 17 | 1593 |
+| `04-verification-and-memory.md` | 19 | 1114 |
+| `05-governance.md` | 22 | 1757 |
+| `06-serving-and-ops.md` | 21 | 1695 |
+
+The promise is that **every snippet was executed and its real output pasted**,
+never hand-written, and `tests/test_cookbook_*.py` (194 tests) enforce it.
+Snippets that need credentials or cost money are exempt, and the page must
+visibly say so — a *silent* exemption is a defect, and the tests assert that an
+exempt snippet can never acquire an output block.
+
+**Two places that promise is weaker than it sounds** (found by audit; do not
+restate the promise without these):
+
+- **`01-basics.md` is not extracted.** `tests/test_cookbook_basics.py` never
+  opens the markdown file — its 38 tests *reproduce* each recipe in Python
+  rather than parsing the page and byte-comparing. The page says "reproduces",
+  which is honest; but it means page 1 alone can drift from its tests silently.
+  The other five pages do parse and byte-compare. **Worth closing.**
+- **`console` blocks are never re-run.** The extractors pair ```python blocks
+  only, so the five ```console transcripts in `06-serving-and-ops.md` are
+  checked by nothing. That page now says so explicitly instead of claiming
+  "every snippet below was executed".
+
+Writing those tests immediately caught a real flake: the session-interrupt
+example posted a stop from a thread and hoped it beat the next superstep. It
+lost under load. It now synchronises, and the prose says plainly that an
+interrupt is read at the next boundary *after* it is written and you do not
+choose which one that is.
+
+---
+
+## What is actually left
+
+`ARCHITECTURE.md` §7 is the current, re-derived gap analysis — **read it rather
+than trusting a copy here**, since a copy is exactly what went stale last time.
+In one line each, the five gaps it names:
+
+1. **Nothing shipped drives the loop.** `grapharc.planner` is imported by no
+   other module: no CLI command, no example, no session graph. The cycle is a
+   library API proven by tests, not something a reader can invoke and watch.
+   **This is the highest-value thing left.**
+2. **Policy does not reach admission.** `grapharc.policy` parses a TOML document
+   that already understands `node`/`edge`/`tool`/`spend` rules;
+   `AdmissionChecker` takes an `EdgePolicy` assembled in Python. No bridge.
+3. **The HTTP API and the session runtime are two different things.**
+   `grapharc/server` has its own `InProcessRuntime` whose sessions die with the
+   process. The durable, cross-process `grapharc/session` is not what it uses.
+4. **The shipped graphs do not use durable memory.** Every `grapharc run`
+   constructs the in-process `MemoryStore()`, though `SQLiteMemoryStore` is
+   verified durable across processes.
+5. **Admission authorises a kind, not its arguments** — a boundary, not a seam,
+   and the one most likely to be over-read. See *Known limits*.
 
 ---
 
 ## How this project works (the part that matters most)
 
-**Every claim must survive execution.** This is not a style preference — it is the reason the
-project is worth anything, and it has been earned the hard way.
+**Every claim must survive execution.** This is not a style preference — it is
+the reason the project is worth anything, and it has been earned the hard way.
 
-Three adversarial audits have caught this repo shipping confident prose over guarantees the
-code did not provide:
+Adversarial audits have repeatedly caught this repo shipping confident prose
+over guarantees the code did not provide:
 
-- The README once shipped **five false statements** simultaneously ("validated routing" that
-  validated nothing, "durable memory" that was an in-process dict, "crash-safe resume" that
-  was entirely LangGraph's).
-- The audit-hook sandbox was escaped **twice** — first by three lines of stdlib `ctypes`,
-  then, after that fix, by writing a `.pth` into a writable site-packages, which owns every
-  later interpreter start.
+- The README once shipped **five false statements** simultaneously ("validated
+  routing" that validated nothing, "durable memory" that was an in-process dict,
+  "crash-safe resume" that was entirely LangGraph's).
+- The audit-hook sandbox was escaped **twice** — first by three lines of stdlib
+  `ctypes`, then, after that fix, by writing a `.pth` into a writable
+  site-packages, which owns every later interpreter start.
 - Budgets reported `spent: 0 tokens` on a live run that genuinely cost money.
 - The approval gate released **two** nodes when one was approved.
-- The admission checker was evaded by **renaming** an instance, because policy keyed on the
-  planner-chosen name instead of the registry kind.
+- The admission checker was evaded by **renaming** an instance, because policy
+  keyed on the planner-chosen name instead of the registry kind.
+- A live demo rejected **four correct citations** because the source was
+  line-wrapped, and failed three correct claims closed because the reviewer
+  returned markdown-fenced JSON. Both were only visible by running it.
 
-Every one of those was found by an agent told to *break* the work, not to review it. So:
+Every one of those was found by an agent told to *break* the work, not to
+review it. So:
 
-1. **Build with subagents in parallel on strictly disjoint file sets**, then run a separate
-   adversarial verifier per risky subsystem that re-runs the proofs rather than trusting the
-   report. The verifiers have disproved builder claims in every single round.
-2. **Reproduce a defect before fixing it**, and prove the fix with a test that fails without it.
-3. **Document what you could not close.** Known limits live in module docstrings and
-   `ROADMAP.md` §0, not smoothed over.
+1. **Build with subagents in parallel on strictly disjoint file sets**, then run
+   a separate adversarial verifier per risky subsystem that **re-runs the
+   proofs** rather than trusting the report. The verifiers have disproved
+   builder claims in every single round.
+2. **Reproduce a defect before fixing it**, and prove the fix with a test that
+   fails without it. Mutation-check security tests: remove the guard, confirm
+   the test goes red.
+3. **Document what you could not close.** Known limits live in module docstrings
+   and `ROADMAP.md` §0, not smoothed over.
 4. Never weaken a test to make something pass.
+5. **A green test is not proof the property holds.** Attack the property
+   yourself before believing it. The nine attacks above were run *after* the
+   suite was green, and that is the standard.
 
-`ASSESSMENT.md` is the honest self-assessment — three independent reviewers were asked whether
-this is a thin LangGraph wrapper, told not to be kind, and three said yes. Read it before
-believing anything good about the project.
+`ASSESSMENT.md` is the honest self-assessment — independent reviewers were asked
+whether this is a thin LangGraph wrapper, told not to be kind, and three of four
+said yes. It describes an **earlier, smaller tree** and is deliberately kept
+unedited; the parts it got right are worth more than the parts it has outlived.
+Read it before believing anything good about the project.
 
 ---
 
@@ -152,33 +330,60 @@ believing anything good about the project.
 
 Be honest about this; it shapes what to build next.
 
-**Mostly not novel.** LangGraph does the graph. LangSmith does tracing better. Graphiti does
-memory better. Docker does sandboxing with an actual kernel boundary. LiteLLM does routing at
-scale. Each is more mature than the version here.
+**Mostly not novel.** LangGraph does the graph. LangSmith does tracing better.
+Graphiti does memory better. Docker does sandboxing with an actual kernel
+boundary. LiteLLM does routing at scale. Each is more mature than the version
+here.
 
 **Two real exceptions:**
-- `ClaudeCodeCLIChatModel` — a LangChain `BaseChatModel` over `claude -p`, so LangGraph runs
-  on a Claude subscription with no API key, with the CLI stripped to a pure inference endpoint
-  (all tools disallowed, no settings sources, prompt via stdin, argv array never a shell
-  string). No drop-in substitute exists. ~139 lines, independent of the rest.
-- **The admission checker** — and it only becomes genuinely novel once the loop above is
-  closed. Until then it validates topology nobody runs.
+
+- **`ClaudeCodeCLIChatModel`** — a LangChain `BaseChatModel` over `claude -p`,
+  so LangGraph runs on a Claude subscription with no API key, with the CLI
+  stripped to a pure inference endpoint (all tools disallowed, no settings
+  sources, prompt via stdin, argv array never a shell string). No drop-in
+  substitute exists (306 lines, 215 of them code), and it does not depend on
+  the rest of the library — it should probably be its own package.
+- **The admission gate, now that the loop is closed.** The previous handoff said
+  this "only becomes genuinely novel once the loop is closed. Until then it
+  validates topology nobody runs." The loop is closed, so the claim can finally
+  be stated properly: a planner proposes topology at runtime, a deterministic
+  model-free checker admits or refuses it, materialisation is bound to that
+  authorisation by content hash, and *every* replanning round is re-checked.
+  The nine refused attacks above are the evidence.
+
+  **Do not overstate it.** It is novel as a *composition*, not as new
+  technology, and it is undercut by gap #1: nothing shipped drives it. Until
+  there is an entry point a reader can run, the honest claim is "a governed
+  planning loop exists as a library API with adversarial tests," not "GraphARC
+  runs governed autonomous agents."
 
 ---
 
 ## Suggested next steps
 
-1. **Verify and finish the loop** (`planner/materialize.py`, `loop.py`). Nothing else moves
-   the project as much. Attack it: try to materialize an unadmitted proposal, smuggle a node
-   body through a proposal, make round 2 skip admission.
-2. **Land the doc truth pass and the cookbook**, then re-read the README as a stranger would.
-3. **Decide the version.** `0.1.0a0` today. I would argue for `0.1.0`, not `1.0.0` — a 1.0
-   implies API stability and several subsystems are days old.
-4. **Publish to PyPI** (`.github/workflows/release.yml` exists, trusted publishing, tag-driven).
-5. Then, in rough order: wire the harness into the remaining example graphs; a real
-   container-executor story for tools needing subprocesses; per-task approval holds
-   (currently a hold names a node, so a `Send` fan-out produces indistinguishable holds);
-   admission inspecting node **arguments**, not just kinds.
+1. **Give the loop a surface.** A `grapharc plan` command or an example graph
+   that a reader can run and watch. This converts the project's single most
+   defensible claim from a test fixture into a demo. Nothing else comes close in
+   value. (ROADMAP §12.1)
+2. **Decide the version and push.** 13 commits are unpushed. I would argue for
+   `0.1.0`, not `1.0.0` — a 1.0 implies API stability and several subsystems are
+   days old.
+3. **Publish to PyPI.** `.github/workflows/release.yml` is tag-driven
+   (`v*`) and uses Trusted Publishing, so **no token exists anywhere**. Before a
+   tag can publish, a human must do two things in a browser:
+   - create a GitHub **Environment named `pypi`** in repo settings;
+   - configure **PyPI Trusted Publishing** naming repo
+     `CodeGraphContext/GraphARC`, workflow file `release.yml`, environment
+     `pypi`, project `grapharc`.
+
+   Until then the publish step **fails closed** with an OIDC error rather than
+   uploading. The tag must equal the pyproject version exactly or the first job
+   refuses. Prove the pipeline first with `workflow_dispatch` + `dry_run: true`,
+   which builds and verifies but never uploads.
+4. Then, in rough order: bridge `policy` → `admission` (gap 2); make the HTTP
+   server use the real session runtime (gap 3); hand `grapharc run` the SQLite
+   memory store (gap 4); per-task approval holds; admission inspecting node
+   **arguments**, not just kinds.
 
 ---
 
@@ -186,37 +391,74 @@ scale. Each is more mature than the version here.
 
 Do not let these get quietly dropped from the docs.
 
-- **The audit-hook sandbox is not a kernel boundary.** It is in-process CPython confinement.
-  Four holes are open by construction and documented in `harness/executor.py`: `os.stat`
-  metadata reads, raw inherited file descriptors, the forked heap, and trusted runtime
-  extensions. `ContainerExecutor` is the real boundary — but a tool must be resolvable inside
-  the container, and running `pytest` from a tool means a subprocess, which the audit-hook
-  sandbox refuses by design.
-- **Admission authorizes a *kind*, not its *arguments*.** `ProposedNode.args` are not inspected.
-- **A `Command` passed as graph input** is not validated the way one returned by a node is.
-- **Approval holds name a node, not a task**, so a `Send` fan-out creates indistinguishable
-  holds and rejecting one skips an arbitrary task of that node.
-- **The HTTP server drives `astream`**, so a sync-only `SqliteSaver` raises
-  `CheckpointerNotAsyncError`. Use the async saver.
+- **The audit-hook sandbox is not a kernel boundary.** It is in-process CPython
+  confinement. **Five** holes are open by construction and documented at the top
+  of `harness/executor.py`: `os.stat` metadata reads; raw inherited file
+  descriptors; the `os.readlink` guard being a removable wrapper rather than an
+  audit hook; the forked heap; and trusted runtime extensions. *(The previous
+  handoff said four — the monkeypatched-guard concession was added later. Count
+  them in the source, don't trust this line.)* `ContainerExecutor` is the real
+  boundary — but a tool must be resolvable inside the container, and running
+  `pytest` from a tool means a subprocess, which the audit-hook sandbox refuses
+  by design.
+- **Admission authorizes a *kind*, not its *arguments*.** `ProposedNode.args`
+  are not inspected. `Materializer` defaults to `forward_args=False` and drops
+  them, which is the right default — but `forward_args=True` hands a planner's
+  unchecked dictionary straight to a factory, and at that point the gate has
+  authorised the verb and not the object. A factory that pulls a callable out of
+  `args` and runs it has re-opened the boundary.
+- **`GovernedLoop` is synchronous.** It drives rounds through `invoke()`, so a
+  registry of `async def` bodies needs an async driver that does not exist yet.
+  `Materializer` builds such a graph correctly; it just has to be driven through
+  `ainvoke()` by hand.
+- **Loop depth is reported, not measured.** The driver tells the checker
+  `parent_depth=0`; nest a loop inside a node body and you must pass the real
+  depth yourself or `max_depth` bounds nothing.
+- **`UnadmittedTransition` covers a `Command` a body returns** — it says nothing
+  about what a body does *inside* itself (calling another graph, spawning a
+  thread). That is the tool and permission planes' business.
+- **A `Command` passed as graph input** is not validated the way one returned by
+  a node is.
+- **Approval holds name a node, not a task**, so a `Send` fan-out creates
+  indistinguishable holds and rejecting one skips an arbitrary task of that node.
+- **A sync-only `SqliteSaver` breaks the HTTP server only for async graphs.**
+  The server probes the checkpointer once per run and falls back to
+  `CompiledGraphARC.stream()`, so a sync graph is fine;
+  `CheckpointerNotAsyncError` fires only when `async def` nodes force `astream()`
+  *and* the saver cannot support it. *(An earlier handoff stated this as a
+  blanket failure. It is not.)*
 - **No shipped example graph calls a tool** except `agent_fixit`.
-- `max_seconds` interrupts a node but a node that catches every interrupt and never returns
-  still hangs.
+- **`max_seconds` interrupts a node**, but a node that catches every interrupt
+  and never returns still hangs.
+- **A hard `SIGKILL` loses the last checkpoint.** LangGraph's default
+  `durability` is `"async"` and `CompiledGraphARC.invoke()` does not forward the
+  parameter, so a killed run replays from the input checkpoint and an
+  "expensive" node runs twice. `durability="sync"` would fix it; there is no
+  supported path to it today. Demonstrated in `docs/cookbook/01-basics.md`.
+- **Nothing ever writes `cost_usd` to a trace.** The field exists on
+  `TraceEvent` and the runtime never populates it, so
+  `observe.cost.recorded_cost_usd` is always `None` and every money figure is a
+  rate-card estimate. `observe/cost.py` says so in its own docstring.
 
 ---
 
 ## Quick commands
 
 ```bash
-.venv/bin/python -m pytest              # 1082 tests, live deselected
+.venv/bin/python -m pytest              # bare -q ONLY; see the -qq trap above
 .venv/bin/python -m ruff check .
 uv build                                 # wheel + sdist
 
 grapharc --help                          # run agent serve models replay diff trace metrics viz
 grapharc models                          # what backends are configured (redacts secrets)
+
+# These two cost money. Read the -m live warning first.
 grapharc run capstone --model openrouter/anthropic/claude-haiku-4.5 \
                       --reviewer-model openrouter/openai/gpt-4o-mini
 python -m grapharc.examples.agent_fixit --model openrouter/anthropic/claude-haiku-4.5
 ```
 
-Key docs: `ARCHITECTURE.md` (target design) · `ROADMAP.md` (numbered backlog) ·
-`ASSESSMENT.md` (honest self-critique) · `VISION.md` (thesis) · `docs/cookbook/` (recipes).
+Key docs: `ARCHITECTURE.md` §7 (**current** gap analysis, re-derived) ·
+`ROADMAP.md` (numbered backlog) · `ASSESSMENT.md` (honest self-critique of an
+earlier tree) · `VISION.md` (thesis) · `docs/cookbook/` (112 runnable recipes) ·
+`CHANGELOG.md`.

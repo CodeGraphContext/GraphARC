@@ -51,10 +51,14 @@ usually leaks:
   `{name: kind}` mapping to say what those nodes are.
 
 What this module does *not* do. It does not build a runnable graph — admission
-authorises a shape, materialising it is a separate step that does not exist
-yet. It does not inspect `ProposedNode.args`: no rule here can constrain them,
-so a future materialiser that forwards a planner's args to a factory has to
-gate them itself — admission authorises the *kind*, not its arguments. It does
+authorises a shape, and turning one into work is `grapharc.planner.materialize`,
+which takes the `AdmissionResult` this returns and refuses to build anything
+else. It does not inspect `ProposedNode.args`: no rule here can constrain them,
+so `Materializer(forward_args=True)`, which hands them to a factory unchecked,
+has to gate them itself — admission authorises the *kind*, not its arguments. It
+does not govern `name` either, in either direction: a name is not matched
+against any rule, and is refused only for being unusable (the sentinels, the
+orchestrator's `__`-prefixed namespace, a duplicate, or the charset). It does
 not route approvals: an edge whose policy says `ask` yields
 `AdmissionStatus.NEEDS_APPROVAL`, which is not admitted, and who gets asked is
 someone else's job (ROADMAP §7.2). It cannot see the live graph's own edges, so
@@ -195,18 +199,42 @@ class NodeSpec(BaseModel):
 
 
 class NodeRegistry:
-    """The allowlist of node kinds. Absence is refusal; there is no wildcard."""
+    """The allowlist of node kinds. Absence is refusal; there is no wildcard.
+
+    Mutable by default, because assembling one is ordinary start-up code. That
+    mutability outlives start-up, though: a driver that says every round is
+    checked "against the same registry" means the same *object*, and a node body
+    — operator code, but code a long run gives many chances to execute — can
+    call `register()` between rounds and widen the allowlist under the checker.
+    `freeze()` closes that, and a run that plans repeatedly should use it.
+    """
 
     def __init__(self, specs: Iterable[NodeSpec] = ()) -> None:
         self._specs: dict[str, NodeSpec] = {}
+        self._frozen = False
         for spec in specs:
             self.register(spec)
 
     def register(self, spec: NodeSpec) -> NodeRegistry:
+        if self._frozen:
+            raise ValueError(
+                f"node kind {spec.name!r} cannot be registered: this registry is "
+                "frozen. The allowlist a decision was made against must not change "
+                "underneath it"
+            )
         if spec.name in self._specs:
             raise ValueError(f"node kind {spec.name!r} already registered")
         self._specs[spec.name] = spec
         return self
+
+    def freeze(self) -> NodeRegistry:
+        """Refuse further registration. Idempotent, and returns self for chaining."""
+        self._frozen = True
+        return self
+
+    @property
+    def frozen(self) -> bool:
+        return self._frozen
 
     def get(self, name: str) -> NodeSpec | None:
         return self._specs.get(name)

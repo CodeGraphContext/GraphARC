@@ -5,9 +5,17 @@ keeping one running: awaiting things without blocking, routing at runtime,
 stopping for a human, surviving a process restart, putting the whole thing
 behind HTTP, and reading what happened afterwards.
 
-Every snippet below was executed exactly as printed, against
-`grapharc.testing.ScriptedChatModel`. No live model is called anywhere in this
-file; the one snippet that would need a key says so and was not run.
+Every Python snippet below was executed exactly as printed, against
+`grapharc.testing.ScriptedChatModel`, and `tests/test_cookbook_serving.py`
+re-runs each one and byte-compares it against the output block underneath. No
+live model is called anywhere in this file; the one snippet that would need a
+key says so and was not run.
+
+The `console` transcripts are the exception, and it is worth naming rather than
+leaving to be discovered: they were produced by running the commands shown, but
+the test only pairs ```python blocks, so nothing re-checks them on every commit.
+Treat a console block as a record of one real run rather than as a guarantee
+about the current tree.
 
 Three things to know before you start:
 

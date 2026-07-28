@@ -51,12 +51,27 @@ edge out of `START`; a proposed node `START` cannot reach, which would otherwise
 be admitted and then silently never run; and an empty proposal, which authorises
 nothing and so has nothing to build.
 
-Two limits worth stating rather than implying. `UnadmittedTransition` covers a
+**Whose boundary this is.** "The authorisation cannot be skipped" is a claim
+about the *planner*, which emits JSON and has no channel to construct a Python
+object. It is not a claim of unforgeability: an `AdmissionResult` is ordinary
+Pydantic data, so a caller who hand-builds one with a matching `proposal_id` and
+`fingerprint` will materialise and run anything, and no signature check here
+would help — the caller already has the interpreter. The line this module holds
+is between the planner and the operator, not between the operator and itself.
+
+Four limits worth stating rather than implying. `UnadmittedTransition` covers a
 `Command` a body returns; it says nothing about what that body does *inside*
 itself — calling another graph, spawning a thread — which is the tool and
-permission planes' business, not this one's. And a kind's `worst_case` from
-admission is an estimate the operator wrote; the meter passed to `invoke()` is
-what actually stops the run.
+permission planes' business, not this one's. A `Command(goto=…)` is *additive*
+to the static edges the proposal declared rather than a replacement for them, so
+a confined body cannot use `goto` to skip an admitted successor: routing to
+`END` alongside a declared edge still runs the declared edge. A kind's
+`worst_case` from admission is an estimate the operator wrote; the meter passed
+to `invoke()` is what actually stops the run. And a proposal that is *cyclic* —
+which needs a checker built with `require_acyclic=False` — bounded only by a
+default `Budget` will run to LangGraph's recursion limit, on the order of ten
+thousand node executions, before it stops. That is bounded rather than a hang,
+but it is not a bound anyone chose: give such a run an explicit budget.
 """
 
 from __future__ import annotations
@@ -245,16 +260,33 @@ class Materializer:
             trace=self.trace,
         )
         outgoing = self._outgoing(proposal)
-        for node in proposal.nodes:
-            body = self._body(node, proposal)
-            graph.add_node(
-                node.name,
-                _confine(node.name, body, outgoing.get(node.name, frozenset())),
-                writes=self._writes_for(node, body),
-            )
-        for edge in proposal.edges:
-            graph.add_edge(edge.source, edge.target)
-        return graph.compile(checkpointer=checkpointer)
+        # Assembly is wrapped so that *nothing* leaves this method as a foreign
+        # exception type. The kernel and LangGraph below it both raise their own
+        # classes — `WritePermissionError` for a declared write the schema has no
+        # field for, a bare `ValueError` for a node name LangGraph reserves — and
+        # a caller that catches `MaterializationError` (as `GovernedLoop` does)
+        # would otherwise see those escape and turn a recorded stop into a crash.
+        # The checks above catch the cases worth a specific message; this catches
+        # the rest, including whatever the next LangGraph release decides to
+        # reject.
+        try:
+            for node in proposal.nodes:
+                body = self._body(node, proposal)
+                graph.add_node(
+                    node.name,
+                    _confine(node.name, body, outgoing.get(node.name, frozenset())),
+                    writes=self._writes_for(node, body),
+                )
+            for edge in proposal.edges:
+                graph.add_edge(edge.source, edge.target)
+            return graph.compile(checkpointer=checkpointer)
+        except MaterializationError:
+            raise
+        except Exception as exc:
+            raise MaterializationError(
+                f"proposal {proposal.proposal_id} was admitted but could not be "
+                f"assembled into a graph: {type(exc).__name__}: {exc}"
+            ) from exc
 
     # -- the refusals ---------------------------------------------------------
 
@@ -275,7 +307,14 @@ class Materializer:
                 f"(status: {admitted.status.value}); nothing may be built from it. "
                 f"{admitted.feedback()}"
             )
-        actual = proposal.fingerprint()
+        # `Subgraph.fingerprint(proposal)`, not `proposal.fingerprint()`: the
+        # bound call is virtual, and a subclass that overrides it to return the
+        # hash of some *other*, admitted proposal passes this check while
+        # carrying different nodes — verified by writing that subclass. The
+        # unbound call hashes what this object actually contains. It does not
+        # make the result unforgeable (see the trust-boundary note in the module
+        # docstring); it removes the cheapest way to lie about the proposal.
+        actual = Subgraph.fingerprint(proposal)
         if admitted.fingerprint != actual or admitted.proposal_id != proposal.proposal_id:
             raise NotAdmitted(
                 f"this AdmissionResult authorised proposal {admitted.proposal_id} "
@@ -325,6 +364,34 @@ class Materializer:
                 "admitted and would never run, which is a proposal that does not "
                 "mean what it says"
             )
+        self._require_declarable_writes(proposal)
+
+    def _require_declarable_writes(self, proposal: Subgraph) -> None:
+        """The writes *table* is checked here; a body's own `writes` cannot be.
+
+        An operator table entry naming a field the state schema does not have is
+        a typo in operator code, and catching it at registration time would send
+        the kernel's `WritePermissionError` out of `materialize()` — a different
+        exception class than the one this module documents, and one
+        `GovernedLoop` does not catch. Checking it here keeps the promise in
+        `MaterializationError`'s docstring literally true: the refusal happens
+        before the first node is registered.
+
+        Only the table is reachable this early. A body's `writes` attribute is
+        not known until its factory has run, so that case is caught by the
+        wrapper in `materialize()` instead.
+        """
+        fields = set(self.state_schema.model_fields)
+        kinds = {node.kind for node in proposal.nodes}
+        for kind in sorted(kinds & set(self.writes)):
+            unknown = sorted(self.writes[kind] - fields)
+            if unknown:
+                raise MaterializationError(
+                    f"the writes table entry for kind {kind!r} names "
+                    f"{unknown}, which {self.state_schema.__name__} has no field "
+                    f"for; declared writes name state fields, and this is an "
+                    f"operator typo rather than anything the proposal did"
+                )
 
     @staticmethod
     def _reachable(proposal: Subgraph) -> set[str]:

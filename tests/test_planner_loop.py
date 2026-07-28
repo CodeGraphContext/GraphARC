@@ -912,6 +912,137 @@ def test_a_later_round_cannot_rename_its_way_past_a_denial_the_first_round_respe
     assert result.state.steps == ["look"]
 
 
+@pytest.mark.parametrize(
+    "reserved", ["__interrupt__", "__pregel_pull", "__pregel_push", "__copy__", "__anything__"]
+)
+def test_a_name_in_the_orchestrators_namespace_is_refused_by_the_schema(reserved):
+    """A model-chosen string must not be able to reach LangGraph's reserved set.
+
+    `__start__` and `__end__` were refused; the rest of the dunder space was not.
+    A proposal naming `__interrupt__` was *admitted* — names are deliberately not
+    governed by policy — and then LangGraph raised a bare `ValueError` from
+    inside `add_node`, which is neither a `MaterializationError` nor anything the
+    loop catches. The whole prefix is refused rather than the members enumerated,
+    because the membership list is LangGraph's private constant and grows.
+    """
+    with pytest.raises(ValidationError, match="orchestrator's own namespace"):
+        ProposedNode(name=reserved, kind="fetch")
+
+
+def test_an_unusable_name_stops_the_run_for_a_reason_instead_of_raising():
+    """The loop's "every stop is a reason" contract, against the crash above."""
+    loop, model, bodies = build_loop(
+        [plan(("__interrupt__", "fetch"))],
+        on_exhausted="repeat",
+        limits=LoopLimits(max_rounds=9, max_consecutive_planning_failures=3),
+    )
+
+    result = loop.run("go", LoopState())
+
+    assert result.stop is LoopStop.PLANNING_FAILED
+    assert len(result.rounds) == 3
+    assert bodies.ran == []
+    assert "orchestrator's own namespace" in result.rounds[0].planner_error
+
+
+def test_a_writes_table_naming_an_unknown_field_is_refused_before_anything_is_registered():
+    """`MaterializationError`'s docstring promises this happens before registration.
+
+    It did not: the kernel raised `WritePermissionError` at `add_node`, a class
+    this module does not document and `GovernedLoop._execute` does not catch, so
+    an operator typo escaped `run()` as a crash.
+    """
+    bodies = Bodies()
+    reg = registry(bodies)
+    proposal = subgraph(("read", "fetch"))
+
+    with pytest.raises(MaterializationError, match="LoopState has no field for"):
+        Materializer(
+            registry=reg, state_schema=LoopState, writes={"fetch": {"stpes"}}
+        ).materialize(admitted(reg, proposal), proposal)
+
+    assert bodies.built == []  # refused before a single factory was called
+
+
+def test_no_foreign_exception_escapes_materialisation():
+    """A body's own `writes` is not known until its factory has run.
+
+    That case cannot be checked up front, so it is converted instead: whatever
+    the kernel or LangGraph raises during assembly comes out as
+    `MaterializationError`, which is the class the loop catches and records.
+    """
+
+    def factory(build):
+        def body(state: LoopState) -> dict:
+            return {}
+
+        body.writes = {"not_a_field_on_LoopState"}
+        return body
+
+    reg = NodeRegistry([NodeSpec(name="fetch", worst_case=FREE, factory=factory)])
+    proposal = subgraph(("read", "fetch"))
+
+    with pytest.raises(MaterializationError, match="could not be assembled into a graph"):
+        Materializer(registry=reg, state_schema=LoopState).materialize(
+            admitted(reg, proposal), proposal
+        )
+
+
+def test_a_subclass_cannot_lie_about_its_own_fingerprint():
+    """The match is computed on what the object holds, not on what it reports.
+
+    `proposal.fingerprint()` is a virtual call. A `Subgraph` subclass that
+    overrides it to return an *admitted* proposal's hash passed the check while
+    carrying entirely different nodes — a policy-denied `deploy` ran. The
+    unbound `Subgraph.fingerprint(proposal)` hashes the real contents.
+
+    This does not make an `AdmissionResult` unforgeable: a caller who builds one
+    by hand with a matching fingerprint still materialises, and nothing in a
+    library can stop code that already has the interpreter. It closes the
+    cheapest lie, and the boundary is documented in the module docstring.
+    """
+    bodies = Bodies()
+    reg = registry(bodies)
+    honest = subgraph(("read", "fetch"))
+    denied = subgraph(("ship", "deploy"))
+    approval = gate(reg, policy=DENY_DEPLOY).check(honest)
+    assert approval.admitted
+
+    class Liar(Subgraph):
+        def fingerprint(self) -> str:
+            return honest.fingerprint()
+
+    smuggled = Liar(
+        nodes=denied.nodes,
+        edges=denied.edges,
+        rationale="looks like the admitted one",
+        proposal_id=honest.proposal_id,
+    )
+
+    with pytest.raises(NotAdmitted, match="what runs must be what was admitted"):
+        Materializer(registry=reg, state_schema=LoopState).materialize(approval, smuggled)
+    assert bodies.ran == []
+
+
+def test_a_frozen_registry_cannot_be_widened_underneath_a_decision():
+    """`GovernedLoop` re-checks every round against the same registry *object*.
+
+    Same object is not same contents while `register()` stays callable, so a
+    node body could add a kind between rounds and have round 2 admitted against
+    an allowlist round 1 never saw. `freeze()` is the mitigation the loop
+    docstring points at.
+    """
+    reg = registry(Bodies())
+    reg.register(NodeSpec(name="late", worst_case=FREE))  # fine before freezing
+    assert "late" in reg.names()
+
+    reg.freeze()
+    assert reg.frozen
+    with pytest.raises(ValueError, match="this registry is frozen"):
+        reg.register(NodeSpec(name="later_still", worst_case=FREE))
+    assert "later_still" not in reg.names()
+
+
 def test_a_planner_that_keeps_proposing_an_unregistered_node_stops_for_a_reason():
     loop, model, bodies = build_loop(
         [plan(("wipe", "rm_rf"))],

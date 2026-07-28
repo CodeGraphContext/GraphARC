@@ -50,6 +50,17 @@ from grapharc.runtime.parsing import extract_json
 # never be ambiguous about where the name ends.
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}")
 _SENTINELS = (START, END)
+# LangGraph names its internals with a dunder prefix — `__start__`, `__end__`,
+# `__interrupt__`, `__pregel_pull`, `__pregel_push`, and a `RESERVED` set that
+# grows between releases. Naming a node into that space is refused here rather
+# than enumerated, because the enumeration is someone else's private constant:
+# listing today's members would leave the next release's members reachable. A
+# planner that proposed `__interrupt__` used to be admitted (names are
+# deliberately not governed by policy) and then crashed the materialiser with a
+# bare `ValueError` from inside LangGraph — a model-chosen string escaping the
+# loop's "every stop is a reason" contract. No legitimate proposal needs the
+# prefix, so the whole space is refused with feedback the planner can act on.
+_INTERNAL_PREFIX = "__"
 
 
 class PlannerConfigError(Exception):
@@ -68,6 +79,11 @@ def _check_name(value: str, *, what: str) -> str:
         raise ValueError(
             f"{what} {value!r} is not a valid name: expected "
             r"[A-Za-z_][A-Za-z0-9_.-]{0,63}"
+        )
+    if value.startswith(_INTERNAL_PREFIX):
+        raise ValueError(
+            f"{what} {value!r} starts with {_INTERNAL_PREFIX!r}, which is the "
+            "orchestrator's own namespace; choose a name that does not"
         )
     return value
 
@@ -88,8 +104,16 @@ class ProposedNode(BaseModel):
     it. Renaming an instance therefore changes nothing about what it is allowed
     to do, in either direction.
 
-    `args` are carried for a future materialiser and are **not** inspected by
-    admission — see `grapharc.planner.admission`. Nothing consumes them today.
+    A `name` is still refused for being *unusable* rather than for being
+    disallowed: the `START`/`END` sentinels, anything in the orchestrator's
+    `__`-prefixed namespace, a duplicate within one subgraph, or a string
+    outside the charset. That is not governance — it is keeping a model-chosen
+    string from reaching machinery that would crash on it.
+
+    `args` are **not** inspected by admission — see
+    `grapharc.planner.admission`. They reach a factory only when the operator
+    builds the materialiser with `forward_args=True`, which is opt-in precisely
+    because nothing has gated them; the default drops them.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

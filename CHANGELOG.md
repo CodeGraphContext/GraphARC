@@ -208,8 +208,17 @@ Declared but not implemented, or implemented less far than the name suggests:
   work being built against them has somewhere to declare itself.
 - No `py.typed` marker ships, so type checkers treat the package as untyped
   even though the source is annotated.
-- Admission authorises a proposed subgraph and stops; materialising one into a
-  live graph is not implemented.
+- Nothing shipped drives the governed loop. `Materializer` and `GovernedLoop`
+  close the propose → admit → execute → replan cycle as a library API, and
+  `grapharc.planner` is imported by no other module: no CLI command, no example
+  graph, no session graph reaches it.
+- Admission authorises a *kind*, never its arguments. `Materializer` drops
+  `ProposedNode.args` unless built with `forward_args=True`, which hands a
+  planner's unchecked dictionary to a factory.
+- An `AdmissionResult` is ordinary data, not a signed capability. The gate it
+  enforces is between the planner and the operator: a caller who hand-builds one
+  with a matching fingerprint materialises anything, and no library check can
+  prevent that.
 - `HashingEmbedder` is lexical, not semantic. Semantic retrieval requires
   injecting a real embedder.
 - `bind_tools` raises `NotImplementedError` on the `claude-cli` backend, which
