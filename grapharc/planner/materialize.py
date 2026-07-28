@@ -297,9 +297,21 @@ class Materializer:
                 f"{type(admitted).__name__}; a proposal on its own carries no "
                 "authorisation and there is no entry point that accepts one"
             )
-        if not isinstance(proposal, Subgraph):
+        # Exact type, not `isinstance`. Every way of matching a proposal to its
+        # authorisation ends in a method call on the proposal, and a subclass can
+        # override any of them: overriding `fingerprint()` was the first attack,
+        # and overriding the `model_dump_json()` that `fingerprint()` calls
+        # defeats an unbound `Subgraph.fingerprint(proposal)` just as well. There
+        # is no method here a subclass cannot reach, so the type is refused
+        # instead of the methods being hardened one at a time. A planner's reply
+        # is parsed into exactly this class, so nothing legitimate is lost.
+        if type(proposal) is not Subgraph:
             raise NotAdmitted(
-                f"materialize() takes the Subgraph second, got {type(proposal).__name__}"
+                f"materialize() takes a Subgraph second, got "
+                f"{type(proposal).__name__}. A subclass is refused rather than "
+                "trusted: the fingerprint match is computed by calling methods on "
+                "this object, and a subclass can override them to report an "
+                "admitted proposal's hash while carrying different nodes"
             )
         if not admitted.admitted:
             raise NotAdmitted(

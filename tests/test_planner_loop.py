@@ -988,18 +988,24 @@ def test_no_foreign_exception_escapes_materialisation():
         )
 
 
-def test_a_subclass_cannot_lie_about_its_own_fingerprint():
-    """The match is computed on what the object holds, not on what it reports.
+@pytest.mark.parametrize("overridden", ["fingerprint", "model_dump_json"])
+def test_a_subclass_cannot_lie_about_what_it_contains(overridden):
+    """Matching a proposal to its authorisation ends in a call *on the proposal*.
 
-    `proposal.fingerprint()` is a virtual call. A `Subgraph` subclass that
-    overrides it to return an *admitted* proposal's hash passed the check while
-    carrying entirely different nodes — a policy-denied `deploy` ran. The
-    unbound `Subgraph.fingerprint(proposal)` hashes the real contents.
+    Two attacks, one root cause. Overriding `fingerprint()` to return an
+    admitted proposal's hash ran a policy-denied `deploy`. Calling the unbound
+    `Subgraph.fingerprint(proposal)` looked like the fix and was not: that
+    function calls `self.model_dump_json()`, so overriding *that* instead
+    defeats it identically — verified, `deploy` executed again.
 
-    This does not make an `AdmissionResult` unforgeable: a caller who builds one
-    by hand with a matching fingerprint still materialises, and nothing in a
-    library can stop code that already has the interpreter. It closes the
-    cheapest lie, and the boundary is documented in the module docstring.
+    There is no method here a subclass cannot reach, so the subclass is refused
+    rather than the methods hardened one at a time. Both variants are
+    parametrised so neither can be fixed without the other.
+
+    This still does not make an `AdmissionResult` unforgeable — a caller who
+    builds one by hand with a matching fingerprint materialises anything, and no
+    library check stops code that already has the interpreter. See the
+    trust-boundary note in the module docstring.
     """
     bodies = Bodies()
     reg = registry(bodies)
@@ -1008,9 +1014,17 @@ def test_a_subclass_cannot_lie_about_its_own_fingerprint():
     approval = gate(reg, policy=DENY_DEPLOY).check(honest)
     assert approval.admitted
 
-    class Liar(Subgraph):
-        def fingerprint(self) -> str:
-            return honest.fingerprint()
+    if overridden == "fingerprint":
+
+        class Liar(Subgraph):
+            def fingerprint(self) -> str:
+                return honest.fingerprint()
+
+    else:
+
+        class Liar(Subgraph):  # type: ignore[no-redef]
+            def model_dump_json(self, **kwargs) -> str:
+                return honest.model_dump_json(**kwargs)
 
     smuggled = Liar(
         nodes=denied.nodes,
@@ -1019,7 +1033,7 @@ def test_a_subclass_cannot_lie_about_its_own_fingerprint():
         proposal_id=honest.proposal_id,
     )
 
-    with pytest.raises(NotAdmitted, match="what runs must be what was admitted"):
+    with pytest.raises(NotAdmitted, match="A subclass is refused rather than trusted"):
         Materializer(registry=reg, state_schema=LoopState).materialize(approval, smuggled)
     assert bodies.ran == []
 

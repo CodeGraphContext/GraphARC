@@ -46,9 +46,9 @@ Full design: `ARCHITECTURE.md`. Thesis and honest scope: `VISION.md`.
 |---|---|---|
 | Repo | `/home/shashank/Desktop/GraphARC`, branch `main` | |
 | Remote | `github.com/CodeGraphContext/GraphARC` | `git remote -v` |
-| HEAD | `857f620`, plus the planner hardening below | `git log -1` |
-| **Unpushed** | **13 commits.** `origin/main` is still at `feef03d` "Initial commit". | `git log origin/main..HEAD` |
-| Tests | **1,338 passed, 10 deselected** (live) | `.venv/bin/python -m pytest` |
+| HEAD | see `git log -1`; it moved four times during the last session | `git log -1` |
+| **Unpushed** | **14 commits.** `origin/main` is still at `feef03d` "Initial commit". | `git log origin/main..HEAD` |
+| Tests | **1,339 passed, 10 deselected** (live) | `.venv/bin/python -m pytest` |
 | Lint | clean | `.venv/bin/python -m ruff check .` |
 | Build | wheel + sdist; 93 modules import from the wheel in a clean venv | `uv build` |
 | Version | `0.1.0a0` — **not yet bumped for release** | |
@@ -85,6 +85,14 @@ paid APIs and cost real money.**
 > **Use bare `.venv/bin/python -m pytest`.** If you must override addopts,
 > always write `-o addopts="" -m "not live"` — never the first half alone.
 
+> ### This repo has been edited by concurrent agents
+>
+> During one verification session HEAD moved four times and HANDOFF.md was
+> rewritten twice *while agents were auditing it*, so several of their findings
+> were already stale when reported. If you fan work out, give the agents
+> **disjoint file sets**, and re-derive any number you intend to write down
+> rather than quoting one an agent gave you. `git status` before you start.
+
 ### History rewrite, already done
 
 The README once said "*inspired by* (never copied from)". The user judged the
@@ -94,7 +102,9 @@ deleted going forward. Done via `filter-branch --tree-filter`, then
 `gc --prune=now` run. Verified unreachable from every ref:
 
 ```bash
-git log --all -S "not copied from"      # must print nothing
+# Pathspec matters: this file quotes the phrase, so an unrestricted
+# search now matches HANDOFF.md's own history instead of the README's.
+git log --all -S "not copied from" -- README.md    # must print nothing
 ```
 
 Attribution to OpenClaw, Hermes, Claude Code and OpenRouter is intact and
@@ -109,7 +119,7 @@ Source lines excluding tests (`find grapharc/<pkg> -name '*.py' | xargs cat | wc
 
 ```
 grapharc/
-  planner/   2554  proposals, admission, materialisation, the governed loop
+  planner/   2696  proposals, admission, materialisation, the governed loop
   harness/   2165  tool registry, permissions, sandbox, container executor, AgentNode
   memory/    2165  claims with provenance, SQLite, traversal, contradiction detection
   session/   2084  long-lived, cross-process resume, interrupt, human approval
@@ -123,8 +133,9 @@ grapharc/
   policy/     867  TOML rules, approval routing, decision audit
 ```
 
-`planner/` is now the **largest** subsystem. In the previous handoff it was the
-thinnest, and that inversion is the story of the last session.
+`planner/` is now the **largest** subsystem. One handoff ago it was 1,409 lines
+and ranked sixth *smallest* of twelve — not the thinnest, but the one whose
+central claim was unbuilt. That inversion is the story of the last session.
 
 38 test files. `tests/test_planner_loop.py` (62 tests) is the one to read first
 if you are touching the gate. The seven core tools are `read_file`,
@@ -197,14 +208,27 @@ matters more than the count.
   itself — a planner emits JSON and has no channel to build a Python object.
   Now documented in `materialize.py`'s docstring rather than left to be
   over-read.
-- **Subclass `Subgraph` and override `fingerprint()`** to return an admitted
-  proposal's hash → used to run a denied `deploy`. **Fixed**: the check now
-  calls the unbound `Subgraph.fingerprint(proposal)`, so it hashes what the
-  object holds rather than what it reports.
+- **Subclass `Subgraph` and lie about what it contains** → ran a denied
+  `deploy`. **Fixed, on the second attempt, and the first attempt is the lesson.**
+  Overriding `fingerprint()` was the reported attack; the obvious fix was to call
+  the unbound `Subgraph.fingerprint(proposal)`. That is not a fix — the function
+  calls `self.model_dump_json()`, so overriding *that* instead defeats it
+  identically, and a second reviewer demonstrated `deploy` executing against the
+  supposedly-patched tree. Every route to matching a proposal ends in a method
+  call on the proposal, and a subclass reaches all of them, so the *type* is now
+  refused: `materialize()` takes exactly `Subgraph`, never a subclass. Both
+  override paths are parametrised in one test so neither can regress alone.
+
+  Worth internalising: a fix that repels the reported attack while leaving the
+  mechanism intact is not a fix, and it is more dangerous than the bug because
+  it retires the alarm.
 - **Widen the registry between rounds.** "Every round is checked against the
   same registry" meant the same *object*; `register()` stayed callable, so a
-  node body could add a kind that round 2 is then admitted against. **Fixed**:
-  `NodeRegistry.freeze()` added, and `loop.py` now points at it.
+  node body could add a kind that round 2 is then admitted against.
+  **Mitigation added, not on by default**: `NodeRegistry.freeze()` exists and
+  works, `loop.py` points at it — and *nothing in the shipped path calls it*, so
+  a registry is mutable unless you freeze it yourself. Saying this is "fixed"
+  would be the same overclaim the audits keep catching.
 
 The security claim that survives all of this, stated exactly: **a planner
 cannot get unauthorized work executed.** Claims about an operator being unable
@@ -238,14 +262,15 @@ exempt snippet can never acquire an output block.
 restate the promise without these):
 
 - **`01-basics.md` is not extracted.** `tests/test_cookbook_basics.py` never
-  opens the markdown file — its 38 tests *reproduce* each recipe in Python
+  opens the markdown file — its 39 tests *reproduce* each recipe in Python
   rather than parsing the page and byte-comparing. The page says "reproduces",
   which is honest; but it means page 1 alone can drift from its tests silently.
   The other five pages do parse and byte-compare. **Worth closing.**
-- **`console` blocks are never re-run.** The extractors pair ```python blocks
-  only, so the five ```console transcripts in `06-serving-and-ops.md` are
-  checked by nothing. That page now says so explicitly instead of claiming
-  "every snippet below was executed".
+- **`console` blocks are re-run on one page only.** `test_cookbook_models.py`
+  sets `EXECUTABLE_LANGS = {"python", "console"}` and really does execute them;
+  the agents and serving extractors pair ```python blocks alone, so the five
+  ```console transcripts in `06-serving-and-ops.md` are checked by nothing. That
+  page now says so instead of claiming "every snippet below was executed".
 
 Writing those tests immediately caught a real flake: the session-interrupt
 example posted a stop from a thread and hoped it beat the next superstep. It
@@ -315,8 +340,8 @@ review it. So:
    and `ROADMAP.md` §0, not smoothed over.
 4. Never weaken a test to make something pass.
 5. **A green test is not proof the property holds.** Attack the property
-   yourself before believing it. The nine attacks above were run *after* the
-   suite was green, and that is the standard.
+   yourself before believing it. The attacks above were run *after* the suite was
+   green — and three of them landed, including one whose first fix was wrong.
 
 `ASSESSMENT.md` is the honest self-assessment — independent reviewers were asked
 whether this is a thin LangGraph wrapper, told not to be kind, and three of four
@@ -349,7 +374,8 @@ here.
   be stated properly: a planner proposes topology at runtime, a deterministic
   model-free checker admits or refuses it, materialisation is bound to that
   authorisation by content hash, and *every* replanning round is re-checked.
-  The nine refused attacks above are the evidence.
+  The ten refused attacks above are the evidence, and the three that succeeded
+  are the boundary.
 
   **Do not overstate it.** It is novel as a *composition*, not as new
   technology, and it is undercut by gap #1: nothing shipped drives it. Until
@@ -365,7 +391,8 @@ here.
    that a reader can run and watch. This converts the project's single most
    defensible claim from a test fixture into a demo. Nothing else comes close in
    value. (ROADMAP §12.1)
-2. **Decide the version and push.** 13 commits are unpushed. I would argue for
+2. **Decide the version and push.** 14 commits are unpushed, and they are the
+   whole project — there is no second copy anywhere. I would argue for
    `0.1.0`, not `1.0.0` — a 1.0 implies API stability and several subsystems are
    days old.
 3. **Publish to PyPI.** `.github/workflows/release.yml` is tag-driven
@@ -445,18 +472,38 @@ Do not let these get quietly dropped from the docs.
 ## Quick commands
 
 ```bash
-.venv/bin/python -m pytest              # bare -q ONLY; see the -qq trap above
+# `grapharc` is NOT on PATH — it lives only at .venv/bin/grapharc. Either
+# activate the venv (`source .venv/bin/activate`) or use the full path, as
+# below. Bare `python` is likewise not the venv interpreter.
+
+.venv/bin/python -m pytest              # bare, no extra -q; see the traps above
 .venv/bin/python -m ruff check .
 uv build                                 # wheel + sdist
 
-grapharc --help                          # run agent serve models replay diff trace metrics viz
-grapharc models                          # what backends are configured (redacts secrets)
+.venv/bin/grapharc --help                # run agent serve models replay diff trace metrics viz
+.venv/bin/grapharc models                # which backends are configured (redacts the key)
 
-# These two cost money. Read the -m live warning first.
-grapharc run capstone --model openrouter/anthropic/claude-haiku-4.5 \
-                      --reviewer-model openrouter/openai/gpt-4o-mini
-python -m grapharc.examples.agent_fixit --model openrouter/anthropic/claude-haiku-4.5
+# Run one cookbook page's tests after editing it — five of six extract and
+# byte-compare, so a changed output block fails until you paste the real one:
+.venv/bin/python -m pytest tests/test_cookbook_governance.py
+
+# These two cost money. Read the live-test trap above first.
+.venv/bin/grapharc run capstone --model openrouter/anthropic/claude-haiku-4.5 \
+                                --reviewer-model openrouter/openai/gpt-4o-mini
+.venv/bin/python -m grapharc.examples.agent_fixit \
+                                --model openrouter/anthropic/claude-haiku-4.5
 ```
+
+If `.venv/` is missing or stale, rebuild it with `uv sync --all-extras --group
+dev`. CI pins Python 3.12 in every job while this venv is 3.14, so a passing
+local run is not proof CI passes — `.github/workflows/ci.yml` runs four jobs
+(`lint`, `live-marker-guard`, `test` on 3.12/3.13/3.14, `build`).
+
+The ten live tests are `test_gateway_openrouter.py` (7),
+`test_gateway_gate.py` (1), `test_gateway.py` (1) and `test_v0_gate.py` (1) —
+the last being a full agentic run, so it is the expensive one. List them
+without running them:
+`.venv/bin/python -m pytest -m live --collect-only -o addopts="" -q`.
 
 Key docs: `ARCHITECTURE.md` §7 (**current** gap analysis, re-derived) ·
 `ROADMAP.md` (numbered backlog) · `ASSESSMENT.md` (honest self-critique of an
