@@ -19,6 +19,13 @@ Operational caveats (by design, documented in the plan): no prompt caching on
 this path — keep node contexts lean; subscription quota burn — budget caps are
 load-bearing; the backend stays swappable (LangChain `init_chat_model` /
 OpenRouter can replace it via config when a key exists).
+
+Failures are classified before they are retried (see `resilience`). The CLI
+reports everything through an exit code and free text, so the classifier reads
+that text for evidence of transience and defaults to *not* retrying — a
+mis-classified 401 would burn three logins' worth of nothing. Note that a
+timeout counts as transient, so worst-case latency is `max_attempts *
+timeout_seconds`; lower one of the two for a latency-sensitive node.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+from contextlib import ExitStack
 from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -33,6 +41,16 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
+
+from grapharc.gateway.errors import GatewayError, TransientGatewayError
+from grapharc.gateway.resilience import DEFAULT_RETRY_POLICY, RetryPolicy, call_with_retry
+from grapharc.gateway.spend import SpendMeter
+
+__all__ = [
+    "ClaudeCodeCLIChatModel",
+    "GatewayError",
+    "TransientGatewayError",
+]
 
 # Known built-in tools, denied by name, plus a wildcard for good measure.
 # The CLI filters denied tools before the model ever sees their schemas.
@@ -58,13 +76,63 @@ _ALL_TOOLS = [
 ]
 
 
-class GatewayError(Exception):
-    """The CLI backend failed or returned something unusable."""
+# Evidence that the CLI hit something temporary. Matched case-insensitively
+# against stderr / the error result.
+_TRANSIENT_MARKERS = (
+    "rate limit",
+    "rate-limit",
+    "429",
+    "overloaded",
+    "500 internal",
+    "502",
+    "503",
+    "504",
+    "529",
+    "service unavailable",
+    "temporarily unavailable",
+    "timed out",
+    "timeout",
+    "connection reset",
+    "connection refused",
+    "connection error",
+    "econnreset",
+    "etimedout",
+    "try again",
+)
+
+# Checked first, and they win: an auth failure whose text ends "please try
+# again" is still an auth failure, and retrying it three times fixes nothing.
+_DETERMINISTIC_MARKERS = (
+    "not logged in",
+    "invalid api key",
+    "authentication",
+    "unauthorized",
+    "forbidden",
+    "permission denied",
+    "invalid model",
+    "unknown model",
+    "credit balance",
+    "usage limit reached",
+)
 
 
 def _canonical_model(model: str) -> str:
     """Accept OpenClaw-style refs (`anthropic/claude-sonnet-5`) and bare IDs."""
     return model.split("/", 1)[1] if model.startswith("anthropic/") else model
+
+
+def _cli_failure(message: str, evidence: str) -> GatewayError:
+    """Build the right error class for a CLI failure from its own text.
+
+    Closed by default: without positive evidence of transience the failure is
+    deterministic and is raised on the first attempt.
+    """
+    text = evidence.lower()
+    if any(marker in text for marker in _DETERMINISTIC_MARKERS):
+        return GatewayError(message)
+    if any(marker in text for marker in _TRANSIENT_MARKERS):
+        return TransientGatewayError(message)
+    return GatewayError(message)
 
 
 class ClaudeCodeCLIChatModel(BaseChatModel):
@@ -75,7 +143,18 @@ class ClaudeCodeCLIChatModel(BaseChatModel):
     timeout_seconds: float = 600.0
     workdir: str | None = None  # empty scratch dir by default
 
+    retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY
+    # Seeds `spend.ceiling_usd` at construction. Pass `spend=` instead to share
+    # one ceiling across several model objects.
+    cost_ceiling_usd: float | None = None
+    spend: SpendMeter = Field(default_factory=SpendMeter, exclude=True)
+
     last_usage: dict[str, Any] | None = Field(default=None, exclude=True)
+
+    def model_post_init(self, context: Any, /) -> None:
+        super().model_post_init(context)
+        if self.cost_ceiling_usd is not None and self.spend.ceiling_usd is None:
+            self.spend.ceiling_usd = self.cost_ceiling_usd
 
     @property
     def _llm_type(self) -> str:
@@ -118,16 +197,8 @@ class ClaudeCodeCLIChatModel(BaseChatModel):
         system = "\n\n".join(system_parts) or None
         return system, "\n\n".join(prompt_parts)
 
-    def _generate(
-        self,
-        messages: list[BaseMessage],
-        stop: list[str] | None = None,
-        run_manager: CallbackManagerForLLMRun | None = None,
-        **kwargs: Any,
-    ) -> ChatResult:
-        system, prompt = self._render_prompt(messages)
-        argv = self._build_argv(system)
-        cwd = self.workdir or tempfile.mkdtemp(prefix="grapharc-gateway-")
+    def _invoke_cli(self, argv: list[str], prompt: str, cwd: str) -> dict[str, Any]:
+        """One attempt: run the CLI and parse its JSON, or raise a classified error."""
         try:
             proc = subprocess.run(  # noqa: S603 — argv array, no shell
                 argv,
@@ -143,22 +214,61 @@ class ClaudeCodeCLIChatModel(BaseChatModel):
                 "and log in, or configure a different backend"
             ) from exc
         except subprocess.TimeoutExpired as exc:
-            raise GatewayError(f"claude -p timed out after {self.timeout_seconds}s") from exc
+            raise TransientGatewayError(
+                f"claude -p timed out after {self.timeout_seconds}s"
+            ) from exc
 
         if proc.returncode != 0:
-            raise GatewayError(
-                f"claude -p exited {proc.returncode}: {proc.stderr.strip()[:500]}"
-            )
+            stderr = proc.stderr.strip()
+            raise _cli_failure(f"claude -p exited {proc.returncode}: {stderr[:500]}", stderr)
 
         try:
             payload = json.loads(proc.stdout)
         except json.JSONDecodeError as exc:
+            # Deterministic on purpose: truncated or non-JSON output is far more
+            # often a wrong flag or a wrapper script than a blip, and a retry
+            # cannot tell the difference.
             raise GatewayError(
                 f"claude -p returned non-JSON output: {proc.stdout[:200]!r}"
             ) from exc
 
         if payload.get("is_error"):
-            raise GatewayError(f"claude -p reported an error: {payload.get('result')!r}")
+            result = str(payload.get("result"))
+            raise _cli_failure(f"claude -p reported an error: {result!r}", result)
+        return payload
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        system, prompt = self._render_prompt(messages)
+        argv = self._build_argv(system)
+        self.spend.ensure_headroom(model=self.model)
+
+        retries = 0
+
+        def _count_retry(attempt: int, delay: float, exc: BaseException) -> None:
+            nonlocal retries
+            retries = attempt
+
+        with ExitStack() as stack:
+            # The scratch dir must outlive every attempt and die with the call:
+            # `mkdtemp` here leaked one directory per invocation. Cleanup errors
+            # are swallowed rather than raised, so an undeletable directory
+            # cannot turn a completed (and paid-for) call into a failure.
+            cwd = self.workdir or stack.enter_context(
+                tempfile.TemporaryDirectory(
+                    prefix="grapharc-gateway-", ignore_cleanup_errors=True
+                )
+            )
+            payload = call_with_retry(
+                lambda: self._invoke_cli(argv, prompt, cwd),
+                policy=self.retry_policy,
+                on_retry=_count_retry,
+            )
 
         text = str(payload.get("result", ""))
         usage = payload.get("usage") or {}
@@ -179,12 +289,18 @@ class ClaudeCodeCLIChatModel(BaseChatModel):
                 "cache_read": cache_read,
             },
         }
+        cost_usd = payload.get("total_cost_usd")
         # Uniform usage envelope (OpenRouter discipline): native counts + cost.
+        # Recorded before the ceiling is enforced, so a caller that catches
+        # `CostCeilingExceeded` can still read what the last call cost.
         self.last_usage = {
             **usage_metadata,
             "uncached_input_tokens": uncached,
-            "cost_usd": payload.get("total_cost_usd"),
+            "cost_usd": cost_usd,
             "model": self.model,
+            "retries": retries,
+            "cumulative_cost_usd": self.spend.spent_usd + float(cost_usd or 0.0),
         }
+        self.spend.charge(cost_usd, model=self.model)
         message = AIMessage(content=text, usage_metadata=usage_metadata)
         return ChatResult(generations=[ChatGeneration(message=message)])

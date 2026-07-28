@@ -1,0 +1,156 @@
+name: release
+
+# Publishes to PyPI when a `v*` tag is pushed. There is no API token anywhere in
+# this repository or in its secrets: publishing uses PyPI Trusted Publishing
+# (OIDC), which requires a one-time configuration on PyPI naming this
+# repository, this workflow filename, and the `pypi` environment. Until that
+# configuration exists the publish step fails closed with an OIDC error rather
+# than uploading anything.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and check only; do not publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build and verify the distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Tag must match the packaged version
+        # A tag that disagrees with pyproject would publish a version nobody
+        # can reproduce from the tag, so refuse before building.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          uv run --no-project python - <<'PY'
+          import os
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as fh:
+              packaged = tomllib.load(fh)["project"]["version"]
+          tagged = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          if tagged != packaged:
+              sys.exit(f"tag v{tagged} does not match pyproject version {packaged}")
+          print(f"ok: tag and pyproject both say {packaged}")
+          PY
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Metadata check
+        run: uvx twine check --strict dist/*
+
+      - name: Wheel installs and imports in a clean environment
+        # A version can only be uploaded to PyPI once, so this gate is at least
+        # as strict as ci.yml's: the installed module list is compared against
+        # the checkout rather than merely walked. A subpackage can go missing
+        # from a build that reports success — hatchling treats `.gitignore` as a
+        # build exclusion unless `ignore-vcs` is set — and there is no way to
+        # take that wheel back off the index afterwards.
+        run: |
+          uv venv --python 3.12 /tmp/releasecheck
+          uv pip install --python /tmp/releasecheck/bin/python "$(echo dist/*.whl)[all]"
+          cd /tmp
+          SOURCE_TREE="$GITHUB_WORKSPACE" /tmp/releasecheck/bin/python - <<'PY'
+          import importlib
+          import os
+          import pkgutil
+          import sys
+          from pathlib import Path
+
+          import grapharc
+
+          assert "/tmp/releasecheck/" in grapharc.__file__, grapharc.__file__
+
+          source = Path(os.environ["SOURCE_TREE"]) / "grapharc"
+          expected = {
+              ".".join(("grapharc", *path.relative_to(source).parts))[: -len(".py")].removesuffix(
+                  ".__init__"
+              )
+              for path in source.rglob("*.py")
+              if "__pycache__" not in path.parts
+          }
+          installed = {m.name for m in pkgutil.walk_packages(grapharc.__path__, "grapharc.")}
+          installed.add("grapharc")
+
+          missing = sorted(expected - installed)
+          if missing:
+              sys.exit(f"refusing to publish: in the source tree but not in the wheel: {missing}")
+
+          for name in sorted(installed):
+              importlib.import_module(name)
+          print(f"ok: wheel {grapharc.__version__} carries all {len(installed)} modules")
+          PY
+          /tmp/releasecheck/bin/grapharc --version
+      - name: Sdist installs, and carries nothing it should not
+        # The sdist is published alongside the wheel, so anything secret in it
+        # is published too.
+        run: |
+          uv venv --python 3.12 /tmp/releasesdist
+          uv pip install --python /tmp/releasesdist/bin/python "$(echo dist/*.tar.gz)"
+          (cd /tmp && /tmp/releasesdist/bin/grapharc --version)
+          python3 - <<'PY'
+          import glob
+          import sys
+          import tarfile
+
+          root = tarfile.open(glob.glob("dist/*.tar.gz")[0]).getnames()
+          names = {name.split("/", 1)[1] for name in root if "/" in name}
+
+          missing = sorted({"CHANGELOG.md", "LICENSE", "README.md", "pyproject.toml"} - names)
+          if missing:
+              sys.exit(f"refusing to publish: missing from the sdist: {missing}")
+
+          leaked = sorted(
+              n
+              for n in names
+              if n == ".env"
+              or n.startswith((".env", ".venv/", ".claude/"))
+              or "__pycache__" in n
+              or n.endswith((".pyc", ".sqlite", ".jsonl"))
+          )
+          if leaked:
+              sys.exit(f"refusing to publish: these must not ship: {leaked}")
+          print(f"ok: sdist carries {len(names)} files and none of them are secrets or junk")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Tags only. A manual dry run builds and verifies but never uploads.
+    if: startsWith(github.ref, 'refs/tags/')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/grapharc
+    permissions:
+      # The OIDC token that Trusted Publishing exchanges for an upload session.
+      # This is the only credential involved; nothing is stored in the repo.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

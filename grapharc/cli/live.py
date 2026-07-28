@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit
 from grapharc.gateway import different_providers, get_model
 from grapharc.memory import MemoryStore
 from grapharc.observe.metrics import summarize
@@ -37,43 +38,79 @@ def run_live(
     *,
     model_spec: str,
     reviewer_spec: str | None = None,
+    as_json: bool = False,
 ) -> int:
+    """Run one example against real models. Returns the process exit code.
+
+    The header is printed as it is decided rather than with the result, because
+    a live run can take minutes and an operator watching it needs to see which
+    models were picked before the bill starts. JSON output has no such reader,
+    so it is emitted once, at the end, as a single document.
+    """
     trace = TraceRecorder(trace_path)
     run_id = f"live-{example}"
 
-    print(f"model    : {model_spec}")
+    def say(line: str) -> None:
+        if not as_json:
+            print(line)
+
+    say(f"model    : {model_spec}")
     model = get_model(model_spec, temperature=0)
 
     reviewer = None
+    correlated = None
     if _needs_reviewer(example):
         reviewer_spec = reviewer_spec or DEFAULT_REVIEWER
-        print(f"reviewer : {reviewer_spec}")
-        if not different_providers(model_spec, reviewer_spec):
-            print(
+        say(f"reviewer : {reviewer_spec}")
+        correlated = not different_providers(model_spec, reviewer_spec)
+        if correlated:
+            say(
                 "  warning: author and reviewer share a provider — correlated "
                 "agreement makes this weaker evidence than a cross-vendor pair"
             )
         reviewer = get_model(reviewer_spec, temperature=0)
-    print(f"budget   : {LIVE_BUDGET.max_tokens:,} tokens / {LIVE_BUDGET.max_seconds:.0f}s")
-    print()
+    say(f"budget   : {LIVE_BUDGET.max_tokens:,} tokens / {LIVE_BUDGET.max_seconds:.0f}s")
+    say("")
+
+    header = {
+        "command": "run",
+        "example": example,
+        "live": True,
+        "model": model_spec,
+        "reviewer_model": reviewer_spec,
+        "correlated_reviewer": correlated,
+        "run_id": run_id,
+        "trace": str(trace_path),
+    }
 
     result = _build_and_run(example, model, reviewer, trace, run_id)
     if result is None:
-        print(f"'{example}' has no live wiring yet")
-        return 1
-
-    for key, value in result.items():
-        rendered = str(value)
-        print(f"{key}: {rendered[:400]}{'…' if len(rendered) > 400 else ''}")
+        emit(
+            {"ok": False, **header, "error": f"'{example}' has no live wiring yet"},
+            [f"'{example}' has no live wiring yet"],
+            as_json=as_json,
+        )
+        return EXIT_FAILED
 
     metrics = summarize(trace, run_id)
+    lines = []
+    for key, value in result.items():
+        rendered = str(value)
+        lines.append(f"{key}: {rendered[:400]}{'…' if len(rendered) > 400 else ''}")
     if metrics:
-        print(
-            f"\nspent: {metrics.tokens:,} tokens across {metrics.nodes_executed} nodes "
+        lines.append("")
+        lines.append(
+            f"spent: {metrics.tokens:,} tokens across {metrics.nodes_executed} nodes "
             f"in {metrics.duration_ms / 1000:.1f}s"
         )
-    print(f"trace: {trace_path}")
-    return 0
+    lines.append(f"trace: {trace_path}")
+
+    emit(
+        {"ok": True, **header, "result": result, "metrics": metrics},
+        lines,
+        as_json=as_json,
+    )
+    return EXIT_OK
 
 
 def _build_and_run(example, model, reviewer, trace, run_id):

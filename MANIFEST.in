@@ -1,0 +1,31 @@
+# THIS FILE DOES NOT CONTROL THE BUILD.
+#
+# GraphARC builds with hatchling (see `[build-system]` in pyproject.toml), and
+# hatchling never reads MANIFEST.in — that is a setuptools file. Editing this
+# file alone changes nothing about what `uv build` puts in the sdist; verified
+# by building with directives in it and diffing the archive.
+#
+# The authority is `[tool.hatch.build.targets.sdist].include` in pyproject.toml,
+# plus the shared `[tool.hatch.build].exclude`. Change that, not this. This file
+# exists because tools and people expect a MANIFEST.in to be here, and it is
+# kept from becoming a lie by `tests/test_packaging.py`, which fails if the two
+# lists ever disagree.
+#
+# --- mirrors [tool.hatch.build.targets.sdist].include ---
+
+graft grapharc
+graft tests
+include *.md
+include LICENSE
+include MANIFEST.in
+include pyproject.toml
+include uv.lock
+
+# --- mirrors [tool.hatch.build].exclude ---
+
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude .pytest_cache
+global-exclude .ruff_cache
+global-exclude *.sqlite
+global-exclude *.jsonl

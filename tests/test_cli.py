@@ -1,0 +1,887 @@
+"""Tests for the `grapharc` command line.
+
+Every command is driven through `main(argv)` rather than a subprocess. The exit
+code and the emitted document are the interface; spawning a process would test
+the shell's argument splitting and hide the assertion behind a pipe.
+
+Two things these tests will not do. They never call a model: `grapharc agent`
+resolves its model through `grapharc.gateway.get_model`, which is replaced with
+a scripted tool-calling double, so no test here can reach a provider. And they
+never bind a socket: `serve` is checked by giving it a server package whose
+runner records its arguments instead of running them.
+
+The three packages the CLI delegates to — `grapharc.tools`, `grapharc.server`,
+`grapharc.observe.replay` — are exercised as installed where they exist. Their
+"not in this checkout" paths are exercised by putting `None` in `sys.modules`,
+which is what CPython does to a module whose import is halted, so the command
+takes the same branch it would on a machine that never had them.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+from types import ModuleType
+
+import pytest
+from langchain_core.messages import AIMessage
+from pydantic import BaseModel
+
+from grapharc.cli.agent import _approval
+from grapharc.cli.main import build_parser, main
+from grapharc.examples.stage0_dag import DEMO_DOC, build_stage0
+from grapharc.harness import ToolSpec
+from grapharc.observe.trace import TraceRecorder
+
+# -- harness ------------------------------------------------------------------
+
+
+def call(argv: list[str], capsys) -> tuple[int, str, str]:
+    code = main(argv)
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def call_json(argv: list[str], capsys) -> tuple[int, dict, str]:
+    code, out, err = call([*argv, "--json"], capsys)
+    return code, json.loads(out), err
+
+
+class ToolCallingModel:
+    """A scripted tool-calling backend.
+
+    `AgentNode` needs a model that implements `bind_tools` and can emit
+    `tool_calls`; `ScriptedChatModel` does neither. Recording what it was bound
+    with is the point of the double as much as replaying turns: the schemas it
+    receives are the evidence that the policy filtered the tool set before the
+    model ever saw it.
+    """
+
+    def __init__(self, turns: list[dict]) -> None:
+        self.turns = list(turns)
+        self.bound_tools: list[str] | None = None
+        self.turn_count = 0
+
+    def bind_tools(self, schemas):
+        self.bound_tools = [s["function"]["name"] for s in schemas]
+        return self
+
+    def invoke(self, messages):
+        self.turn_count += 1
+        turn = self.turns.pop(0) if self.turns else {"content": "done"}
+        calls = [
+            {
+                "name": name,
+                "args": args,
+                "id": f"call-{self.turn_count}-{index}",
+                "type": "tool_call",
+            }
+            for index, (name, args) in enumerate(turn.get("tools", ()))
+        ]
+        return AIMessage(
+            content=turn.get("content", ""),
+            tool_calls=calls,
+            usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        )
+
+
+@pytest.fixture
+def scripted_model(monkeypatch):
+    def install(turns: list[dict]) -> ToolCallingModel:
+        model = ToolCallingModel(turns)
+        monkeypatch.setattr("grapharc.gateway.get_model", lambda spec, **kw: model)
+        return model
+
+    return install
+
+
+@pytest.fixture
+def stub_tools(monkeypatch):
+    """A stand-in for `grapharc.tools`.
+
+    The core toolset is another agent's package, and these tests have to hold
+    whether or not it is installed — so the default toolset here is a stub
+    registering the same shape of `ToolSpec`. The tools are real functions
+    against the real workspace, so what they prove (a write happened, a denial
+    stopped one) is real; only their provenance is stubbed.
+    `test_agent_drives_the_real_core_toolset` covers the shipped one.
+    """
+
+    def install(*, entry: str = "register_core_tools") -> ModuleType:
+        module = ModuleType("grapharc.tools")
+
+        def build(workspace) -> list[ToolSpec]:
+            root = Path(workspace)
+
+            def write_note(path: str, content: str) -> str:
+                """Write a note into the workspace."""
+                (root / path).write_text(content, encoding="utf-8")
+                return f"wrote {path}"
+
+            def list_notes() -> str:
+                """List the workspace."""
+                return ",".join(sorted(p.name for p in root.iterdir()))
+
+            def run_command(argv: str) -> str:
+                """Stand-in for the shell tool, so there is something to deny."""
+                return f"ran {argv}"
+
+            def spawn_child() -> str:
+                """Spawn a process: refused by the sandbox, allowed by the local executor."""
+                done = subprocess.run(  # noqa: S603 — fixed argv, no shell
+                    [sys.executable, "-c", "print('child ran')"],
+                    capture_output=True,
+                    text=True,
+                )
+                return done.stdout.strip()
+
+            return [
+                ToolSpec(name=fn.__name__, description=fn.__doc__ or "", fn=fn)
+                for fn in (write_note, list_notes, run_command, spawn_child)
+            ]
+
+        if entry == "register_core_tools":
+
+            def register_core_tools(registry, workspace):
+                for spec in build(workspace):
+                    registry.register(spec)
+                return registry
+
+            module.register_core_tools = register_core_tools
+        else:
+            module.core_tools = build
+
+        monkeypatch.setitem(sys.modules, "grapharc.tools", module)
+        return module
+
+    return install
+
+
+@pytest.fixture
+def two_runs(tmp_path) -> Path:
+    """A trace with three runs of one graph: `a` and `b` identical, `c` differing."""
+    trace = TraceRecorder(tmp_path / "trace.jsonl")
+    doc = tmp_path / "doc.md"
+    doc.write_text(DEMO_DOC, encoding="utf-8")
+    other = tmp_path / "other.md"
+    other.write_text(DEMO_DOC + "\n\nan extra sentence entirely.\n", encoding="utf-8")
+    report = tmp_path / "report.md"
+    graph = build_stage0(trace=trace)
+    graph.invoke({"doc_path": str(doc), "report_path": str(report)}, run_id="a")
+    graph.invoke({"doc_path": str(doc), "report_path": str(report)}, run_id="b")
+    graph.invoke({"doc_path": str(other), "report_path": str(report)}, run_id="c")
+    return tmp_path / "trace.jsonl"
+
+
+# -- --json is on every command -----------------------------------------------
+
+
+EVERY_COMMAND = [
+    ["run", "stage0"],
+    ["agent", "do the thing"],
+    ["serve"],
+    ["models"],
+    ["replay", "t.jsonl", "r1"],
+    ["diff", "t.jsonl", "r1", "r2"],
+    ["trace", "t.jsonl"],
+    ["metrics", "t.jsonl", "r1"],
+    ["viz", "t.jsonl", "r1"],
+]
+
+
+def test_every_command_accepts_json_after_its_arguments():
+    """Requirement, not decoration: any command must be drivable from a script.
+
+    Parsed rather than introspected, and with `--json` last, because that is
+    where a shell user types it — a flag that only works before the positional
+    arguments is a flag that does not work.
+    """
+    parser = build_parser()
+    for argv in EVERY_COMMAND:
+        args = parser.parse_args([*argv, "--json"])
+        assert args.json is True, argv
+        assert args.command == argv[0]
+
+
+def test_building_the_parser_imports_no_optional_package():
+    """`--help` must not depend on a package this checkout may not have.
+
+    Run in a fresh interpreter on purpose: `sys.modules` in this one is already
+    full of everything the rest of the suite imported, so the question can only
+    be asked somewhere that has imported nothing yet.
+
+    `grapharc.observe.replay` is not on the list — `grapharc.observe/__init__`
+    imports it, and the CLI needs `grapharc.observe.metrics` to read a trace.
+    """
+    probe = (
+        "import sys, grapharc.cli.main as m; m.build_parser(); "
+        "print([n for n in "
+        "('grapharc.tools','grapharc.server','grapharc.harness','grapharc.gateway',"
+        "'fastapi','uvicorn','langchain_openai') if n in sys.modules])"
+    )
+    done = subprocess.run(  # noqa: S603 — fixed argv, no shell
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert done.stdout.strip() == "[]"
+
+
+def test_json_failures_are_documents_on_stdout(tmp_path, capsys):
+    code, payload, err = call_json(["metrics", str(tmp_path / "nope.jsonl"), "r1"], capsys)
+    assert code == 2
+    assert payload == {
+        "ok": False,
+        "command": "metrics",
+        "error": f"no such trace file: {tmp_path / 'nope.jsonl'}",
+    }
+    assert err == ""
+
+
+def test_text_failures_go_to_stderr(tmp_path, capsys):
+    code, out, err = call(["metrics", str(tmp_path / "nope.jsonl"), "r1"], capsys)
+    assert code == 2
+    assert out == ""
+    assert "no such trace file" in err
+
+
+def test_a_read_of_a_missing_trace_creates_nothing(tmp_path, capsys):
+    """`TraceRecorder` makes its parent directory; a typo in a reader must not."""
+    missing = tmp_path / "never" / "trace.jsonl"
+    code, _, _ = call(["trace", str(missing)], capsys)
+    assert code == 2
+    assert not missing.parent.exists()
+
+
+# -- run / trace / metrics / viz ----------------------------------------------
+
+
+def test_run_example_writes_a_trace_and_reports_it(tmp_path, capsys):
+    trace = tmp_path / "trace.jsonl"
+    code, out, _ = call(["run", "stage0", "--trace", str(trace)], capsys)
+    assert code == 0
+    assert trace.exists()
+    assert str(trace) in out
+
+
+def test_run_example_json_carries_the_result(tmp_path, capsys):
+    trace = tmp_path / "trace.jsonl"
+    code, payload, _ = call_json(["run", "stage0", "--trace", str(trace)], capsys)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["example"] == "stage0"
+    assert payload["trace"] == str(trace)
+    assert payload["result"]["report_written"] is True
+    assert payload["result"]["counts"]
+
+
+def test_run_against_a_model_emits_one_document(tmp_path, capsys, monkeypatch):
+    """`--model` takes the live path. The `live` marker guards the spend, not the shape.
+
+    `grapharc.cli.live` binds `get_model` at import, so the patch has to land on
+    that name rather than on the gateway's.
+    """
+    from grapharc.testing import ScriptedChatModel
+
+    monkeypatch.setattr(
+        "grapharc.cli.live.get_model",
+        lambda spec, **kw: ScriptedChatModel(
+            responses=['{"term": "budgets"}', '{"term": "verifier"}'], on_exhausted="repeat"
+        ),
+    )
+    code, payload, _ = call_json(
+        ["run", "stage1", "--trace", str(tmp_path / "t.jsonl"), "--model", "mock/x"], capsys
+    )
+    assert code == 0
+    assert payload["live"] is True
+    assert payload["model"] == "mock/x"
+    assert payload["run_id"] == "live-stage1"
+    assert payload["metrics"]["tokens"] > 0
+
+
+def test_run_against_a_model_says_when_an_example_has_no_live_wiring(
+    tmp_path, capsys, monkeypatch
+):
+    from grapharc.testing import ScriptedChatModel
+
+    monkeypatch.setattr("grapharc.cli.live.get_model", lambda spec, **kw: ScriptedChatModel())
+    code, payload, _ = call_json(
+        ["run", "stage0", "--trace", str(tmp_path / "t.jsonl"), "--model", "mock/x"], capsys
+    )
+    assert code == 1
+    assert "no live wiring" in payload["error"]
+
+
+def test_trace_and_metrics_read_the_same_record(two_runs, capsys):
+    _, trace_payload, _ = call_json(["trace", str(two_runs), "--run-id", "a"], capsys)
+    _, metrics_payload, _ = call_json(["metrics", str(two_runs), "a"], capsys)
+    ends = [e for e in trace_payload["events"] if e["phase"] == "end"]
+    assert trace_payload["count"] == len(trace_payload["events"])
+    assert metrics_payload["nodes_executed"] == len(ends)
+    assert metrics_payload["graph"] == trace_payload["events"][0]["graph"]
+
+
+def test_metrics_for_an_unknown_run_exits_one(two_runs, capsys):
+    code, payload, _ = call_json(["metrics", str(two_runs), "ghost"], capsys)
+    assert code == 1
+    assert payload["ok"] is False
+    assert "ghost" in payload["error"]
+
+
+def test_viz_renders_the_executed_path(two_runs, capsys):
+    code, payload, _ = call_json(["viz", str(two_runs), "a"], capsys)
+    assert code == 0
+    assert payload["mermaid"].startswith("flowchart TD")
+    assert "load" in payload["mermaid"]
+
+
+# -- models -------------------------------------------------------------------
+
+
+def test_models_resolves_a_spec(capsys):
+    code, payload, _ = call_json(["models", "openrouter/anthropic/claude-haiku-4.5"], capsys)
+    assert code == 0
+    assert payload["backend"] == "openrouter"
+    assert payload["model"] == "anthropic/claude-haiku-4.5"
+
+
+def test_models_quotes_no_model_count(capsys):
+    """The old help line advertised '~400 models'. Nothing here counts them."""
+    _, out, _ = call(["models"], capsys)
+    assert "400 models" not in out
+    assert "~400" not in out
+
+
+def test_models_check_never_prints_the_key(monkeypatch, capsys):
+    secret = "sk-or-v1-0123456789abcdef0123456789abcdef"
+    monkeypatch.setenv("OPENROUTER_API_KEY", secret)
+    code, out, _ = call(["models", "--check"], capsys)
+    _, payload, _ = call_json(["models", "--check"], capsys)
+    assert code == 0  # a key is configured, so at least one provider is usable
+    assert secret not in out
+    assert secret not in json.dumps(payload)
+    openrouter = next(b for b in payload["backends"] if b["backend"] == "openrouter")
+    assert openrouter["usable"] is True
+    assert openrouter["credential"] == "sk-or-v…cdef"
+
+
+def test_models_check_exits_one_when_nothing_is_configured(monkeypatch, capsys):
+    for name in ("OPENROUTER_API_KEY", "OPENROUTER_KEY", "open-router-api-key"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("grapharc.gateway.config.find_env_file", lambda start=None: None)
+    monkeypatch.setattr("grapharc.cli.probe.shutil.which", lambda _: None)
+    code, payload, _ = call_json(["models", "--check"], capsys)
+    assert code == 1
+    assert payload["ok"] is False
+    usable = {b["backend"]: b["usable"] for b in payload["backends"]}
+    assert usable == {"claude-cli": False, "openrouter": False, "mock": True}
+    assert next(b for b in payload["backends"] if b["backend"] == "openrouter")[
+        "credential"
+    ] == "<unset>"
+
+
+def test_models_check_flags_a_backend_it_cannot_probe(monkeypatch, capsys):
+    """A backend added to the gateway must not silently vanish from the report."""
+    monkeypatch.setattr(
+        "grapharc.gateway.registry.BACKENDS", ("claude-cli", "openrouter", "mock", "bedrock")
+    )
+    _, payload, _ = call_json(["models", "--check"], capsys)
+    bedrock = next(b for b in payload["backends"] if b["backend"] == "bedrock")
+    assert bedrock["usable"] is None
+    assert "no probe" in bedrock["detail"]
+
+    _, out, _ = call(["models", "--check"], capsys)
+    assert "bedrock      unprobed" in out
+
+
+def test_models_check_and_a_spec_are_different_questions(capsys):
+    code, payload, _ = call_json(["models", "claude-cli/x", "--check"], capsys)
+    assert code == 2
+    assert "one or the other" in payload["error"]
+
+
+# -- agent --------------------------------------------------------------------
+
+
+def test_agent_runs_a_tool_under_a_policy(tmp_path, capsys, scripted_model, stub_tools):
+    stub_tools()
+    workspace = tmp_path / "ws"
+    model = scripted_model(
+        [
+            {"tools": [("write_note", {"path": "note.txt", "content": "hello"})]},
+            {"content": "wrote the note"},
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "write a note",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--deny",
+            "run_command",
+            "--run-id",
+            "cli-test",
+        ],
+        capsys,
+    )
+
+    assert code == 0
+    assert (workspace / "note.txt").read_text(encoding="utf-8") == "hello"
+    assert payload["termination_reason"] == "target_met"
+    assert payload["answer"] == "wrote the note"
+    assert payload["tool_calls"][0]["tool"] == "write_note"
+    assert payload["tool_calls"][0]["status"] == "ok"
+    assert payload["tokens"] == 30  # two turns at 15 each, metered not guessed
+
+    # What it was allowed to do, from both sides of the fence: the denied tool
+    # is absent from the report *and* was never described to the model.
+    assert "run_command" not in payload["tools_visible"]
+    assert "run_command" not in model.bound_tools
+    assert "write_note" in model.bound_tools
+
+    assert Path(payload["trace"]).exists()
+    assert payload["run_id"] == "cli-test"
+
+
+def test_agent_drives_the_real_core_toolset(tmp_path, capsys, scripted_model):
+    """The shipped toolset, when this checkout has one."""
+    pytest.importorskip("grapharc.tools")
+    workspace = tmp_path / "ws"
+    model = scripted_model(
+        [
+            {"tools": [("write_file", {"path": "note.txt", "content": "hello"})]},
+            {"content": "wrote the note"},
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "write a note",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--deny",
+            "run_command",
+        ],
+        capsys,
+    )
+    assert code == 0, payload
+    assert (workspace / "note.txt").read_text(encoding="utf-8") == "hello"
+    assert "write_file" in payload["tools_visible"]
+    assert "run_command" not in model.bound_tools
+
+
+def test_agent_trace_is_readable_by_the_other_commands(
+    tmp_path, capsys, scripted_model, stub_tools
+):
+    """The agent's trace is the same JSONL the readers consume — not a second format."""
+    stub_tools()
+    workspace = tmp_path / "ws"
+    scripted_model([{"tools": [("list_notes", {})]}, {"content": "empty"}])
+    _, agent_payload, _ = call_json(
+        ["agent", "look around", "--model", "mock/x", "--workspace", str(workspace)], capsys
+    )
+    code, trace_payload, _ = call_json(
+        ["trace", agent_payload["trace"], "--run-id", agent_payload["run_id"]], capsys
+    )
+    assert code == 0
+    phases = {event["phase"] for event in trace_payload["events"]}
+    assert {"model", "tool", "stop"} <= phases
+
+
+def test_agent_ask_is_refused_when_there_is_nobody_to_ask(
+    tmp_path, capsys, scripted_model, stub_tools
+):
+    stub_tools()
+    workspace = tmp_path / "ws"
+    scripted_model(
+        [
+            {"tools": [("write_note", {"path": "note.txt", "content": "hello"})]},
+            {"content": "I was not allowed to write"},
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "write a note",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--ask",
+            "write_note",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert payload["denied"] == 1
+    assert payload["tool_calls"][0]["refused_by"] == "policy"
+    assert not (workspace / "note.txt").exists()
+
+
+def test_approval_fails_closed_in_json_mode_even_on_a_tty(monkeypatch):
+    class Tty:
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    assert _approval(as_json=True, stream=Tty())("write_file", {}) is False
+    assert _approval(as_json=False, stream=Tty())("write_file", {}) is True
+
+
+def test_agent_accepts_a_core_tools_factory(tmp_path, capsys, scripted_model, stub_tools):
+    """The second supported shape of `grapharc.tools`, so it is not dead code."""
+    stub_tools(entry="core_tools")
+    scripted_model(
+        [{"tools": [("write_note", {"path": "n.txt", "content": "x"})]}, {"content": "done"}]
+    )
+    code, payload, _ = call_json(
+        ["agent", "note", "--model", "mock/x", "--workspace", str(tmp_path / "ws")], capsys
+    )
+    assert code == 0
+    assert payload["tools_from"] == "grapharc.tools.core_tools"
+    assert payload["tools_visible"] == ["list_notes", "run_command", "spawn_child", "write_note"]
+    assert payload["tool_calls"][0]["detail"] == "wrote n.txt"
+    assert (tmp_path / "ws" / "n.txt").exists()
+
+
+def test_agent_refuses_a_toolset_shape_it_cannot_read(monkeypatch, tmp_path, capsys):
+    stub = ModuleType("grapharc.tools")
+    stub.core_tools = lambda workspace: {"read_file": "not a ToolSpec"}
+    monkeypatch.setitem(sys.modules, "grapharc.tools", stub)
+    code, payload, _ = call_json(
+        ["agent", "x", "--model", "mock/x", "--workspace", str(tmp_path / "ws")], capsys
+    )
+    assert code == 2
+    assert "expects a ToolRegistry" in payload["error"]
+
+
+def test_agent_reports_a_missing_toolset(monkeypatch, tmp_path, capsys):
+    monkeypatch.setitem(sys.modules, "grapharc.tools", None)
+    code, payload, _ = call_json(
+        ["agent", "x", "--model", "mock/x", "--workspace", str(tmp_path / "ws")], capsys
+    )
+    assert code == 2
+    assert "grapharc.tools" in payload["error"]
+    assert "ROADMAP" in payload["error"]
+
+
+def test_agent_rejects_a_model_that_cannot_call_tools(
+    monkeypatch, tmp_path, capsys, stub_tools
+):
+    stub_tools()
+
+    class TextOnly:
+        def bind_tools(self, schemas):
+            raise NotImplementedError
+
+    monkeypatch.setattr("grapharc.gateway.get_model", lambda spec, **kw: TextOnly())
+    code, payload, _ = call_json(
+        ["agent", "x", "--model", "claude-cli/y", "--workspace", str(tmp_path / "ws")], capsys
+    )
+    assert code == 2
+    assert "bind_tools" in payload["error"]
+    # The failure still records what the run was configured to do.
+    assert payload["tools_visible"]
+    assert payload["policy"] == {"allow": ["*"], "ask": [], "deny": []}
+
+
+def test_executor_flag_picks_a_real_boundary(tmp_path, capsys, scripted_model, stub_tools):
+    """`--executor local` is not a label: the sandbox refuses a spawn and local runs it."""
+    stub_tools()
+    argv = ["agent", "spawn", "--model", "mock/x", "--workspace", str(tmp_path / "ws")]
+
+    scripted_model([{"tools": [("spawn_child", {})]}, {"content": "done"}])
+    _, sandboxed, _ = call_json(argv, capsys)
+    scripted_model([{"tools": [("spawn_child", {})]}, {"content": "done"}])
+    _, local, _ = call_json([*argv, "--executor", "local"], capsys)
+
+    assert sandboxed["executor"] == "sandbox"
+    assert sandboxed["tool_calls"][0]["refused_by"] == "sandbox"
+    assert sandboxed["refused"] == 1
+    assert local["executor"] == "local"
+    assert local["tool_calls"][0]["status"] == "ok"
+    assert local["tool_calls"][0]["detail"] == "child ran"
+
+
+def test_agent_wall_clock_ceiling_cuts_off_a_call_in_flight(
+    monkeypatch, tmp_path, capsys, stub_tools
+):
+    """`--max-seconds` is enforced during a call, not only checked between turns."""
+    stub_tools()
+
+    class SlowModel:
+        def bind_tools(self, schemas):
+            return self
+
+        def invoke(self, messages):
+            time.sleep(30)
+            return AIMessage(content="too late")
+
+    monkeypatch.setattr("grapharc.gateway.get_model", lambda spec, **kw: SlowModel())
+    started = time.monotonic()
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "wait",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(tmp_path / "ws"),
+            "--max-seconds",
+            "0.5",
+        ],
+        capsys,
+    )
+    elapsed = time.monotonic() - started
+    assert code == 1
+    assert "max_seconds" in payload["error"]
+    assert elapsed < 10, "the sleeping call was waited out rather than interrupted"
+
+
+def test_agent_reports_an_unusable_model_spec(tmp_path, capsys, stub_tools):
+    stub_tools()
+    code, payload, _ = call_json(
+        ["agent", "x", "--model", "notabackend/m", "--workspace", str(tmp_path / "ws")], capsys
+    )
+    assert code == 2
+    assert "could not build model" in payload["error"]
+
+
+def test_agent_stops_at_the_turn_cap_and_says_so(tmp_path, capsys, scripted_model, stub_tools):
+    stub_tools()
+    scripted_model(
+        [
+            {"tools": [("write_note", {"path": f"n{n}.txt", "content": str(n)})]}
+            for n in range(6)
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "explore",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(tmp_path / "ws"),
+            "--max-turns",
+            "2",
+        ],
+        capsys,
+    )
+    assert code == 1
+    assert payload["termination_reason"] == "max_iterations"
+    assert payload["turns"] == 2
+    assert payload["answer"] == ""  # a run that stopped short has no answer
+    assert payload["partial_output"] == ""
+
+
+# -- serve --------------------------------------------------------------------
+
+
+def _server_stub(record: dict, *, with_runner: bool = True) -> ModuleType:
+    stub = ModuleType("grapharc.server")
+
+    def create_app(**kwargs):
+        record["create_app"] = kwargs
+        return "THE-APP"
+
+    stub.create_app = create_app
+    if with_runner:
+
+        def serve(app, **kwargs):
+            record["served"] = (app, kwargs)
+
+        stub.serve = serve
+    return stub
+
+
+def test_serve_hands_the_app_to_the_server_packages_runner(monkeypatch, capsys):
+    record: dict = {}
+    monkeypatch.setitem(sys.modules, "grapharc.server", _server_stub(record))
+    code, payload, _ = call_json(["serve", "--host", "0.0.0.0", "--port", "9111"], capsys)
+    assert code == 0
+    assert record["served"] == (
+        "THE-APP",
+        {"host": "0.0.0.0", "port": 9111, "log_level": "info"},
+    )
+    assert payload["url"] == "http://0.0.0.0:9111"
+    assert payload["graphs"] == []
+
+
+def test_serve_falls_back_to_uvicorn(monkeypatch, capsys):
+    record: dict = {}
+    monkeypatch.setitem(sys.modules, "grapharc.server", _server_stub(record, with_runner=False))
+    fake_uvicorn = ModuleType("uvicorn")
+    fake_uvicorn.run = lambda app, **kwargs: record.setdefault("uvicorn", (app, kwargs))
+    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
+    code, _, _ = call(["serve", "--port", "9112"], capsys)
+    assert code == 0
+    assert record["uvicorn"][0] == "THE-APP"
+    assert record["uvicorn"][1]["port"] == 9112
+
+
+def test_serve_serves_the_registry_it_was_given(monkeypatch, capsys):
+    record: dict = {}
+    monkeypatch.setitem(sys.modules, "grapharc.server", _server_stub(record))
+
+    class FakeRegistry:
+        def names(self):
+            return ["triage"]
+
+    graphs = ModuleType("cli_test_graphs")
+    graphs.REGISTRY = FakeRegistry()
+    monkeypatch.setitem(sys.modules, "cli_test_graphs", graphs)
+
+    code, payload, _ = call_json(["serve", "--registry", "cli_test_graphs:REGISTRY"], capsys)
+    assert code == 0
+    assert record["create_app"]["registry"] is graphs.REGISTRY
+    assert payload["graphs"] == ["triage"]
+
+
+def test_serve_rejects_a_registry_that_is_not_module_attr(monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "grapharc.server", _server_stub({}))
+    code, payload, _ = call_json(["serve", "--registry", "just_a_module"], capsys)
+    assert code == 2
+    assert "module:attr" in payload["error"]
+
+
+def test_serve_reports_a_missing_server_package(monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "grapharc.server", None)
+    code, payload, _ = call_json(["serve"], capsys)
+    assert code == 2
+    assert "grapharc.server" in payload["error"]
+    assert "server extra" in payload["error"]
+
+
+# -- replay / diff ------------------------------------------------------------
+
+
+class FakeDiff(BaseModel):
+    run_a: str
+    run_b: str
+    identical: bool
+
+
+@pytest.fixture
+def stub_engine(monkeypatch):
+    """A stand-in for `grapharc.observe.replay`, recording what the CLI passed it.
+
+    The engine is another agent's module; these tests are about the CLI's half
+    of the contract — that it resolves the entry point, hands over a reader for
+    the right file, renders through the engine's own formatter, and turns the
+    verdict into an exit code — and they must hold with or without it.
+    """
+    record: dict = {}
+
+    module = ModuleType("grapharc.observe.replay")
+
+    def replay(source, run_id):
+        record["replay"] = (source, run_id)
+        if run_id == "boom":
+            raise ValueError("no events for run_id 'boom'")
+        return {"run_id": run_id, "path": ["load", "report"]}
+
+    def diff_trace(source, run_a, run_b):
+        record["diff"] = (source, run_a, run_b)
+        return FakeDiff(run_a=run_a, run_b=run_b, identical=run_b == "b")
+
+    module.replay = replay
+    module.diff_trace = diff_trace
+    module.format_replay = lambda run: f"FORMATTED-REPLAY {run['run_id']}"
+    module.format_diff = lambda d: f"FORMATTED-DIFF {d.run_a}->{d.run_b}"
+    monkeypatch.setitem(sys.modules, "grapharc.observe.replay", module)
+    return record
+
+
+def test_replay_delegates_to_the_engine(two_runs, capsys, stub_engine):
+    code, payload, _ = call_json(["replay", str(two_runs), "a"], capsys)
+    assert code == 0
+    assert payload["via"] == "grapharc.observe.replay.replay"
+    assert payload["result"] == {"run_id": "a", "path": ["load", "report"]}
+    source, run_id = stub_engine["replay"]
+    assert isinstance(source, TraceRecorder)
+    assert source.path == two_runs
+    assert run_id == "a"
+
+
+def test_replay_renders_through_the_engines_formatter(two_runs, capsys, stub_engine):
+    code, out, _ = call(["replay", str(two_runs), "a"], capsys)
+    assert code == 0
+    assert out.strip() == "FORMATTED-REPLAY a"
+
+
+def test_replay_reports_an_engine_failure(two_runs, capsys, stub_engine):
+    code, payload, _ = call_json(["replay", str(two_runs), "boom"], capsys)
+    assert code == 1
+    assert "boom" in payload["error"]
+
+
+def test_replay_of_a_missing_file_exits_two(tmp_path, capsys, stub_engine):
+    code, payload, _ = call_json(["replay", str(tmp_path / "nope.jsonl"), "a"], capsys)
+    assert code == 2
+    assert "no such trace file" in payload["error"]
+    assert "replay" not in stub_engine  # the engine is not asked about a file we do not have
+
+
+def test_replay_reports_a_missing_engine(monkeypatch, two_runs, capsys):
+    monkeypatch.setitem(sys.modules, "grapharc.observe.replay", None)
+    code, payload, _ = call_json(["replay", str(two_runs), "a"], capsys)
+    assert code == 2
+    assert "grapharc.observe.replay" in payload["error"]
+
+
+def test_diff_of_identical_runs_exits_zero(two_runs, capsys, stub_engine):
+    code, payload, _ = call_json(["diff", str(two_runs), "a", "b"], capsys)
+    assert code == 0
+    assert payload["identical"] is True
+    assert stub_engine["diff"][1:] == ("a", "b")
+
+
+def test_diff_exits_one_when_the_runs_differ(two_runs, capsys, stub_engine):
+    """`diff(1)`'s convention: a difference is reportable in `$?`, not only on stdout."""
+    code, payload, _ = call_json(["diff", str(two_runs), "a", "c"], capsys)
+    assert code == 1
+    assert payload["identical"] is False
+
+
+def test_diff_renders_through_the_engines_formatter(two_runs, capsys, stub_engine):
+    _, out, _ = call(["diff", str(two_runs), "a", "b"], capsys)
+    assert out.strip() == "FORMATTED-DIFF a->b"
+
+
+def test_diff_reports_a_missing_engine(monkeypatch, two_runs, capsys):
+    monkeypatch.setitem(sys.modules, "grapharc.observe.replay", None)
+    code, payload, _ = call_json(["diff", str(two_runs), "a", "b"], capsys)
+    assert code == 2
+    assert "ROADMAP" in payload["error"]
+
+
+# The shipped engine, when this checkout has one. Everything above holds either
+# way; these two say the wiring matches the real thing rather than only the stub.
+
+
+def test_replay_against_the_shipped_engine(two_runs, capsys):
+    pytest.importorskip("grapharc.observe.replay")
+    code, payload, _ = call_json(["replay", str(two_runs), "a"], capsys)
+    assert code == 0, payload
+    assert payload["result"]["run_id"] == "a"
+    assert [e["node"] for e in payload["result"]["executions"]] == [
+        "load",
+        "split",
+        "count",
+        "report",
+    ]
+
+
+def test_diff_against_the_shipped_engine(two_runs, capsys):
+    pytest.importorskip("grapharc.observe.replay")
+    same, identical_payload, _ = call_json(["diff", str(two_runs), "a", "b"], capsys)
+    differs, differing_payload, _ = call_json(["diff", str(two_runs), "a", "c"], capsys)
+    assert (same, identical_payload["identical"]) == (0, True)
+    assert (differs, differing_payload["identical"]) == (1, False)

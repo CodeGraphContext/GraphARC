@@ -4,18 +4,273 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+  lint:
+    name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: true
       - name: Sync dependencies
-        run: uv sync --group dev
+        run: uv sync --all-extras --group dev
       - name: Lint
         run: uv run ruff check .
-      - name: Gate tests
-        run: uv run pytest -m "not live"
+      - name: Version is declared twice; the two must agree
+        # `grapharc.__version__` is a separate literal from the packaged
+        # version. If they drift, `pip show` and `import` disagree about what
+        # is installed. Parsed rather than imported, so this needs no deps.
+        run: |
+          python3 - <<'PY'
+          import ast
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as fh:
+              packaged = tomllib.load(fh)["project"]["version"]
+
+          with open("grapharc/__init__.py", encoding="utf-8") as fh:
+              source = fh.read()
+
+          declared = None
+          for node in ast.parse(source).body:
+              if isinstance(node, ast.Assign) and any(
+                  isinstance(target, ast.Name) and target.id == "__version__"
+                  for target in node.targets
+              ):
+                  declared = ast.literal_eval(node.value)
+
+          if declared is None:
+              sys.exit("grapharc/__init__.py no longer declares __version__")
+          if declared != packaged:
+              sys.exit(f"grapharc.__version__ is {declared!r} but pyproject says {packaged!r}")
+          print(f"ok: version {packaged} declared in both places")
+          PY
+
+  live-marker-guard:
+    # A `live` test spends real money. `addopts` deselects the marker, but a
+    # config edit would silently re-enable it, so this asserts the *behaviour* —
+    # that no test pytest would run by default also appears in the `-m live`
+    # selection — rather than grepping pyproject.
+    #
+    # That comparison alone is not enough, and the second step says why: a
+    # *misspelled* marker is in neither selection, so the intersection stays
+    # empty and this job would pass while a plain `pytest` called a paid API.
+    # `--strict-markers` is what closes it, and the second step proves it is on.
+    name: live tests stay opt-in
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --all-extras --group dev
+      - name: Collect both selections and compare
+        run: |
+          uv run python - <<'PY'
+          import sys
+
+          import pytest
+
+
+          def selected(extra):
+              ids = []
+
+              class Capture:
+                  def pytest_collection_finish(self, session):
+                      ids.extend(item.nodeid for item in session.items)
+
+              code = pytest.main(["--collect-only", "-q", *extra], plugins=[Capture()])
+              if code not in (0, 5):
+                  sys.exit(f"collection failed with exit code {code}")
+              return set(ids)
+
+
+          default_run = selected([])
+          live_run = selected(["-m", "live"])
+
+          if not live_run:
+              sys.exit(
+                  "no test carries the `live` marker, so this guard proves nothing. "
+                  "Either the marker was dropped or the live tests were; fix one of them."
+              )
+
+          leaked = sorted(default_run & live_run)
+          if leaked:
+              sys.exit("a plain `pytest` would call a paid API:\n  " + "\n  ".join(leaked))
+
+          print(f"ok: {len(live_run)} live test(s) deselected, {len(default_run)} selected by default")
+          PY
+      - name: A misspelled marker must be a collection error, not a warning
+        # Written outside the repo so `testpaths` cannot pick it up, and run
+        # against the real pyproject so it is the shipped config being tested.
+        run: |
+          mkdir -p /tmp/markerguard
+          cat > /tmp/markerguard/test_typo.py <<'PY'
+          import pytest
+
+
+          @pytest.mark.lvie
+          def test_would_spend_money():
+              raise AssertionError("a paid API was called")
+          PY
+          cd /tmp/markerguard
+          if uv run --project "$GITHUB_WORKSPACE" pytest \
+               -c "$GITHUB_WORKSPACE/pyproject.toml" \
+               --rootdir /tmp/markerguard \
+               -p no:cacheprovider \
+               /tmp/markerguard/test_typo.py > /tmp/markerguard/out.txt 2>&1; then
+            cat /tmp/markerguard/out.txt
+            echo "::error::a misspelled marker was accepted; --strict-markers is not in effect"
+            exit 1
+          fi
+          if grep -q "a paid API was called" /tmp/markerguard/out.txt; then
+            cat /tmp/markerguard/out.txt
+            echo "::error::a test with a misspelled marker RAN despite -m 'not live'"
+            exit 1
+          fi
+          grep -q "lvie" /tmp/markerguard/out.txt
+          echo "ok: a misspelled marker is rejected at collection"
+
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      # All extras, because several tests skip themselves when an optional
+      # dependency is missing — syncing only the dev group silently shrinks
+      # the suite instead of failing.
+      - name: Sync dependencies
+        run: uv sync --all-extras --group dev
+      - name: Tests
+        # `addopts` in pyproject.toml supplies `-m 'not live'`.
+        run: uv run pytest
+
+  build:
+    name: build and check the distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Metadata check
+        run: uvx twine check --strict dist/*
+      - name: Wheel installs and imports in a clean environment
+        # Runs from /tmp so an `import grapharc` cannot fall back to the
+        # checked-out source tree and pass for the wrong reason.
+        run: |
+          uv venv --python 3.12 /tmp/wheelcheck
+          uv pip install --python /tmp/wheelcheck/bin/python "$(echo dist/*.whl)[all]"
+          cd /tmp
+          SOURCE_TREE="$GITHUB_WORKSPACE" /tmp/wheelcheck/bin/python - <<'PY'
+          import importlib
+          import os
+          import pkgutil
+          import sys
+          from pathlib import Path
+
+          import grapharc
+
+          assert "/tmp/wheelcheck/" in grapharc.__file__, grapharc.__file__
+          from grapharc import Budget, GraphARC, GraphARCState  # noqa: F401
+          from grapharc.gateway import get_model  # noqa: F401
+          from grapharc.harness import Harness  # noqa: F401
+
+          # Compared against the checkout rather than a magic number. A `walked
+          # > N` check cannot notice a whole subpackage going missing, and one
+          # did go missing in testing: hatchling treats `.gitignore` as a build
+          # exclusion unless `ignore-vcs` is set, and the build still succeeds.
+          source = Path(os.environ["SOURCE_TREE"]) / "grapharc"
+          expected = {
+              ".".join(("grapharc", *path.relative_to(source).parts))[: -len(".py")].removesuffix(
+                  ".__init__"
+              )
+              for path in source.rglob("*.py")
+              if "__pycache__" not in path.parts
+          }
+          installed = {m.name for m in pkgutil.walk_packages(grapharc.__path__, "grapharc.")}
+          installed.add("grapharc")
+
+          missing = sorted(expected - installed)
+          if missing:
+              sys.exit(f"in the source tree but not in the wheel: {missing}")
+
+          for name in sorted(installed):
+              importlib.import_module(name)
+          print(f"ok: {len(installed)} modules imported from wheel {grapharc.__version__}")
+          PY
+          /tmp/wheelcheck/bin/grapharc --version
+      - name: Sdist installs and imports in a clean environment
+        run: |
+          uv venv --python 3.12 /tmp/sdistcheck
+          uv pip install --python /tmp/sdistcheck/bin/python "$(echo dist/*.tar.gz)"
+          cd /tmp
+          /tmp/sdistcheck/bin/python -c "import grapharc; print(grapharc.__version__)"
+          /tmp/sdistcheck/bin/grapharc --version
+      - name: Sdist ships the files a rebuild and a reader need
+        run: |
+          python3 - <<'PY'
+          import glob
+          import sys
+          import tarfile
+
+          archive = glob.glob("dist/*.tar.gz")[0]
+          root = tarfile.open(archive).getnames()
+          names = {name.split("/", 1)[1] for name in root if "/" in name}
+
+          required = {
+              "CHANGELOG.md",
+              "CONTRIBUTING.md",
+              "LICENSE",
+              "MANIFEST.in",
+              "README.md",
+              "pyproject.toml",
+              "uv.lock",
+          }
+          missing = sorted(required - names)
+          if missing:
+              sys.exit(f"missing from the sdist: {missing}")
+
+          # An sdist is published; anything secret in it is published too.
+          leaked = sorted(
+              n
+              for n in names
+              if n == ".env"
+              or n.startswith((".env", ".venv/", ".claude/"))
+              or "__pycache__" in n
+              or n.endswith((".pyc", ".sqlite", ".jsonl"))
+          )
+          if leaked:
+              sys.exit(f"these must not ship: {leaked}")
+          print(f"ok: sdist carries {len(names)} files and none of them are secrets or junk")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error

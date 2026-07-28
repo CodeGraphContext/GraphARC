@@ -1,0 +1,791 @@
+"""Admission: the deterministic gate between proposing work and doing it.
+
+No model is involved here and none may be. A proposal arrives as data
+(`grapharc.planner.proposal.Subgraph`) and leaves as an `AdmissionResult` that
+either authorises it or names, per failed check, exactly why not. That
+asymmetry is the whole design: the planner may be as inventive as you like
+because nothing it invents runs until code that cannot be argued with says yes.
+
+Five checks, all of which run on every proposal so a planner gets the complete
+list rather than the first complaint:
+
+| Check | Question | Authority |
+|---|---|---|
+| REGISTRY | is every node's `kind` allowed, and does every edge endpoint exist? | `NodeRegistry` |
+| POLICY | is every edge permitted between the kinds it joins? | `EdgePolicy`, deny → ask → allow |
+| BUDGET | does the worst case fit what is *left*? | `RemainingBudget` |
+| DEPTH | is the nesting within the limit? | `AdmissionLimits.max_depth` |
+| ACYCLICITY | is the topology acyclic where that is required? | `AdmissionLimits` |
+
+Four properties worth stating precisely, because each is a place where a gate
+usually leaks:
+
+- **Nothing runs during a check.** `NodeSpec.factory` is never called, no state
+  is touched and no budget is charged; the meter is read, not written. An
+  over-budget proposal is therefore refused before its first node exists, not
+  after the run notices it overspent. The one side effect a check has is the
+  trace line it writes.
+- **A rejection is a returned object, not a fallback.** There is no "admit a
+  reduced version", no truncation of an over-large fan-out and no downgrade of
+  a denied edge. When a `TraceRecorder` is supplied, every decision — admitted
+  and rejected alike — is also written to the trace as a `phase="admission"`
+  event. That phase is deliberately not `"end"`: `observe.metrics` counts node
+  executions from `"end"` events, and an admission decision is not one.
+- **Costs come from the registry, never from the proposal.** A `ProposedNode`
+  cannot declare what it will cost. The worst case is the sum of the registry's
+  own `worst_case` figures for the kinds proposed, so a planner cannot buy
+  admission by claiming to be cheap. Where the registry's numbers come from is
+  the operator's problem; that they are the operator's numbers is the point.
+- **Every decision keys on the registry `kind`, never on the instance `name`.**
+  A `ProposedNode` carries both, and only one of them means anything: `kind` is
+  the key of a thing an operator registered, `name` is a label the planner
+  invented. So an `EdgeRule` denying `deploy` denies an edge into
+  `ProposedNode(name="helper", kind="deploy")` exactly as it denies one into
+  `ProposedNode(name="deploy")` — renaming an instance cannot launder it, and
+  naming an instance after a permitted kind cannot borrow that kind's
+  permission. Names still resolve *which* node an edge means and still appear in
+  rejections so an audit can find the edge; no rule is ever matched against one.
+  The corollary is that an endpoint whose kind the checker cannot determine — a
+  live node the caller listed by name alone — is refused rather than assumed
+  safe (`policy/unresolved_endpoint_kind`); pass `known_nodes` as a
+  `{name: kind}` mapping to say what those nodes are.
+
+What this module does *not* do. It does not build a runnable graph — admission
+authorises a shape, materialising it is a separate step that does not exist
+yet. It does not inspect `ProposedNode.args`: no rule here can constrain them,
+so a future materialiser that forwards a planner's args to a factory has to
+gate them itself — admission authorises the *kind*, not its arguments. It does
+not route approvals: an edge whose policy says `ask` yields
+`AdmissionStatus.NEEDS_APPROVAL`, which is not admitted, and who gets asked is
+someone else's job (ROADMAP §7.2). It cannot see the live graph's own edges, so
+a cycle formed *between* a proposed node and an existing one via `known_nodes`
+is outside what the acyclicity check can observe. And `parent_depth` is
+supplied by the caller: the checker has no way to verify how deep the run
+actually is, so a caller that always passes 0 has no recursion limit beyond the
+nesting visible inside a single proposal.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable, Mapping
+from enum import StrEnum
+from fnmatch import fnmatch
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict
+
+from grapharc.harness.permissions import Decision
+from grapharc.observe.trace import TraceRecorder
+from grapharc.planner.proposal import ProposedEdge, Subgraph
+from grapharc.runtime.budget import BudgetMeter
+from grapharc.runtime.graph import END, START, RunContext
+
+_SENTINELS = (START, END)
+
+
+class Check(StrEnum):
+    """The named gates. A rejection always carries one of these."""
+
+    REGISTRY = "registry"
+    POLICY = "policy"
+    BUDGET = "budget"
+    DEPTH = "depth"
+    ACYCLICITY = "acyclicity"
+
+
+class AdmissionStatus(StrEnum):
+    ADMITTED = "admitted"
+    REJECTED = "rejected"
+    # At least one edge resolved to `ask` and nothing resolved to `deny`. Not
+    # admitted: a pending approval is a stop, not a slow yes.
+    NEEDS_APPROVAL = "needs_approval"
+
+
+class AdmissionRejected(Exception):
+    """Raised by `AdmissionChecker.admit` when a proposal was not authorised."""
+
+    def __init__(self, result: AdmissionResult) -> None:
+        super().__init__(result.feedback())
+        self.result = result
+
+
+class Rejection(BaseModel):
+    """One failed check, in a shape a planner can be handed back verbatim."""
+
+    model_config = ConfigDict(frozen=True)
+
+    check: Check
+    # A stable machine-readable subcode. Match on this, not on `detail`.
+    code: str
+    # What the rejection is about: a node path, a rendered edge, a budget
+    # dimension. Scoped by `/` for nodes inside a nested subgraph.
+    subject: str
+    detail: str
+    remedy: str = ""
+
+    def render(self) -> str:
+        line = f"[{self.check.value}/{self.code}] {self.subject}: {self.detail}"
+        return f"{line} {self.remedy}" if self.remedy else line
+
+
+class CostEstimate(BaseModel):
+    """Worst-case resource use, in the registry's terms.
+
+    A dimension left at zero is simply unconstrained by that dimension's
+    budget check. The registry declaring nothing is not evidence that the node
+    costs nothing — it is evidence that nobody said.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    tokens: int = 0
+    iterations: int = 0
+    seconds: float = 0.0
+
+    def __add__(self, other: CostEstimate) -> CostEstimate:
+        return CostEstimate(
+            tokens=self.tokens + other.tokens,
+            iterations=self.iterations + other.iterations,
+            seconds=self.seconds + other.seconds,
+        )
+
+
+class RemainingBudget(BaseModel):
+    """What is left, per dimension. `None` means unlimited, matching `Budget`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    tokens: int | None = None
+    iterations: int | None = None
+    seconds: float | None = None
+
+    @classmethod
+    def from_meter(cls, meter: BudgetMeter) -> RemainingBudget:
+        """Read a live run's headroom. Read-only: nothing is charged.
+
+        Values go negative when a run has already overspent, which is correct —
+        every non-empty proposal is then over budget.
+        """
+        budget = meter.budget
+        return cls(
+            tokens=None if budget.max_tokens is None else budget.max_tokens - meter.tokens,
+            iterations=(
+                None
+                if budget.max_iterations is None
+                else budget.max_iterations - meter.iterations
+            ),
+            seconds=meter.remaining_seconds(),
+        )
+
+
+class NodeSpec(BaseModel):
+    """A node kind the operator allows, and what admitting one may cost.
+
+    `factory` is carried so a later materialising step has somewhere to get the
+    node from. **Admission never calls it** — being in the registry is a
+    licence to be proposed, not an invitation to run.
+    """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    name: str
+    description: str = ""
+    worst_case: CostEstimate = CostEstimate(iterations=1)
+    factory: Callable[..., Any] | None = None
+
+
+class NodeRegistry:
+    """The allowlist of node kinds. Absence is refusal; there is no wildcard."""
+
+    def __init__(self, specs: Iterable[NodeSpec] = ()) -> None:
+        self._specs: dict[str, NodeSpec] = {}
+        for spec in specs:
+            self.register(spec)
+
+    def register(self, spec: NodeSpec) -> NodeRegistry:
+        if spec.name in self._specs:
+            raise ValueError(f"node kind {spec.name!r} already registered")
+        self._specs[spec.name] = spec
+        return self
+
+    def get(self, name: str) -> NodeSpec | None:
+        return self._specs.get(name)
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._specs
+
+    def names(self) -> list[str]:
+        return sorted(self._specs)
+
+    def catalog(self) -> dict[str, str]:
+        """kind -> description, in the shape `PlannerNode(catalog=...)` wants."""
+        return {name: spec.description for name, spec in sorted(self._specs.items())}
+
+
+class EdgeRule(BaseModel):
+    """One deny/ask/allow rule over an edge, matched by fnmatch on both ends.
+
+    `source` and `target` are patterns over **registry kinds** — plus the
+    literal `START`/`END` sentinels, which no node may be named. They are never
+    matched against a planner's instance name.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    action: Decision
+    source: str = "*"
+    target: str = "*"
+
+
+class EdgePolicy(BaseModel):
+    """Which transitions are permitted: deny → ask → allow, unmatched is deny.
+
+    The tier ordering is `grapharc.harness.permissions.PermissionPolicy`'s,
+    reused because it is the semantics that survived contact with reality: a
+    broad deny beats a narrower allow, so there is no allowlist exception
+    hiding inside a denial. This is a separate object over *edges* rather than
+    tool names — it shares the `Decision` vocabulary and nothing else, so
+    widening what an agent may call cannot widen what a planner may wire.
+
+    The strings it decides over are **kinds**, resolved from the registry by
+    `AdmissionChecker`, not the names a planner chose for its instances. A rule
+    is a statement about what a node *is*, which is the only thing an operator
+    is in a position to authorise.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    rules: tuple[EdgeRule, ...] = ()
+    default: Decision = Decision.DENY
+
+    def decide(self, source_kind: str, target_kind: str) -> Decision:
+        """Decide one transition. Both arguments are kinds (or a sentinel)."""
+        for tier in (Decision.DENY, Decision.ASK, Decision.ALLOW):
+            for rule in self.rules:
+                if (
+                    rule.action == tier
+                    and fnmatch(source_kind, rule.source)
+                    and fnmatch(target_kind, rule.target)
+                ):
+                    return tier
+        return self.default
+
+
+class AdmissionLimits(BaseModel):
+    """Structural limits, set by the operator and not by the proposal."""
+
+    model_config = ConfigDict(frozen=True)
+
+    # Total planning depth allowed: the `parent_depth` the caller reports plus
+    # the nesting inside the proposal. 1 means flat proposals only — a planner
+    # running inside an admitted subgraph reports parent_depth=1, so its
+    # proposal lands at 2 and is refused. Raise it deliberately. The caller
+    # owns `parent_depth`; this limit is only as honest as that number.
+    max_depth: int = 1
+    # Cycles are earned, here as in the kernel's `dag=True`: the default refuses
+    # them and a proposal that genuinely needs one has to be admitted by a
+    # checker configured to allow it.
+    require_acyclic: bool = True
+
+
+class AdmissionResult(BaseModel):
+    """The decision, with everything needed to audit or replan from it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: AdmissionStatus
+    proposal_id: str
+    # Content hash of the exact proposal that was checked, so "what ran" can be
+    # matched against "what was admitted" after the fact.
+    fingerprint: str
+    rejections: tuple[Rejection, ...] = ()
+    checks_run: tuple[Check, ...] = ()
+    worst_case: CostEstimate = CostEstimate()
+    # False when a proposed kind was not in the registry, so its cost is
+    # unknown and `worst_case` is a lower bound. Such a proposal is always
+    # rejected by REGISTRY anyway; the flag exists so nobody reads the number
+    # as complete.
+    worst_case_complete: bool = True
+    remaining: RemainingBudget = RemainingBudget()
+    depth: int = 0
+    node_count: int = 0
+
+    @property
+    def admitted(self) -> bool:
+        return self.status is AdmissionStatus.ADMITTED
+
+    @property
+    def needs_approval(self) -> bool:
+        return self.status is AdmissionStatus.NEEDS_APPROVAL
+
+    def failed_checks(self) -> tuple[Check, ...]:
+        """The distinct checks that produced a rejection, in gate order."""
+        failed = {r.check for r in self.rejections}
+        return tuple(c for c in Check if c in failed)
+
+    def reasons(self, check: Check | None = None) -> tuple[Rejection, ...]:
+        if check is None:
+            return self.rejections
+        return tuple(r for r in self.rejections if r.check is check)
+
+    def feedback(self) -> str:
+        """The rejection as text to hand straight back to a planner."""
+        if self.admitted:
+            return f"Proposal {self.proposal_id} was admitted."
+        head = (
+            f"Proposal {self.proposal_id} was not admitted "
+            f"(status: {self.status.value}). Failed checks: "
+            f"{', '.join(c.value for c in self.failed_checks())}."
+        )
+        return "\n".join([head, *(f"- {r.render()}" for r in self.rejections)])
+
+
+class AdmissionChecker:
+    """The gate. Deterministic, model-free, and the only thing that says yes."""
+
+    def __init__(
+        self,
+        *,
+        registry: NodeRegistry,
+        edge_policy: EdgePolicy,
+        limits: AdmissionLimits | None = None,
+        known_nodes: Iterable[str] | Mapping[str, str] = (),
+        trace: TraceRecorder | None = None,
+        name: str = "admission",
+    ) -> None:
+        self.registry = registry
+        self.edge_policy = edge_policy
+        self.limits = limits or AdmissionLimits()
+        # Nodes already live in the graph this proposal attaches to. Edges may
+        # reference them; proposed nodes may not reuse their names.
+        #
+        # Pass a `{name: kind}` mapping to say what those live nodes *are*: the
+        # policy decides over kinds, and the checker cannot see the live graph,
+        # so a name listed without a kind is a node no rule can be evaluated
+        # against. Edges touching one are refused (`unresolved_endpoint_kind`)
+        # rather than waved through. These kinds come from the caller, not from
+        # a proposal, and need not be registered — the registry is the list of
+        # kinds a *planner* may propose, not of kinds that may already exist.
+        self.known_kinds: dict[str, str] = (
+            {str(name_): str(kind) for name_, kind in known_nodes.items() if kind}
+            if isinstance(known_nodes, Mapping)
+            else {}
+        )
+        self.known_nodes = frozenset(known_nodes)
+        self.trace = trace
+        self.name = name
+
+    def check(
+        self,
+        proposal: Subgraph,
+        *,
+        meter: BudgetMeter | None = None,
+        remaining: RemainingBudget | None = None,
+        parent_depth: int = 0,
+        ctx: RunContext | None = None,
+    ) -> AdmissionResult:
+        """Decide. Runs every check, charges nothing, executes nothing.
+
+        `remaining` wins over `meter`; with neither, every budget dimension is
+        unlimited — the same meaning `Budget()` has in the runtime.
+        """
+        if parent_depth < 0:
+            raise ValueError(f"parent_depth must be >= 0, got {parent_depth}")
+        if remaining is None:
+            remaining = RemainingBudget() if meter is None else RemainingBudget.from_meter(meter)
+
+        rejections: list[Rejection] = []
+        rejections.extend(self._check_registry(proposal))
+        rejections.extend(self._check_policy(proposal))
+        worst_case, complete = self._worst_case(proposal)
+        rejections.extend(self._check_budget(worst_case, complete, remaining))
+        depth = parent_depth + proposal.nesting_depth()
+        rejections.extend(self._check_depth(depth, parent_depth, proposal))
+        checks_run = [Check.REGISTRY, Check.POLICY, Check.BUDGET, Check.DEPTH]
+        if self.limits.require_acyclic:
+            rejections.extend(self._check_acyclicity(proposal))
+            checks_run.append(Check.ACYCLICITY)
+
+        ordered = tuple(sorted(rejections, key=lambda r: (list(Check).index(r.check), r.subject)))
+        result = AdmissionResult(
+            status=_status_for(ordered),
+            proposal_id=proposal.proposal_id,
+            fingerprint=proposal.fingerprint(),
+            rejections=ordered,
+            checks_run=tuple(checks_run),
+            worst_case=worst_case,
+            worst_case_complete=complete,
+            remaining=remaining,
+            depth=depth,
+            node_count=proposal.node_count(),
+        )
+        self._emit(result, proposal, ctx)
+        return result
+
+    def admit(self, proposal: Subgraph, **kwargs: Any) -> Subgraph:
+        """`check`, but fail closed: return the proposal or raise `AdmissionRejected`.
+
+        For callers whose next line would otherwise be `if not result.admitted:
+        raise`. The rejection is still recorded on the trace first, and the
+        result travels on the exception.
+        """
+        result = self.check(proposal, **kwargs)
+        if not result.admitted:
+            raise AdmissionRejected(result)
+        return proposal
+
+    # -- the checks -----------------------------------------------------------
+
+    def _check_registry(self, proposal: Subgraph) -> list[Rejection]:
+        allowed = self.registry.names()
+        hint = f"allowed kinds: {', '.join(allowed) or '(none registered)'}"
+        out: list[Rejection] = []
+        for path, _depth, sub in proposal.scopes():
+            names = sub.node_names()
+            for node in sub.nodes:
+                subject = _scoped(path, node.name)
+                if node.kind not in self.registry:
+                    out.append(
+                        Rejection(
+                            check=Check.REGISTRY,
+                            code="unregistered_node",
+                            subject=subject,
+                            detail=f"kind {node.kind!r} is not in the node registry",
+                            remedy=hint,
+                        )
+                    )
+                if node.name in self.known_nodes:
+                    out.append(
+                        Rejection(
+                            check=Check.REGISTRY,
+                            code="name_collides_with_existing_node",
+                            subject=subject,
+                            detail=(
+                                f"node name {node.name!r} already exists in the graph; "
+                                "admitting it would rebind a node that is already running"
+                            ),
+                            remedy="propose a different name",
+                        )
+                    )
+            for edge in sub.edges:
+                out.extend(self._check_endpoints(path, edge, names))
+        return out
+
+    def _check_endpoints(
+        self, path: str, edge: ProposedEdge, names: frozenset[str]
+    ) -> list[Rejection]:
+        out: list[Rejection] = []
+        for role, endpoint in (("source", edge.source), ("target", edge.target)):
+            if endpoint in _SENTINELS or endpoint in names or endpoint in self.known_nodes:
+                continue
+            out.append(
+                Rejection(
+                    check=Check.REGISTRY,
+                    code="unknown_edge_endpoint",
+                    subject=_scoped(path, edge.render()),
+                    detail=(
+                        f"{role} {endpoint!r} is neither a node proposed in this scope "
+                        "nor a node already in the graph"
+                    ),
+                    remedy=f"propose {endpoint!r} as a node, or point the edge elsewhere",
+                )
+            )
+        return out
+
+    def _check_policy(self, proposal: Subgraph) -> list[Rejection]:
+        """Decide every edge on the *kinds* of its endpoints.
+
+        The planner picks an instance name; the operator authorised a kind. So
+        the name is used only to work out which node an endpoint refers to, and
+        the kind that node declared — which REGISTRY has independently required
+        to be one the operator registered — is what a rule matches. An endpoint
+        whose kind cannot be resolved is refused, because "no rule matched" must
+        never be reachable by hiding what a node is.
+        """
+        out: list[Rejection] = []
+        for path, _depth, sub in proposal.scopes():
+            # A name declared here shadows a live node of the same name; that
+            # collision is itself a REGISTRY rejection, so the proposal cannot
+            # be admitted either way and the local declaration is the honest
+            # reading of what the edge refers to.
+            kinds = {node.name: node.kind for node in sub.nodes}
+            for edge in sub.edges:
+                subject = _scoped(path, edge.render())
+                source_kind = self._kind_of(edge.source, kinds)
+                target_kind = self._kind_of(edge.target, kinds)
+                if source_kind is None or target_kind is None:
+                    out.extend(
+                        self._unresolved_endpoints(subject, edge, source_kind, target_kind)
+                    )
+                    continue
+                decision = self.edge_policy.decide(source_kind, target_kind)
+                if decision is Decision.ALLOW:
+                    continue
+                denied = decision is Decision.DENY
+                transition = (
+                    f"{_describe(edge.source, source_kind)} -> "
+                    f"{_describe(edge.target, target_kind)}"
+                )
+                out.append(
+                    Rejection(
+                        check=Check.POLICY,
+                        code="edge_denied" if denied else "edge_needs_approval",
+                        subject=subject,
+                        detail=(
+                            f"the edge policy denies this transition: {transition}"
+                            if denied
+                            else (
+                                "the edge policy requires approval for this "
+                                f"transition: {transition}"
+                            )
+                        ),
+                        remedy=(
+                            "the decision is made on the registry kind, not the name you "
+                            "chose: renaming the node will not change it — route through "
+                            "a permitted kind"
+                            if denied
+                            else "obtain approval and re-submit"
+                        ),
+                    )
+                )
+        return out
+
+    def _kind_of(self, endpoint: str, kinds: Mapping[str, str]) -> str | None:
+        """The policy identity of an edge endpoint, or None when unknowable.
+
+        A sentinel stands for itself — `START`/`END` are reserved words no node
+        may be named, so they cannot be spoofed. Everything else is a node, and
+        a node's identity is its registry kind.
+        """
+        if endpoint in _SENTINELS:
+            return endpoint
+        return kinds.get(endpoint) or self.known_kinds.get(endpoint)
+
+    def _unresolved_endpoints(
+        self,
+        subject: str,
+        edge: ProposedEdge,
+        source_kind: str | None,
+        target_kind: str | None,
+    ) -> list[Rejection]:
+        """Fail closed, per endpoint that could not be identified."""
+        out: list[Rejection] = []
+        unresolved = [
+            (role, endpoint)
+            for role, endpoint, kind in (
+                ("source", edge.source, source_kind),
+                ("target", edge.target, target_kind),
+            )
+            if kind is None
+        ]
+        for role, endpoint in unresolved:
+            live = endpoint in self.known_nodes
+            out.append(
+                Rejection(
+                    check=Check.POLICY,
+                    code="unresolved_endpoint_kind",
+                    subject=subject,
+                    detail=(
+                        f"{role} {endpoint!r} has no resolvable registry kind, so no rule "
+                        "can be evaluated for it; the edge is refused rather than assumed "
+                        "permitted"
+                        + (
+                            " (it is a live node the caller listed by name only)"
+                            if live
+                            else ""
+                        )
+                    ),
+                    remedy=(
+                        f"declare what it is: known_nodes={{{endpoint!r}: '<kind>'}}"
+                        if live
+                        else f"propose {endpoint!r} as a node in this scope"
+                    ),
+                )
+            )
+        return out
+
+    def _worst_case(self, proposal: Subgraph) -> tuple[CostEstimate, bool]:
+        total = CostEstimate()
+        complete = True
+        for _path, _depth, sub in proposal.scopes():
+            for node in sub.nodes:
+                spec = self.registry.get(node.kind)
+                if spec is None:
+                    complete = False
+                    continue
+                total = total + spec.worst_case
+        return total, complete
+
+    def _check_budget(
+        self, worst_case: CostEstimate, complete: bool, remaining: RemainingBudget
+    ) -> list[Rejection]:
+        suffix = "" if complete else " (a lower bound: some proposed kinds are unregistered)"
+        dimensions = (
+            ("tokens", "over_token_budget", worst_case.tokens, remaining.tokens),
+            ("iterations", "over_iteration_budget", worst_case.iterations, remaining.iterations),
+            ("seconds", "over_time_budget", worst_case.seconds, remaining.seconds),
+        )
+        out: list[Rejection] = []
+        for label, code, want, left in dimensions:
+            if left is None or want <= left:
+                continue
+            out.append(
+                Rejection(
+                    check=Check.BUDGET,
+                    code=code,
+                    subject=label,
+                    detail=(
+                        f"worst case needs {want} {label} but only {left} remain{suffix}"
+                    ),
+                    remedy="propose fewer or cheaper nodes",
+                )
+            )
+        return out
+
+    def _check_depth(self, depth: int, parent_depth: int, proposal: Subgraph) -> list[Rejection]:
+        if depth <= self.limits.max_depth:
+            return []
+        return [
+            Rejection(
+                check=Check.DEPTH,
+                code="too_deep",
+                subject=proposal.proposal_id,
+                detail=(
+                    f"depth {depth} exceeds max_depth {self.limits.max_depth} "
+                    f"(admitted at depth {parent_depth}, proposal nests "
+                    f"{proposal.nesting_depth()} level(s))"
+                ),
+                remedy="flatten the proposal, or propose the inner work in a later round",
+            )
+        ]
+
+    def _check_acyclicity(self, proposal: Subgraph) -> list[Rejection]:
+        out: list[Rejection] = []
+        for path, _depth, sub in proposal.scopes():
+            cycle = _find_cycle(sub.node_names(), sub.edges)
+            if cycle is None:
+                continue
+            out.append(
+                Rejection(
+                    check=Check.ACYCLICITY,
+                    code="cycle",
+                    subject=_scoped(path, " -> ".join(cycle)),
+                    detail="this checker requires acyclic proposals and found a cycle",
+                    remedy="break the cycle, or use a checker with require_acyclic=False",
+                )
+            )
+        return out
+
+    # -- recording ------------------------------------------------------------
+
+    def _emit(
+        self, result: AdmissionResult, proposal: Subgraph, ctx: RunContext | None
+    ) -> None:
+        """Write the decision to the trace. A rejection is an event, not a silence."""
+        if self.trace is None:
+            return
+        self.trace.event(
+            # Without a run context the decision still has to be findable, so the
+            # proposal's own id stands in for the run id.
+            run_id=ctx.run_id if ctx is not None else proposal.proposal_id,
+            thread_id=ctx.thread_id if ctx is not None else None,
+            attempt=ctx.attempt if ctx is not None else 1,
+            graph=ctx.graph if ctx is not None else self.name,
+            node=f"{self.name}:{proposal.proposal_id}",
+            phase="admission",
+            step=ctx.next_step() if ctx is not None else 0,
+            state_delta={
+                "status": result.status.value,
+                "fingerprint": result.fingerprint,
+                "origin": proposal.origin,
+                "nodes": result.node_count,
+                "depth": result.depth,
+                "checks_run": [c.value for c in result.checks_run],
+                "failed_checks": [c.value for c in result.failed_checks()],
+                "worst_case": result.worst_case.model_dump(),
+            },
+            error=(
+                None
+                if result.admitted
+                else "; ".join(f"{r.check.value}/{r.code}" for r in result.rejections)
+            ),
+        )
+
+
+def _status_for(rejections: tuple[Rejection, ...]) -> AdmissionStatus:
+    if not rejections:
+        return AdmissionStatus.ADMITTED
+    if all(r.code == "edge_needs_approval" for r in rejections):
+        return AdmissionStatus.NEEDS_APPROVAL
+    return AdmissionStatus.REJECTED
+
+
+def _scoped(path: str, subject: str) -> str:
+    return f"{path}/{subject}" if path else subject
+
+
+def _describe(endpoint: str, kind: str) -> str:
+    """An endpoint as the rejection should name it: what it is, then what it is called.
+
+    The kind leads because the kind is what the rule matched; the name follows
+    so a planner (and an audit) can tell which edge is being talked about.
+    """
+    if endpoint in _SENTINELS:
+        return endpoint
+    return f"kind {kind!r} (proposed as {endpoint!r})"
+
+
+def _find_cycle(names: frozenset[str], edges: tuple[ProposedEdge, ...]) -> list[str] | None:
+    """The first cycle among `names`, or None. Iterative, so depth cannot crash it.
+
+    Edges touching anything outside `names` (the START/END sentinels, a node in
+    the live graph) are ignored: this can only speak about the topology the
+    proposal itself declares.
+    """
+    adjacency: dict[str, list[str]] = {name: [] for name in names}
+    for edge in edges:
+        if edge.source in names and edge.target in names:
+            adjacency[edge.source].append(edge.target)
+    for targets in adjacency.values():
+        targets.sort()
+
+    white, grey, black = 0, 1, 2
+    colour = dict.fromkeys(names, white)
+    for root in sorted(names):
+        if colour[root] != white:
+            continue
+        colour[root] = grey
+        path = [root]
+        stack = [(root, iter(adjacency[root]))]
+        while stack:
+            node, successors = stack[-1]
+            nxt = next(successors, None)
+            if nxt is None:
+                colour[node] = black
+                stack.pop()
+                path.pop()
+                continue
+            if colour[nxt] == grey:
+                return [*path[path.index(nxt) :], nxt]
+            if colour[nxt] == white:
+                colour[nxt] = grey
+                path.append(nxt)
+                stack.append((nxt, iter(adjacency[nxt])))
+    return None
+
+
+__all__ = [
+    "AdmissionChecker",
+    "AdmissionLimits",
+    "AdmissionRejected",
+    "AdmissionResult",
+    "AdmissionStatus",
+    "Check",
+    "CostEstimate",
+    "EdgePolicy",
+    "EdgeRule",
+    "NodeRegistry",
+    "NodeSpec",
+    "Rejection",
+    "RemainingBudget",
+]

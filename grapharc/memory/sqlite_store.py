@@ -15,7 +15,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 
 from grapharc.memory.store import Claim, _normalize, _now, validate_supersede
@@ -124,18 +124,46 @@ def _enable_wal(conn: sqlite3.Connection, timeout_s: float) -> str:
         time.sleep(0.02)
 
 
-def _create_schema(conn: sqlite3.Connection, timeout_s: float) -> None:
+def _create_schema(conn: sqlite3.Connection, timeout_s: float, script: str = _SCHEMA) -> None:
     """Same exclusive-lock problem as `_enable_wal`: `executescript` commits
-    first, which drops out from under the busy handler mid-script."""
+    first, which drops out from under the busy handler mid-script.
+
+    `script` is a parameter so the artifact store can create its own tables in
+    the same file under the same retry — the lock it contends for is the
+    database's, not any one table's.
+    """
     deadline = time.monotonic() + timeout_s
     while True:
         try:
-            conn.executescript(_SCHEMA)
+            conn.executescript(script)
             return
         except sqlite3.OperationalError:
             if time.monotonic() >= deadline:
                 raise
             time.sleep(0.02)
+
+
+@contextmanager
+def _immediate_transaction(
+    conn: sqlite3.Connection, lock: AbstractContextManager
+) -> Iterator[sqlite3.Connection]:
+    """BEGIN IMMEDIATE, not the default deferred transaction.
+
+    A deferred transaction takes the write lock at the first write, so two
+    processes can both read a claim as un-superseded and then both write —
+    double-superseding it. IMMEDIATE takes the lock up front.
+
+    Module-level so the artifact store shares this exact behaviour instead of
+    growing its own near-copy.
+    """
+    with lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
 
 
 class SQLiteMemoryStore:
@@ -174,20 +202,8 @@ class SQLiteMemoryStore:
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
-        """BEGIN IMMEDIATE, not the default deferred transaction.
-
-        A deferred transaction takes the write lock at the first write, so two
-        processes can both read a claim as un-superseded and then both write —
-        double-superseding it. IMMEDIATE takes the lock up front.
-        """
-        with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                yield self._conn
-            except BaseException:
-                self._conn.execute("ROLLBACK")
-                raise
-            self._conn.execute("COMMIT")
+        with _immediate_transaction(self._conn, self._lock) as conn:
+            yield conn
 
     def _query(self, sql: str, params: tuple = ()) -> list[Claim]:
         with self._lock:

@@ -1,0 +1,118 @@
+# A GraphARC policy document — the format `grapharc.policy` loads.
+#
+# Evaluation is tiered, not positional: every `deny` rule is tried before every
+# `ask`, and every `ask` before every `allow`. A broad deny therefore beats a
+# narrow allow, including one scoped to a single tenant. Within a tier the
+# first matching rule wins, in the order written here, and that rule's `id` is
+# what the audit record names.
+
+version = "2026-07-01"
+name = "example"
+description = "Every rule kind, with the semantics spelled out."
+default = "deny"          # what an unmatched request gets. `ask` is not allowed here.
+
+# Optional. With this list present, a rule scoped to a tenant it does not match
+# is a load error, and a request naming a tenant not on it is denied and
+# recorded. Delete the line to turn both checks off.
+tenants = ["default", "acme", "globex"]
+
+
+# ---- tools ------------------------------------------------------------------
+
+[[rule]]
+id = "reads-are-free"
+resource = "tool"
+match = "read_*"          # fnmatch over the tool name
+effect = "allow"
+reason = "reads have no side effects"
+
+[[rule]]
+id = "no-destructive-tools"
+resource = "tool"
+match = "delete_*"
+effect = "deny"
+reason = "destructive tools are never permitted, for anyone"
+
+[[rule]]
+id = "deploys-need-sre"
+resource = "tool"
+match = "deploy_*"
+effect = "ask"
+approver_role = "sre"     # required on every `ask` rule
+reason = "a deploy is a production change"
+
+[[rule]]
+id = "acme-may-write"
+resource = "tool"
+match = "write_*"
+effect = "allow"
+tenant = "acme"           # fnmatch over the requesting tenant; "*" is everyone
+reason = "acme's contract covers writes"
+
+
+# ---- nodes ------------------------------------------------------------------
+
+[[rule]]
+id = "no-shell-nodes"
+resource = "node"
+match = "shell_*"
+effect = "deny"
+reason = "a shell node is an unbounded tool"
+
+[[rule]]
+id = "registered-nodes-run"
+resource = "node"
+match = "*"
+effect = "allow"
+
+
+# ---- edges ------------------------------------------------------------------
+# An edge match is "<source>-><target>" and each side is matched on its own, so
+# a `*` cannot swallow the arrow.
+
+[[rule]]
+id = "nothing-routes-into-prod-deploy"
+resource = "edge"
+match = "*->deploy_prod"
+effect = "deny"
+reason = "the production deploy node is entered by an operator, not by a plan"
+
+[[rule]]
+id = "planner-may-fan-out"
+resource = "edge"
+match = "planner->*"
+effect = "allow"
+
+
+# ---- spend ------------------------------------------------------------------
+# A spend rule fires when the amount is *over* its threshold. No threshold
+# means it matches any amount, which is how the catch-all below works.
+
+[[rule]]
+id = "single-call-hard-cap"
+resource = "spend"
+effect = "deny"
+over_usd = 50.0
+reason = "no single request may spend more than $50"
+
+[[rule]]
+id = "globex-period-cap"
+resource = "spend"
+effect = "deny"
+over_usd = 100.0
+basis = "cumulative"      # compares committed spend + this request
+tenant = "globex"
+reason = "globex is capped at $100 for the period"
+
+[[rule]]
+id = "over-a-dollar-asks-finance"
+resource = "spend"
+effect = "ask"
+over_usd = 1.0
+approver_role = "finance"
+reason = "spend above $1 is reviewed"
+
+[[rule]]
+id = "small-spend-is-fine"
+resource = "spend"
+effect = "allow"

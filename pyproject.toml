@@ -1,12 +1,44 @@
 [project]
 name = "grapharc"
 version = "0.1.0a0"
-description = "GraphARC — a graph engineering toolkit: disciplined multi-agent graphs (typed state, budgets, verification, replay, durable memory) on top of LangGraph."
+description = "A graph engineering toolkit on LangGraph: typed state contracts, per-node write permissions, enforced budgets, and JSONL traces that double as replay points."
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Shashank Shekhar Singh" }]
-keywords = ["agents", "graph-engineering", "langgraph", "multi-agent", "llm"]
+keywords = [
+    "agents",
+    "agent-runtime",
+    "ai-agents",
+    "graph-engineering",
+    "guardrails",
+    "langchain",
+    "langgraph",
+    "llm",
+    "multi-agent",
+    "observability",
+    "orchestration",
+    "workflow",
+]
+# PEP 639 is in use (`license` is an SPDX expression), which forbids a
+# `License ::` trove classifier — the expression above is the license metadata.
+# The OS classifier is deliberately narrow: the sandboxed tool executor needs
+# POSIX fork/setsid/killpg, and Linux is the only platform CI exercises.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "langgraph>=0.4",
     "langgraph-checkpoint-sqlite>=2.0",
@@ -14,18 +46,59 @@ dependencies = [
     "pydantic>=2.7",
 ]
 
+[project.urls]
+Homepage = "https://github.com/CodeGraphContext/GraphARC"
+Repository = "https://github.com/CodeGraphContext/GraphARC"
+Issues = "https://github.com/CodeGraphContext/GraphARC/issues"
+Changelog = "https://github.com/CodeGraphContext/GraphARC/blob/main/CHANGELOG.md"
+Contributing = "https://github.com/CodeGraphContext/GraphARC/blob/main/CONTRIBUTING.md"
+Documentation = "https://github.com/CodeGraphContext/GraphARC/blob/main/README.md"
+Roadmap = "https://github.com/CodeGraphContext/GraphARC/blob/main/ROADMAP.md"
+
+# An extra is a dependency declaration, not a feature claim. Each comment says
+# whether anything under `grapharc/` imports the dependency today; where it does
+# not, the extra exists so the feature being built against it has somewhere to
+# declare itself. Check ROADMAP.md before assuming an extra buys you a feature.
 [project.optional-dependencies]
-# Durable knowledge-graph backend (M4). Tests use the in-memory fallback.
-memory = ["neo4j>=5.20"]
-# Deferred direct-API backend (added when an API key exists to test it live).
-api = ["anthropic>=0.40"]
+# Imported by grapharc/gateway/openrouter.py.
 openrouter = [
     "langchain-openai>=0.2",
+]
+# HTTP API surface (ROADMAP 9.1). `httpx` is in the dev group for the test client.
+server = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+]
+# MCP client (ROADMAP 3.5).
+mcp = [
+    "mcp>=1.2",
+]
+# Neo4j-backed claim store (ROADMAP 8.x). Nothing imports `neo4j` today; the
+# durable store that does exist is SQLite-backed and needs no extra.
+memory = [
+    "neo4j>=5.20",
+]
+# OpenTelemetry export (ROADMAP 10.3).
+otel = [
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+]
+# Direct Anthropic API backend (ROADMAP 2.4). Nothing imports `anthropic` today;
+# the shipped Anthropic path is the Claude Code CLI adapter, which needs no SDK.
+api = [
+    "anthropic>=0.40",
+]
+# Everything above. Self-referential so it cannot drift out of sync.
+all = [
+    "grapharc[api,mcp,memory,openrouter,otel,server]",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx>=0.27",
     "pytest>=8.2",
+    "pytest-asyncio>=0.24",
     "pytest-timeout>=2.3",
     "ruff>=0.5",
 ]
@@ -34,20 +107,80 @@ dev = [
 grapharc = "grapharc.cli.main:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
+# `.gitignore` must not get a vote on what ships. Hatchling's default is to
+# treat VCS ignore rules as build exclusions, and that is a silent, total
+# failure mode: adding `grapharc/tools/` to .gitignore was verified to drop the
+# entire subpackage from the wheel with no error, no warning, and a build that
+# reports success. `pip install grapharc` then fails at `import grapharc.tools`.
+# With `ignore-vcs = true` the two lists below are the only thing that decides,
+# so the junk .gitignore used to keep out has to be named here instead.
+[tool.hatch.build]
+ignore-vcs = true
+exclude = [
+    "**/__pycache__",
+    "**/*.py[cod]",
+    "**/.pytest_cache",
+    "**/.ruff_cache",
+    "**/*.sqlite",
+    "**/*.jsonl",
+]
+
+# `packages` is recursive: every subpackage under `grapharc/` ships without
+# being named. Confirmed against a built wheel, which contains planner, policy,
+# server, session and tools; `tests/test_packaging.py` fails if a new one is
+# ever added in a way that keeps it out.
 [tool.hatch.build.targets.wheel]
 packages = ["grapharc"]
+
+# Hatchling does not read MANIFEST.in — that is a setuptools file, and editing
+# it alone changes nothing about this build (verified by building with
+# directives in it). MANIFEST.in exists anyway, mirrors this list, and ships;
+# `tests/test_packaging.py` fails if the two drift, so it cannot become a lie.
+# This list is the authority.
+#
+# Sdist contents are an allowlist rather than a denylist so that a new top-level
+# file cannot be published by accident. Add new shipped paths here.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/grapharc",
+    "/tests",
+    "/*.md",
+    "/LICENSE",
+    "/MANIFEST.in",
+    "/pyproject.toml",
+    "/uv.lock",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Live tests spend real money and real quota, so they are opt-in: run them
 # with `pytest -m live`. Without this they ran on every plain `pytest`.
-addopts = "-q -m 'not live'"
+#
+# `--strict-markers` is part of that guarantee, not a style preference. An
+# unregistered marker is only a warning by default, so `@pytest.mark.lvie` on a
+# paid test does not match `-m 'not live'`, is not deselected, and calls the API
+# on a plain `pytest`. Reproduced before this flag was added; the CI
+# `live-marker-guard` does not catch it either, because a typo'd test is absent
+# from *both* selections and so their intersection stays empty. `--strict-config`
+# does the same job for a typo in this table.
+addopts = "-q -m 'not live' --strict-markers --strict-config"
+# Registering a marker below does not install the plugin that gives it meaning.
+# `timeout` and `asyncio` come from plugins, and naming them here would make a
+# missing plugin silent under `--strict-markers` — tests would collect with no
+# timeout at all, or coroutines would never be awaited. `required_plugins` is
+# what closes that: pytest refuses to start if either plugin is absent.
+required_plugins = ["pytest-asyncio", "pytest-timeout"]
 markers = [
     "live: calls a real model backend; costs money. Opt in with `-m live`.",
+    "asyncio: run this coroutine test on an event loop (pytest-asyncio).",
+    "timeout: cap this test's wall clock in seconds (pytest-timeout).",
 ]
+# Explicit, because the suite marks every coroutine test by hand. Under `auto`
+# an unmarked coroutine would silently start running instead of being reported.
+asyncio_mode = "strict"
 
 [tool.ruff]
 line-length = 100

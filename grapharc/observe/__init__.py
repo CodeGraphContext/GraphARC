@@ -1,3 +1,76 @@
-from grapharc.observe.trace import TraceEvent, TraceRecorder
+"""Observability: the trace file, and everything derived from it.
 
-__all__ = ["TraceEvent", "TraceRecorder"]
+`trace` is the only writer. `metrics`, `replay`, `cost` and `otel` all read
+that one file and nothing else, which is what keeps a dashboard from
+contradicting an audit trail.
+"""
+
+from grapharc.observe.cost import (
+    ModelCallCost,
+    NodeCost,
+    RateCard,
+    RunCost,
+    ThreadCost,
+    attribute,
+    attribute_thread,
+)
+from grapharc.observe.metrics import RunMetrics, summarize, to_mermaid
+from grapharc.observe.otel import (
+    ListSpanExporter,
+    NullSpanExporter,
+    OTelSpanExporter,
+    OTelUnavailable,
+    Span,
+    SpanExporter,
+    export_run,
+    to_spans,
+)
+from grapharc.observe.replay import (
+    NodeDiff,
+    NodeExecution,
+    ReplayedRun,
+    ReplayError,
+    RunDiff,
+    diff_runs,
+    diff_trace,
+    format_diff,
+    format_replay,
+    replay,
+    replay_thread,
+)
+from grapharc.observe.trace import TraceEvent, TraceRecorder, load_events
+
+__all__ = [
+    "ListSpanExporter",
+    "ModelCallCost",
+    "NodeCost",
+    "NodeDiff",
+    "NodeExecution",
+    "NullSpanExporter",
+    "OTelSpanExporter",
+    "OTelUnavailable",
+    "RateCard",
+    "ReplayError",
+    "ReplayedRun",
+    "RunCost",
+    "RunDiff",
+    "RunMetrics",
+    "Span",
+    "SpanExporter",
+    "ThreadCost",
+    "TraceEvent",
+    "TraceRecorder",
+    "attribute",
+    "attribute_thread",
+    "diff_runs",
+    "diff_trace",
+    "export_run",
+    "format_diff",
+    "format_replay",
+    "load_events",
+    "replay",
+    "replay_thread",
+    "summarize",
+    "to_mermaid",
+    "to_spans",
+]
