@@ -370,7 +370,14 @@ def test_max_seconds_interrupts_a_fanout_worker_on_a_pool_thread():
             pass
         return {"done": [payload.index]}
 
-    g = GraphARC(FanState, name="fan", budget=Budget(max_seconds=0.3))
+    # 1.5s, not 0.3s. The claim is that the *in-node* interrupt reaches a pool
+    # thread, so every worker has to be inside its body when the deadline lands.
+    # With a ceiling that tight, a loaded runner scheduled the third worker after
+    # the deadline had already passed, so its entry check raised a plain
+    # `BudgetExceeded` and that propagated first — `NodeDeadlineExceeded` is a
+    # subclass, so the assertion below correctly rejected it. The ceiling only
+    # has to outlast task scheduling; the workers spin for 5s either way.
+    g = GraphARC(FanState, name="fan", budget=Budget(max_seconds=1.5))
     g.add_node("plan", plan, writes=set())
     g.add_node("work", work, writes={"done"}, input_schema=Shard)
     g.add_edge(START, "plan")

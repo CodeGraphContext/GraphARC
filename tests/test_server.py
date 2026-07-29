@@ -242,7 +242,16 @@ def client(registry, tmp_path):
             BARRIER.abort()
 
 
-def wait_for(client, session_id, statuses, timeout=10.0) -> dict:
+def wait_for(client, session_id, statuses, timeout=45.0) -> dict:
+    """Poll a session until it reaches one of `statuses`.
+
+    The timeout is generous on purpose. Sessions run on a background thread while
+    this polls the synchronous `TestClient` in a tight loop; on a two-core CI
+    runner the poller starves the worker, and 10s was not enough for the
+    unbudgeted `looper` to reach LangGraph's recursion limit. A ceiling this size
+    costs nothing when the session terminates promptly and only bites when it
+    genuinely never will.
+    """
     deadline = time.monotonic() + timeout
     body: dict = {}
     while time.monotonic() < deadline:
