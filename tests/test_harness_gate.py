@@ -410,10 +410,11 @@ def test_gate_raw_fork_exec_is_refused(tmp_path):
     def raw_spawn(marker_path: str) -> int:
         import _posixsubprocess
         import os as _os
+        import re as _re
 
         read_fd, write_fd = _os.pipe()
         # Argument list taken from CPython's own subprocess.Popen call site.
-        return _posixsubprocess.fork_exec(
+        call_args = [
             [b"/bin/sh", b"-c", f"touch {marker_path}".encode()],
             (b"/bin/sh",),
             True,
@@ -427,7 +428,25 @@ def test_gate_raw_fork_exec_is_refused(tmp_path):
             False,
             -1, None, None, None, -1,
             None,
-        )
+        ]
+        # `fork_exec` is a C function with no introspectable signature, and its
+        # arity is NOT stable across interpreters: 3.12 and 3.13 take 23
+        # positionals, 3.14 takes 22 because `preexec_fn` was removed. Pinning
+        # the list to one version made this security test fail on the others
+        # with a TypeError *before* the sandbox was ever consulted — a green
+        # local run and a red CI matrix. The arity is read off the interpreter's
+        # own complaint, which cannot go stale the way a version table does.
+        try:
+            _posixsubprocess.fork_exec()
+        except TypeError as exc:
+            match = _re.search(r"expected (\d+) arguments", str(exc))
+            wanted = int(match.group(1)) if match else len(call_args)
+        else:  # pragma: no cover - fork_exec never accepts zero arguments
+            wanted = len(call_args)
+        # The removed parameter sat second-to-last, before `allow_vfork`.
+        while len(call_args) < wanted:
+            call_args.insert(-1, None)
+        return _posixsubprocess.fork_exec(*call_args[:wanted])
 
     harness = _sandbox(workspace, raw_spawn=raw_spawn)
     with pytest.raises(SandboxViolation, match="spawn a process"):

@@ -15,6 +15,7 @@ attribution rewritten.
 import json
 import operator
 import pathlib
+import subprocess
 import sys
 import threading
 import types
@@ -527,7 +528,48 @@ def test_otel_exporter_raises_a_useful_error_without_the_dependency(monkeypatch)
 
 
 def test_importing_observe_needs_no_opentelemetry():
-    assert "opentelemetry" not in sys.modules
+    """The claim in `observe/otel.py` is that the dependency is *confined to*
+    `OTelSpanExporter`, so the module imports without opentelemetry present.
+
+    This used to assert `"opentelemetry" not in sys.modules`, which tested
+    something GraphARC does not control and was wrong in two directions. It was
+    vacuous when opentelemetry was absent — true of the dev venv, so it passed
+    locally forever — and it failed in CI where `[all]` installs it, because
+    `langsmith` (reached transitively through `langchain_core.tracers`) imports
+    opentelemetry the moment it is available. Nothing in this package asks for
+    it; the assertion was reading a third party's import graph.
+
+    The property that *is* ours: with opentelemetry made unimportable, the module
+    still imports. Checked in a subprocess, because a blocker on `sys.meta_path`
+    and a half-imported package are not things to leave behind in this one.
+    """
+    probe = """
+import sys
+
+class Blocked:
+    def find_spec(self, name, path=None, target=None):
+        if name == "opentelemetry" or name.startswith("opentelemetry."):
+            raise ImportError("opentelemetry is blocked for this test")
+        return None
+
+for name in [m for m in sys.modules if m.split(".")[0] == "opentelemetry"]:
+    del sys.modules[name]
+sys.meta_path.insert(0, Blocked())
+
+import grapharc.observe.otel as otel
+
+assert hasattr(otel, "OTelSpanExporter"), "the module imported but is not itself"
+leaked = [m for m in sys.modules if m.split(".")[0] == "opentelemetry"]
+assert not leaked, f"module scope pulled in {leaked}"
+print("ok")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=180
+    )
+
+    assert result.returncode == 0, (
+        f"grapharc.observe.otel does not import without opentelemetry:\n{result.stderr}"
+    )
 
 
 class _StubSpan:

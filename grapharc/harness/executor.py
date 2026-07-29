@@ -340,6 +340,49 @@ def _install_readlink_guard(check: Any) -> None:
         posix.readlink = readlink
 
 
+def _install_fork_exec_guard(spec_name: str) -> None:
+    """Refuse `_posixsubprocess.fork_exec` on interpreters that do not audit it.
+
+    CPython raises the `_posixsubprocess.fork_exec` audit event only from 3.14.
+    On 3.12 and 3.13 — and 3.12 is this project's declared minimum — the call
+    raises **no event at all**, so the hook above never sees it, the fork
+    succeeds, and `/bin/sh` runs outside the sandbox. Verified by running it:
+    the spawned process created its marker file on 3.12 and was refused on 3.14.
+
+    The hole was hidden by a test whose argument list matched one interpreter's
+    arity. `fork_exec` takes 23 positionals on 3.12 and 22 on 3.14 (`preexec_fn`
+    was removed), so on 3.12 the call died with a `TypeError` before reaching
+    the fork. That read like a version-skew annoyance in the test and was
+    actually the gate never firing.
+
+    Like the `os.readlink` guard this is a wrapper rather than a hook, so it
+    carries the same documented caveat: the original is reachable through the
+    closure and a determined tool inside the process can unwrap it. It closes
+    the accident, not the adversary. On 3.14 the audit event fires first and
+    this never runs.
+    """
+    module = sys.modules.get("_posixsubprocess")
+    if module is None:  # pragma: no cover - present wherever subprocess is
+        try:
+            import _posixsubprocess as module  # type: ignore[no-redef]
+        except ImportError:
+            return
+    original = getattr(module, "fork_exec", None)
+    if original is None:  # pragma: no cover - non-POSIX
+        return
+
+    def fork_exec(*args: Any, **kwargs: Any) -> Any:
+        raise SandboxViolation(
+            f"tool {spec_name!r} tried to spawn a process "
+            "(_posixsubprocess.fork_exec); subprocesses escape the sandbox and "
+            "are refused"
+        )
+
+    fork_exec.__name__ = "fork_exec"
+    fork_exec.__qualname__ = "fork_exec"
+    module.fork_exec = fork_exec
+
+
 def _is_sqlite_uri(database: Any) -> bool:
     """sqlite re-reads a `file:` name itself — percent-decoding it and honouring
     an authority and query string — so `realpath` does not name the file that
@@ -487,6 +530,7 @@ def _child_main(conn: Any, spec: ToolSpec, args: dict[str, Any], workspace: str)
     except OSError:
         pass
     _install_readlink_guard(check_read)
+    _install_fork_exec_guard(spec.name)
     sys.addaudithook(hook)
     try:
         result = spec.fn(**args)
