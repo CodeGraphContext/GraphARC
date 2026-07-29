@@ -390,30 +390,69 @@ def test_max_seconds_interrupts_a_fanout_worker_on_a_pool_thread():
     assert time.perf_counter() - started < 3.0
 
 
-def _swallow_interrupts_for(seconds: float, rounds: int = 4) -> tuple[list[float], float]:
-    """Run a node that catches every interrupt, and report what it took to stop it.
+def _swallow_interrupts_for(
+    seconds: float, caught: list[float], started: float, rounds: int = 4
+) -> None:
+    """Run a node that catches every interrupt, recording each one it swallowed.
 
     One interrupt used to be all there was: the node caught it and carried on
     with nothing left to fire, so a loop that never returns hung the run.
+
+    Anything that escapes is left to the caller, deliberately. An async exception
+    is delivered at whatever bytecode boundary the interpreter reaches next, and
+    the guard re-arms until it is torn down — so a late one can land inside the
+    handler below, between two iterations, or after the `with` block entirely.
+    Trying to catch it at any single site passed on 3.12 and 3.14 and failed on
+    3.13: a coin toss dressed as an assertion.
     """
     meter = BudgetMeter(Budget(max_seconds=0.2))
+    with deadline_guard(meter, what="stubborn"):
+        for _ in range(rounds):
+            try:
+                while time.perf_counter() - started < seconds:
+                    pass
+            except BaseException:  # noqa: BLE001 — swallowing is the point
+                caught.append(time.perf_counter() - started)
+
+
+def _run_swallower(seconds: float = 5.0) -> tuple[list[float], float, bool]:
+    """Drive the swallower. Returns `(swallowed, ran_for, interrupted)`.
+
+    `interrupted` is the deterministic signal and the one worth asserting on:
+    the helper always ends by raising, either because a re-armed interrupt landed
+    somewhere it could not catch or because the guard's exit check fired. Whether
+    any *particular* delivery lands inside the node's `except` is not
+    deterministic — CPython makes no promise about where an asynchronous
+    exception is delivered, and measured over four identical worker-thread runs
+    `swallowed` came out 0, 0, 1 and 2. `caught` is kept for diagnosis only.
+    """
     caught: list[float] = []
     started = time.perf_counter()
-    with pytest.raises(NodeDeadlineExceeded):
-        with deadline_guard(meter, what="stubborn"):
-            for _ in range(rounds):
-                try:
-                    while time.perf_counter() - started < seconds:
-                        pass
-                except BaseException:  # noqa: BLE001 — swallowing is the point
-                    caught.append(time.perf_counter() - started)
-    return caught, time.perf_counter() - started
+    interrupted = False
+    try:
+        _swallow_interrupts_for(seconds, caught, started)
+    except BaseException:  # noqa: BLE001 — the escape is the signal
+        interrupted = True
+    return caught, time.perf_counter() - started, interrupted
 
 
 def test_the_interrupt_is_re_armed_after_a_node_swallows_it():
-    caught, ran_for = _swallow_interrupts_for(seconds=5.0)
-    assert len(caught) > 1, "the deadline fired once and then gave up"
-    assert ran_for < 2.0
+    """Re-arming is proved by the *pair* of facts, not by a count.
+
+    Counting swallowed interrupts was asserting on where CPython chose to
+    deliver an asynchronous exception, which it explicitly does not guarantee:
+    over six identical main-thread runs the count came out 1, 1, 1, 2, 2 and 4,
+    and on a worker thread 0, 0, 1 and 2. That is a coin toss, and it is why 3.13
+    went red while 3.12 and 3.14 stayed green.
+
+    What is deterministic: an interrupt reached the node, and the node — which
+    asked for five seconds — was stopped in a fraction of one. A guard that fired
+    once into a node that swallows could not produce the second fact, because the
+    node would have gone back to spinning with nothing left to stop it.
+    """
+    _swallowed, ran_for, interrupted = _run_swallower()
+    assert interrupted, "no interrupt reached the node at all"
+    assert ran_for < 2.0, "the node asked for 5s and was not stopped"
 
 
 def test_the_interrupt_is_re_armed_on_a_worker_thread_too():
@@ -423,15 +462,15 @@ def test_the_interrupt_is_re_armed_on_a_worker_thread_too():
     result: dict[str, object] = {}
 
     def body():
-        result["outcome"] = _swallow_interrupts_for(seconds=5.0)
+        result["outcome"] = _run_swallower()
 
     worker = threading.Thread(target=body)
     worker.start()
     worker.join(timeout=20)
     assert not worker.is_alive()
-    caught, ran_for = result["outcome"]  # type: ignore[misc]
-    assert len(caught) > 1
-    assert ran_for < 2.0
+    _swallowed, ran_for, interrupted = result["outcome"]  # type: ignore[misc]
+    assert interrupted, "no interrupt reached the worker thread at all"
+    assert ran_for < 2.0, "the node asked for 5s and was not stopped"
 
 
 def test_a_node_that_finishes_in_time_is_left_alone():
