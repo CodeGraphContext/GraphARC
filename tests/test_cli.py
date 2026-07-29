@@ -1011,6 +1011,46 @@ def test_plan_runs_the_governed_loop_and_reports_every_round(tmp_path, capsys):
     assert "round 2: admitted" in out
 
 
+def test_plan_traces_the_plan_and_every_node_it_executed(tmp_path, capsys):
+    """README's "the trace holds an `admission` event per round, a `round` event
+    per round, the executed nodes' own `start`/`end` pairs and one `stop` event".
+
+    That was true of a hand-wired loop and false of the shipped registry, which is
+    the one this command drives: it withheld the recorder from the `PlannerNode`
+    and the `Materializer`, so the file held no `plan` event and — because the
+    built subgraph inherits the materializer's recorder — no `start`/`end` pair
+    for any node the loop ran. Three nodes executed and none of them appeared.
+    """
+    from grapharc.observe import cost, metrics
+    from grapharc.observe.trace import TraceRecorder
+
+    path = tmp_path / "t.jsonl"
+    code, payload, _ = call_json(["plan", "look into the outage", "--trace", str(path)], capsys)
+    assert code == 0
+
+    recorder = TraceRecorder(path)
+    events = recorder.read_events()
+    run_id = events[0].run_id
+    phases = {phase: 0 for phase in ("plan", "admission", "round", "start", "end", "stop")}
+    for event in events:
+        if event.phase in phases:
+            phases[event.phase] += 1
+
+    assert phases["plan"] == 2, "the planner's own event is missing"
+    assert phases["admission"] == 2
+    assert phases["round"] == 2
+    assert phases["stop"] == 1
+    # The admitted round ran three nodes; each owes a start/end pair.
+    assert phases["start"] == 3
+    assert phases["end"] == 3
+
+    summary = metrics.summarize(recorder, run_id)
+    assert summary.nodes_executed == 3
+    assert set(summary.per_node) == {"triage", "patch", "verify"}
+    # And the two readers of that one file still agree with each other.
+    assert cost.attribute(recorder, run_id).tokens == summary.tokens
+
+
 def test_plan_json_carries_the_rounds_and_the_stop_reason(tmp_path, capsys):
     code, payload, _ = call_json(
         ["plan", "look into the outage", "--trace", str(tmp_path / "t.jsonl")], capsys

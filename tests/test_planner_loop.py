@@ -821,6 +821,64 @@ def test_a_run_plans_admits_executes_and_reaches_the_goal(trace):
     assert result.usage["tokens"] > 0
 
 
+def test_a_round_records_the_iterations_it_spent(trace):
+    """`RoundRecord.iterations` was declared and never assigned, so every round
+    reported 0 while the run's meter counted the same work."""
+    loop, _model, _bodies = build_loop(
+        [plan(("read", "fetch"), ("write", "summarise"))],
+        trace=trace,
+        goal_reached=goal_is_done,
+    )
+
+    result = loop.run("summarise the incident", LoopState())
+
+    assert [r.iterations for r in result.rounds] == [2]
+    assert sum(r.iterations for r in result.rounds) == result.usage["iterations"]
+
+
+def test_the_planners_tokens_are_counted_once_not_once_per_round(trace):
+    """A `round` event is an envelope, not a measurement.
+
+    Its tokens are the planner's, already reported by the `plan` event, and both
+    land in the set `metrics`/`cost` add on top of node totals — so the planner's
+    spend was charged to the report twice.
+    """
+    from grapharc.observe import cost, metrics
+
+    loop, _model, _bodies = build_loop(
+        [plan(("read", "fetch"), ("write", "summarise"))],
+        trace=trace,
+        goal_reached=goal_is_done,
+    )
+    result = loop.run("summarise the incident", LoopState(), run_id="r1")
+
+    real = result.usage["tokens"]
+    assert real > 0
+    assert metrics.summarize(trace, "r1").tokens == real
+    assert cost.attribute(trace, "r1").tokens == real
+
+
+def test_a_round_event_still_reports_what_the_round_itself_spent(trace):
+    """Removing the double count must not remove the information."""
+    loop, _model, _bodies = build_loop(
+        [plan(("read", "fetch"), ("write", "summarise"))],
+        trace=trace,
+        goal_reached=goal_is_done,
+    )
+    loop.run("summarise the incident", LoopState(), run_id="r1")
+
+    rounds = [e for e in trace.read_events("r1") if e.phase == "round"]
+    assert rounds, "the round event went missing"
+    for event in rounds:
+        # Not in the typed fields any reader sums...
+        assert event.tokens is None
+        assert event.duration_ms is None
+        # ...but still answerable from the file.
+        assert event.state_delta["round_tokens"] > 0
+        assert event.state_delta["round_iterations"] == 2
+        assert event.state_delta["round_duration_ms"] >= 0
+
+
 def test_a_rejection_reaches_the_planner_and_the_next_proposal_completes_the_run():
     """The replanning edge of ARCHITECTURE §2: rejected + reason -> propose again."""
     loop, model, bodies = build_loop(
