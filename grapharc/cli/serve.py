@@ -16,11 +16,16 @@ import importlib
 import sys
 from typing import Any
 
-from grapharc.cli import optional
+from grapharc.cli import optional, style
 from grapharc.cli.output import EXIT_OK, emit, fail
 
 SERVER_HINT = "Install the server extra with: uv sync --extra server"
 UVICORN_HINT = "Install uvicorn with: uv sync --extra server"
+
+#: `serve` lines its one label up at nine characters, not the ten the report
+#: commands use. All three of its lines are printed verbatim in
+#: `docs/cookbook/06-serving-and-ops.md`, so the number is not up for revision.
+LABEL_WIDTH = 9
 
 
 def resolve_registry(target: str) -> Any:
@@ -93,16 +98,22 @@ def serve(
         "registry": registry_target,
         "graphs": names,
     }
-    lines = [f"serving grapharc.server on http://{host}:{port}"]
-    lines.append(
-        f"graphs   : {', '.join(names)}"
+    graphs = (
+        ", ".join(names)
         if names
-        else "graphs   : none registered — pass --registry module:attr, or every "
+        else "none registered — pass --registry module:attr, or every "
         "create-session request will 404"
     )
-    lines.append("ctrl-c to stop")
-    # Printed before the server blocks: a caller watching stdout for the URL
-    # would otherwise wait for the process to exit to learn it.
+    lines = [
+        f"serving grapharc.server on {style.accent(f'http://{host}:{port}')}",
+        # An empty registry is a legitimate way to check the process comes up and
+        # a useless way to run anything, so on a terminal it is amber.
+        style.kv("graphs", graphs, width=LABEL_WIDTH, tint=None if names else style.warn),
+        style.dim("ctrl-c to stop"),
+    ]
+    # Printed *and flushed* before the server blocks: a caller watching stdout for
+    # the URL would otherwise wait for the process to exit to learn it. Nothing
+    # here is buffered, deferred, or drawn on a timer for the same reason.
     emit(payload, lines, as_json=as_json)
     sys.stdout.flush()
 

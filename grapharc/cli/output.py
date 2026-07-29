@@ -16,6 +16,8 @@ from typing import Any, TextIO
 
 from pydantic import BaseModel
 
+from grapharc.cli import style
+
 EXIT_OK = 0
 # The command ran and the answer is negative: an agent that stopped short of its
 # target, a run id with no events, a probe that found no usable backend.
@@ -79,12 +81,18 @@ def fail(
     Text errors go to stderr so `grapharc … > out` still shows the failure;
     JSON errors go to stdout so the one document a script parses is the one
     that says what went wrong.
+
+    The message body is never wrapped, dyed or re-flowed — only the `error: `
+    prefix is, and only on a terminal. Callers grep stderr for phrases the
+    message contains (`tests/test_cli.py` asserts on `"not a valid topology"`,
+    `"no such trace file"`, `"grapharc demo stage0"`), and a hard break inserted
+    at column 80 would cut one of them in half.
     """
     payload = {"ok": False, "command": command, "error": message, **extra}
     if as_json:
         print(dumps(payload))
     else:
-        print(f"error: {message}", file=sys.stderr)
+        print(f"{style.error_prefix()}{message}", file=sys.stderr)
     return code
 
 

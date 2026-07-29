@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from grapharc.cli import style
 from grapharc.cli.config import ConfigError, Settings
 from grapharc.cli.config import load as load_settings
 from grapharc.cli.generate import resolve_or_generate_policy
@@ -258,27 +259,50 @@ def plan(
         "state": result.state.model_dump() if hasattr(result.state, "model_dump") else result.state,
     }
 
+    # The plain text of every line below is exactly what it was before colour
+    # existed — the labels are still ten characters wide and the round rows still
+    # pad the status to nine — because this block is the transcript printed in
+    # `README.md`. On a terminal the colour carries the verdict: green admitted,
+    # red rejected, and the stop reason in the same green only if the goal was met.
+    stop_tint = style.ok if result.succeeded else style.warn
     lines = [
-        f"goal      : {goal}",
-        f"model     : {model_description}",
-        f"registry  : {registry_target}",
-        f"kinds     : {', '.join(sorted(registry.names())) or '(none)'}",
-        f"policy    : {policy_description}  [{policy_source}]",
-        f"config    : {settings.describe()}",
+        style.kv("goal", goal, width=style.LABEL_WIDTH),
+        style.kv("model", model_description, width=style.LABEL_WIDTH, tint=style.accent),
+        style.kv("registry", registry_target, width=style.LABEL_WIDTH, tint=style.accent),
+        style.kv(
+            "kinds",
+            ", ".join(sorted(registry.names())) or "(none)",
+            width=style.LABEL_WIDTH,
+        ),
+        style.kv(
+            "policy",
+            f"{policy_description}  {style.dim(f'[{policy_source}]')}",
+            width=style.LABEL_WIDTH,
+        ),
+        style.kv("config", settings.describe(), width=style.LABEL_WIDTH, tint=style.dim),
         "",
-        f"stopped   : {result.stop.value}  ({result.detail})",
-        f"rounds    : {len(rounds)} of max {max_rounds}",
+        style.kv(
+            "stopped",
+            f"{stop_tint(result.stop.value)}  {style.dim(f'({result.detail})')}",
+            width=style.LABEL_WIDTH,
+        ),
+        style.kv("rounds", f"{len(rounds)} of max {max_rounds}", width=style.LABEL_WIDTH),
     ]
     for record in rounds:
-        note = f"  rejected: {', '.join(record['rejections'])}" if record["rejections"] else ""
+        codes = ", ".join(record["rejections"])
+        note = f"  {style.dim('rejected:')} {style.err(codes)}" if codes else ""
+        # A round nobody proposed is neither: amber, not a green it did not earn.
+        verdict = {"admitted": True, "rejected": False}.get(str(record["status"]))
         lines.append(
-            f"   round {record['round']}: {record['status']:<9} "
-            f"nodes={record['nodes']} executed={record['executed']}{note}"
+            f"   round {record['round']}: "
+            f"{style.cell(str(record['status']), 9, tint=style.tint_for(verdict))} "
+            f"{style.dim('nodes=')}{record['nodes']} "
+            f"{style.dim('executed=')}{record['executed']}{note}"
         )
     lines += [
         "",
-        f"state     : {result.state}",
-        f"trace     : {trace_path}",
+        style.kv("state", str(result.state), width=style.LABEL_WIDTH),
+        style.kv("trace", str(trace_path), width=style.LABEL_WIDTH, tint=style.accent),
     ]
 
     emit(payload, lines, as_json=as_json)

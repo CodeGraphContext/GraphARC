@@ -38,6 +38,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from grapharc.cli import style
 from grapharc.cli.config import ConfigError
 from grapharc.cli.config import load as load_settings
 from grapharc.cli.generate import resolve_or_generate_policy
@@ -183,15 +184,32 @@ def run_graph(
         **settings.provenance(policy_source=policy_source),
     }
 
+    # `REFUSED` and `ADMITTED` are the whole answer, so on a terminal they carry
+    # the only two colours that matter here. The words, the widths and the order
+    # are untouched: `--check-only` is what CI runs, and CI reads text.
+    width = style.LABEL_WIDTH
+    header = [
+        style.kv("graph", graph_path, width=width, tint=style.accent),
+        style.kv("policy", policy_description, width=width),
+    ]
+    trace_line = style.kv("trace", str(trace_path), width=width, tint=style.accent)
+
     if not verdict.admitted:
         lines = [
-            f"graph     : {graph_path}",
-            f"policy    : {policy_description}",
+            *header,
             "",
-            f"REFUSED   : {len(verdict.rejections)} objection(s)",
+            style.kv(
+                "REFUSED",
+                f"{len(verdict.rejections)} objection(s)",
+                width=width,
+                key_tint=style.err,
+                tint=style.err,
+            ),
         ]
-        lines += [f"   {r.code:<18} {r.detail}" for r in verdict.rejections]
-        lines += ["", f"trace     : {trace_path}"]
+        lines += [
+            f"   {style.cell(r.code, 18, tint=style.err)} {r.detail}" for r in verdict.rejections
+        ]
+        lines += ["", trace_line]
         emit({"ok": False, **common}, lines, as_json=as_json)
         return EXIT_FAILED
 
@@ -210,13 +228,12 @@ def run_graph(
         compiled = materializer.materialize(verdict, proposal)
     except MaterializationError as exc:
         lines = [
-            f"graph     : {graph_path}",
-            f"policy    : {policy_description}",
+            *header,
             "",
-            "ADMITTED, BUT CANNOT BE BUILT",
+            style.err("ADMITTED, BUT CANNOT BE BUILT"),
             f"   {exc}",
             "",
-            f"trace     : {trace_path}",
+            trace_line,
         ]
         emit(
             {"ok": False, "buildable": False, "error": str(exc), **common},
@@ -227,12 +244,13 @@ def run_graph(
 
     if check_only:
         lines = [
-            f"graph     : {graph_path}",
-            f"policy    : {policy_description}",
-            f"nodes     : {proposal.node_count()}",
+            *header,
+            style.kv("nodes", str(proposal.node_count()), width=width),
             "",
-            "ADMITTED and buildable. Nothing was run.",
-            f"fingerprint: {verdict.fingerprint}",
+            style.ok("ADMITTED") + style.dim(" and buildable. Nothing was run."),
+            # Wider than the label column on purpose, and always has been: the
+            # fingerprint is what a later run is compared against.
+            style.kv("fingerprint", verdict.fingerprint, width=width, tint=style.accent),
         ]
         emit(
             {"ok": True, "checked_only": True, "buildable": True, **common},
@@ -245,13 +263,12 @@ def run_graph(
 
     payload = {"ok": True, "checked_only": False, **common, "state": state}
     lines = [
-        f"graph     : {graph_path}",
-        f"policy    : {policy_description}",
-        f"nodes     : {proposal.node_count()}",
+        *header,
+        style.kv("nodes", str(proposal.node_count()), width=width),
         "",
-        "ADMITTED and executed.",
-        f"state     : {state}",
-        f"trace     : {trace_path}",
+        style.ok("ADMITTED") + style.dim(" and executed."),
+        style.kv("state", str(state), width=width),
+        trace_line,
     ]
     emit(payload, lines, as_json=as_json)
     return EXIT_OK

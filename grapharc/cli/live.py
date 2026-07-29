@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from grapharc.cli import style
 from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit
 from grapharc.gateway import different_providers, get_model
 from grapharc.observe.metrics import summarize
@@ -22,6 +23,10 @@ from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget
 
 DEFAULT_REVIEWER = "openrouter/openai/gpt-4o-mini"
+
+#: The header labels line up at nine characters, which is what `model`,
+#: `reviewer` and `budget` have always printed at.
+LABEL_WIDTH = 9
 
 # Real models are open-ended, so a live run always carries a ceiling.
 LIVE_BUDGET = Budget(max_iterations=40, max_tokens=200_000, max_seconds=600)
@@ -55,22 +60,32 @@ def run_live(
         if not as_json:
             print(line)
 
-    say(f"model    : {model_spec}")
+    say(style.kv("model", model_spec, width=LABEL_WIDTH, tint=style.accent))
     model = get_model(model_spec, temperature=0)
 
     reviewer = None
     correlated = None
     if _needs_reviewer(example):
         reviewer_spec = reviewer_spec or DEFAULT_REVIEWER
-        say(f"reviewer : {reviewer_spec}")
+        say(style.kv("reviewer", reviewer_spec, width=LABEL_WIDTH, tint=style.accent))
         correlated = not different_providers(model_spec, reviewer_spec)
         if correlated:
+            # Amber, not red: the run is still valid, the evidence is just weaker.
             say(
-                "  warning: author and reviewer share a provider — correlated "
-                "agreement makes this weaker evidence than a cross-vendor pair"
+                style.warn(
+                    "  warning: author and reviewer share a provider — correlated "
+                    "agreement makes this weaker evidence than a cross-vendor pair"
+                )
             )
         reviewer = get_model(reviewer_spec, temperature=0)
-    say(f"budget   : {LIVE_BUDGET.max_tokens:,} tokens / {LIVE_BUDGET.max_seconds:.0f}s")
+    say(
+        style.kv(
+            "budget",
+            f"{LIVE_BUDGET.max_tokens:,}{style.dim(' tokens / ')}"
+            f"{LIVE_BUDGET.max_seconds:.0f}{style.dim('s')}",
+            width=LABEL_WIDTH,
+        )
+    )
     say("")
 
     header = {
@@ -90,7 +105,7 @@ def run_live(
     if result is None:
         emit(
             {"ok": False, **header, "error": f"'{example}' has no live wiring yet"},
-            [f"'{example}' has no live wiring yet"],
+            [style.err(f"'{example}' has no live wiring yet")],
             as_json=as_json,
         )
         return EXIT_FAILED
@@ -99,14 +114,18 @@ def run_live(
     lines = []
     for key, value in result.items():
         rendered = str(value)
-        lines.append(f"{key}: {rendered[:400]}{'…' if len(rendered) > 400 else ''}")
+        clipped = f"{rendered[:400]}{'…' if len(rendered) > 400 else ''}"
+        lines.append(style.kv(str(key), clipped))
     if metrics:
         lines.append("")
         lines.append(
-            f"spent: {metrics.tokens:,} tokens across {metrics.nodes_executed} nodes "
-            f"in {metrics.duration_ms / 1000:.1f}s"
+            style.kv(
+                "spent",
+                f"{metrics.tokens:,}{style.dim(' tokens across ')}{metrics.nodes_executed}"
+                f"{style.dim(' nodes in ')}{metrics.duration_ms / 1000:.1f}{style.dim('s')}",
+            )
         )
-    lines.append(f"trace: {trace_path}")
+    lines.append(style.kv("trace", str(trace_path), tint=style.accent))
 
     emit(
         {"ok": True, **header, "result": result, "metrics": metrics},
