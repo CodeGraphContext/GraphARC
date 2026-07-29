@@ -1057,7 +1057,7 @@ with TestClient(app) as client:
 ```
 
 ```
-health : {'status': 'ok', 'version': '0.1.0', 'graphs': ['qa']}
+health : {'status': 'ok', 'version': '0.1.1', 'graphs': ['qa']}
 created: 201 queued
 status : succeeded
 answer : Budgets cap iterations, tokens and time.
