@@ -1,14 +1,19 @@
 # GraphARC
 
+[![PyPI](https://img.shields.io/pypi/v/grapharc.svg)](https://pypi.org/project/grapharc/)
+[![Python](https://img.shields.io/pypi/pyversions/grapharc.svg)](https://pypi.org/project/grapharc/)
+[![CI](https://github.com/CodeGraphContext/GraphARC/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeGraphContext/GraphARC/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **A governed agent runtime built on [LangGraph](https://github.com/langchain-ai/langgraph).** A planner *proposes* a subgraph, a deterministic checker *admits* it, and only then does anything execute — so every transition was permitted, every loop was bounded, and afterwards you can prove what happened and why it stopped. Underneath that sits the discipline layer it grew out of: typed state contracts, per-node write permissions, enforced budgets, and JSONL traces that double as replay points.
 
-Alpha (`0.1.0a0`). Installable from source; not on PyPI yet — see [Install](#install).
+Early days (`0.1.0`) — the API is not stable yet. `pip install grapharc` — see [Install](#install).
 
 > *Graph engineering*: when one agent loop stops being enough, coordination becomes the engineering. Nodes do work (agent loops, model calls, deterministic functions, humans approving things), edges decide what runs next, and a typed shared state flows between them. GraphARC implements the discipline that makes such graphs production-grade rather than demos — the ideas emerging from the July 2026 loops-vs-graphs debate (Steinberger, Ng, et al.), the "Two Graphs, Two Jobs" split, and twenty years of pre-AI graph systems where every edge means something and every path can be explained.
 
-![The GraphARC architecture: a CLI or HTTP request reaches a planner, which emits a typed proposal; a deterministic admission checker either refuses it with reasons or admits it; only an admitted proposal is materialised and run by the graph kernel, on top of the model, tool and memory planes; everything lands on one JSONL record, and work discovered mid-run re-enters the gate.](docs/diagrams/00-architecture.png)
+![The GraphARC architecture: a CLI or HTTP request reaches a planner, which emits a typed proposal; a deterministic admission checker either refuses it with reasons or admits it; only an admitted proposal is materialised and run by the graph kernel, on top of the model, tool and memory planes; everything lands on one JSONL record, and work discovered mid-run re-enters the gate.](docs/diagrams/architecture.png)
 
-The amber curve along the bottom is the claim. Refusals return as traced reason codes, and work discovered mid-run **re-enters admission** — there is no already-approved path and no cached authorisation. Rendered from [`docs/diagrams/architecture.py`](docs/diagrams/architecture.py); [five more views](docs/diagrams/) cover the lifecycle, the planes, the agent node, the trust boundary, and which subsystems actually import which.
+The amber curve along the top is the claim. Refusals return as traced reason codes, and work discovered mid-run **re-enters admission** — there is no already-approved path and no cached authorisation. Rendered from [`docs/diagrams/grapharc-architecture.drawio`](docs/diagrams/grapharc-architecture.drawio), whose other two pages cover the trust boundary and which subsystems actually import which; [five more views](docs/diagrams/) generated from [`architecture.py`](docs/diagrams/architecture.py) cover the lifecycle, the planes, the agent node, the trust boundary and the import graph.
 
 ## What's here
 
@@ -58,16 +63,34 @@ Three of those need their edges stated, because the gap is where people get hurt
 
 ## Install
 
-This works now. It did not for most of the project's life — the public remote held only `LICENSE`, `README.md` and `.gitignore`, so a clone had no `pyproject.toml` to sync and the instruction below was fiction. The source is pushed; a fresh clone was verified to contain `pyproject.toml` and the `grapharc/` package.
+Python >= 3.12.
+
+```bash
+pip install grapharc          # or: uv pip install grapharc
+grapharc demo stage0          # costs nothing, needs no key
+```
+
+That is the whole install. The bare package carries the kernel, the planner and the admission gate, the agent harness, the seven core tools, memory, policy and the observability commands — everything the Quickstart below runs. Backends and the HTTP API are extras, because each pulls dependencies you should not pay for unless you use them:
+
+```bash
+pip install 'grapharc[openrouter]'   # tool calling, structured output
+pip install 'grapharc[openai]'       # OpenAI and OpenAI-compatible endpoints
+pip install 'grapharc[ollama]'       # a local server
+pip install 'grapharc[server]'       # the FastAPI + SSE HTTP API
+pip install 'grapharc[otel]'         # OpenTelemetry span export
+pip install 'grapharc[all]'          # every one of the above
+```
+
+The Claude CLI backend — the default — needs no extra: it shells out to `claude` on your `PATH`. Run `grapharc models --check` to see what your machine can actually reach.
+
+Working on GraphARC itself, rather than with it:
 
 ```bash
 git clone https://github.com/CodeGraphContext/GraphARC
 cd GraphARC
 uv sync --group dev              # Python >= 3.12
-uv sync --all-extras --group dev # everything: openrouter, openai, ollama, server, otel, mcp, api
+uv sync --all-extras --group dev # everything, plus the dev group
 ```
-
-Not on PyPI yet. The wheel does build: `uv build` produces one that installs into a clean virtualenv, imports every one of the package's 103 submodules with `[all]` (`gateway.openrouter` and the whole `server` package need their extras, so a bare install imports fewer), and runs `grapharc demo stage0`.
 
 ## Quickstart
 
@@ -96,7 +119,7 @@ grapharc replay <path> <run-id>  # reconstruct a run from its trace
 grapharc diff <path> <a> <b>     # what changed between two runs
 ```
 
-Nine commands, and every one of them takes `--json` — in JSON mode the failure is the document rather than a line on stderr. Exit codes are part of the interface: `0` did the job, `1` ran and the answer was negative (an agent stopped short, a run id had no events, two runs differed), `2` could not run at all.
+Eleven commands, and every one of them takes `--json` — in JSON mode the failure is the document rather than a line on stderr. Exit codes are part of the interface: `0` did the job, `1` ran and the answer was negative (an agent stopped short, a run id had no events, two runs differed), `2` could not run at all.
 
 The `run` stages use scripted models by default, so they cost nothing and produce the same trace every time. Add `--model` to run one against a real backend — that works for stage1 through stage6 and the capstone; stage0 is pure code with no model in it. `grapharc agent` is the exception: it needs a tool-calling backend and says so rather than degrading, because a scripted model has no `bind_tools` to drive a tool loop with.
 
@@ -398,8 +421,9 @@ Re-derived on 2026-07-28 by running each item, not by reading the commit log.
 
 **Distribution**
 
-- **Not on PyPI.** The wheel builds, installs and runs; `.github/workflows/release.yml` is tag-driven with Trusted Publishing and fails closed until a human does the browser-side setup (a GitHub environment named `pypi`, and a PyPI trusted publisher naming this repo and workflow).
+- **`0.1.0` on PyPI reports the wrong `__version__`.** The published wheel's metadata says `0.1.0` — `pip show` and the project page agree — but the module inside it still carries `__version__ = "0.1.0a0"`, because it was built from a tree where only `pyproject.toml` had been bumped. PyPI releases are immutable, so `0.1.0` cannot be corrected in place; the fix ships in `0.1.1`. `pip install grapharc` works and `grapharc demo stage0` runs — this affects the version string alone.
 - *Fixed:* the source **is** on the public remote now, so the documented `git clone && uv sync` path works. It was the ship-blocker for most of this project's life.
+- *Fixed:* the package **is** on PyPI, so `pip install grapharc` works. Verified in a clean virtualenv: bare install, import, and `grapharc demo stage0`.
 
 **Built and unreachable** — this used to be the honest headline, four subsystems deep. One seam is left.
 

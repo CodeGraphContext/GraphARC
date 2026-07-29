@@ -86,11 +86,23 @@ def test_the_python_block_reaches_no_live_backend():
         assert forbidden not in code, forbidden
 
 
-@pytest.mark.parametrize(
-    "path", ["docs/diagrams/00-architecture.png", "docs/diagrams/03-agent-node.png"]
-)
+def _embedded_images() -> list[str]:
+    """Every local image the README embeds, read off the README itself.
+
+    Derived rather than hardcoded: a list of paths spelled out here only ever
+    tests that someone remembered to update the list. Remote images are skipped
+    — this asserts about files in the tree.
+    """
+    text = README.read_text(encoding="utf-8")
+    return [m for m in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", text) if "://" not in m]
+
+
+def test_the_readme_embeds_at_least_one_image():
+    """Guards the regex above: a silent zero-match would make the next test vacuous."""
+    assert _embedded_images()
+
+
+@pytest.mark.parametrize("path", _embedded_images())
 def test_every_image_the_readme_embeds_exists(path):
     """A README that renders a broken image is a broken README."""
-    text = README.read_text(encoding="utf-8")
-    assert f"]({path})" in text, f"README no longer embeds {path}"
     assert (README.parent / path).is_file(), f"{path} is referenced and missing"

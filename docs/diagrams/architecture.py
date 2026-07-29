@@ -307,7 +307,7 @@ def subsystems() -> None:
         edge_attr=EDGE_ATTR,
     ):
         with cluster("ENTRY POINTS", TRIGGER):
-            cli = Action("cli/  2711\neleven commands\n--json on each")
+            cli = Action("cli/  2842\neleven commands\n--json on each")
             server = Action("server/  1320\nFastAPI + SSE\nown sessions (gap)")
             examples = Action("examples/  1450\nstages 0-6 · capstone\nagent_fixit · plan_incident")
 
@@ -318,7 +318,7 @@ def subsystems() -> None:
             session = Action("session/  2084\nresume, interrupt, approval")
 
         with cluster("PLANES", TOOL):
-            harness = Action("harness/  2190\ntools, permissions,\nsandbox, AgentNode")
+            harness = Action("harness/  2234\ntools, permissions,\nsandbox, AgentNode")
             gateway = Action("gateway/  1679\nClaude CLI \u00b7 OpenRouter\nOpenAI \u00b7 Ollama")
             memory = Action("memory/  2530\nclaims, SQLite, traversal")
             tools = Action("tools/  1054\nseven core tools")

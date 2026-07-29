@@ -48,12 +48,12 @@ In order.
    side now compiles to the admission gate, but nothing calls
    `permission_policy()`, so `grapharc agent` is still governed by Python
    objects rather than by the TOML file.
-4. **Publish to PyPI** (§11.1) — the workflow is tag-driven with Trusted
-   Publishing and fails closed until a human creates a GitHub environment named
-   `pypi` and a PyPI trusted publisher naming this repo and `release.yml`. Prove
-   it first with `workflow_dispatch` + `dry_run: true`.
-5. **Decide the version.** `0.1.0a0` today; `0.1.0` is the honest next step —
-   a `1.0` implies API stability that several days-old subsystems do not have.
+4. **~~Publish to PyPI~~** (§11.1) — done, `0.1.0` is live. Next is `0.1.1`,
+   to correct the `__version__` the published wheel carries. Build only from a
+   clean tree, and let the tag-driven `release.yml` do it rather than a local
+   `uv build` — that is exactly how the drift got in.
+5. **~~Decide the version.~~** Decided: `0.1.0`. A `1.0` would imply API
+   stability that several days-old subsystems do not have.
 
 ---
 
@@ -442,8 +442,8 @@ Everything here works and nothing calls it.
 
 ## 11. Product & distribution — `[~] ~35%`
 
-- [x] Builds a clean wheel; **1,381 tests**; CI; ruff clean. Verified in a fresh
-      virtualenv: a bare wheel install imports most of the 94 submodules and runs
+- [x] Builds a clean wheel; **1,534 tests**; CI; ruff clean. Verified in a fresh
+      virtualenv: a bare wheel install imports most of the 103 submodules and runs
       `grapharc demo stage0` — `gateway.openrouter` and the whole `server`
       package need their extras — and installing `[all]` imports all 93.
 - [x] **11.6 — Classifiers, `[project.urls]`, contribution guide.** Every URL
@@ -460,7 +460,13 @@ Everything here works and nothing calls it.
       claim in the tree for most of the project's life, because it was the first
       one a reader hit.
 
-- [ ] **11.1 — Publish to PyPI.**
+- [x] **11.1 — Publish to PyPI.** `0.1.0` is live; `pip install grapharc`
+      verified in a clean virtualenv through to `grapharc demo stage0`. One
+      defect shipped with it: the wheel's module carries `__version__ =
+      "0.1.0a0"` while its metadata says `0.1.0`. PyPI is immutable, so this
+      is corrected by `0.1.1`, not by a re-upload.
+- [ ] **11.2 — Ship `0.1.1`** to correct the `__version__` above. Build only
+      from a clean tree: `git status` empty, then `uv build`.
 - [ ] **11.4 — Benchmarks, including published losses.**
 - [ ] **11.5 — External security review** (the audit-hook sandbox is defense in
       depth; §3.2's container executor is the boundary to review).

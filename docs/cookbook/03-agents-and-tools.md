@@ -11,7 +11,7 @@ and nothing here claims a result for them. Where output would depend on a temp
 directory, a clock or a machine path, the snippet blanks that part itself and says
 so in a comment, so what you see is what you get.
 
-Verified against `grapharc 0.1.0a0`, Python 3.14.6, `langgraph 1.2.9`,
+Verified against `grapharc 0.1.0`, Python 3.14.6, `langgraph 1.2.9`,
 `langchain-core 1.5.1`, `pydantic 2.13.4`, Docker 29.4.1.
 
 Each snippet is a complete file. Save it and run it; nothing carries over between

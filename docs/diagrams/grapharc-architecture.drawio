@@ -1,0 +1,485 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram name="0 · Architecture" id="arch">
+    <mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="GraphARC — a governed agent runtime" style="text;html=1;fontSize=26;fontStyle=1;align=left;verticalAlign=middle;fontColor=#1b1b1f;" vertex="1" parent="1">
+          <mxGeometry x="40" y="30" width="800" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="A planner &lt;i&gt;proposes&lt;/i&gt; a subgraph, a deterministic checker &lt;i&gt;admits&lt;/i&gt; it, and only then does anything execute." style="text;html=1;fontSize=13;align=left;verticalAlign=middle;fontColor=#55555a;" vertex="1" parent="1">
+          <mxGeometry x="40" y="68" width="800" height="24" as="geometry" />
+        </mxCell>
+
+        <!-- ================= TRIGGERS ================= -->
+        <mxCell id="cT" value="WHAT STARTS A RUN" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#4a90d918;strokeColor=#4a90d9;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#4a90d9;align=center;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="400" width="210" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="t1" value="grapharc CLI&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;eleven commands, --json on each&lt;/font&gt;" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#eaf2fb;strokeColor=#4a90d9;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="62" y="443" width="166" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="t2" value="HTTP API + SSE&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;FastAPI · grapharc serve&lt;/font&gt;" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#eaf2fb;strokeColor=#4a90d9;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="62" y="518" width="166" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ================= OPERATOR ================= -->
+        <mxCell id="cO" value="THE OPERATOR DECLARES  ·  before any model runs" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#5cb85c18;strokeColor=#5cb85c;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#3f8f3f;align=center;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="300" y="120" width="470" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="o1" value="&lt;b&gt;registry&lt;/b&gt;  ·  CODE&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;a name → a real function.&lt;br&gt;Absence is refusal; no wildcard.&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf7ea;strokeColor=#5cb85c;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="320" y="165" width="205" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="o2" value="&lt;b&gt;policy.toml&lt;/b&gt;  ·  DATA&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;which transitions are permitted.&lt;br&gt;deny &gt; ask &gt; allow; unmatched denies.&lt;/font&gt;" style="shape=note;size=14;html=1;whiteSpace=wrap;fillColor=#eaf7ea;strokeColor=#5cb85c;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="545" y="165" width="205" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="o3" value="also the operator's: the state schema, &lt;b&gt;Budget&lt;/b&gt;, &lt;b&gt;LoopLimits&lt;/b&gt;, and &lt;b&gt;grapharc.toml&lt;/b&gt; supplying any of them as a default.&amp;nbsp; flag &gt; env &gt; grapharc.toml &gt; built-in." style="text;html=1;whiteSpace=wrap;fontSize=10;fontColor=#55555a;align=center;" vertex="1" parent="1">
+          <mxGeometry x="320" y="252" width="430" height="52" as="geometry" />
+        </mxCell>
+
+        <!-- ================= CONTROL PLANE ================= -->
+        <mxCell id="cC" value="THE CONTROL PLANE  ·  propose, admit, build" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#d95c5c18;strokeColor=#d95c5c;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#d95c5c;align=center;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="300" y="360" width="470" height="470" as="geometry" />
+        </mxCell>
+        <mxCell id="c1" value="&lt;b&gt;planner&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;emits a typed Subgraph as JSON.&lt;br&gt;A node names a KIND — there is no&lt;br&gt;field a body could arrive in.&lt;/font&gt;" style="shape=process;whiteSpace=wrap;html=1;fillColor=#fbf0e0;strokeColor=#d9a441;fontSize=12;size=0.08;" vertex="1" parent="1">
+          <mxGeometry x="318" y="405" width="216" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="c2" value="&lt;b&gt;ADMISSION&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;&quot;&gt;deterministic&lt;br&gt;model-free&lt;/font&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fbeaea;strokeColor=#d95c5c;strokeWidth=3;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="316" y="530" width="220" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="c5" value="&lt;b&gt;all five, every round&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;&quot;&gt;① every kind in the registry?&lt;br&gt;② every edge policy-permitted?&lt;br&gt;③ worst case within &lt;i&gt;remaining&lt;/i&gt; budget?&lt;br&gt;④ depth within max_depth?&lt;br&gt;⑤ acyclic?&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#d95c5c;dashed=1;fontSize=11;align=left;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="556" y="405" width="196" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="c3" value="&lt;b&gt;REFUSED&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;every objection at once, each a&lt;br&gt;typed reason code. No factory ran.&lt;br&gt;Nothing was built.&lt;/font&gt;" style="shape=document;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#ffecec;strokeColor=#ff6b6b;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="556" y="540" width="196" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="c4" value="&lt;b&gt;materialise&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;authorisation is argument ONE,&lt;br&gt;hash-matched to the proposal.&lt;br&gt;Bodies come from the registry —&lt;br&gt;no code is ever generated.&lt;/font&gt;" style="shape=process;whiteSpace=wrap;html=1;fillColor=#e9f0f8;strokeColor=#7aa5d2;fontSize=12;size=0.08;" vertex="1" parent="1">
+          <mxGeometry x="318" y="710" width="216" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- ================= EXECUTION ================= -->
+        <mxCell id="cG" value="THE GRAPH RUNS" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#7aa5d218;strokeColor=#7aa5d2;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#4a7fb5;align=center;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="810" y="360" width="250" height="470" as="geometry" />
+        </mxCell>
+        <mxCell id="g0" value="typed state · declared writes · deep-copy isolation · metered budget · code-only routing" style="text;html=1;whiteSpace=wrap;fontSize=10;fontColor=#4a7fb5;align=center;" vertex="1" parent="1">
+          <mxGeometry x="822" y="386" width="226" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="g1" value="&lt;b&gt;kernel&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;grapharc.runtime&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#e9f0f8;strokeColor=#7aa5d2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="835" y="435" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="g2" value="&lt;b&gt;agent nodes&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;observe → model → permission&lt;br&gt;→ sandboxed tool → repeat&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#e9f0f8;strokeColor=#7aa5d2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="835" y="530" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="g3" value="&lt;b&gt;verifiers&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;fresh context, anchored&lt;br&gt;to deterministic evidence&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#e9f0f8;strokeColor=#7aa5d2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="835" y="635" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="g4" value="&lt;b&gt;ProgressGuard&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;target met / no progress / round cap&lt;br&gt;— a machine-readable StopReason&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#f4f7fb;strokeColor=#7aa5d2;dashed=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="835" y="740" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- ================= PLANES ================= -->
+        <mxCell id="cP" value="THE PLANES EVERY NODE SITS ON" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#4a90d918;strokeColor=#4a90d9;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#4a90d9;align=center;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="620" y="880" width="820" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="p1" value="&lt;b&gt;model plane&lt;/b&gt;  ·  gateway&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;Claude CLI · OpenRouter&lt;br&gt;OpenAI · Ollama&lt;br&gt;retries, failover, spend ceilings&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf2fb;strokeColor=#4a90d9;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="642" y="920" width="245" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="p2" value="&lt;b&gt;tool plane&lt;/b&gt;  ·  harness + tools&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;seven core tools, workspace-confined&lt;br&gt;permissions: deny &gt; ask &gt; allow&lt;br&gt;audit-hook sandbox · ContainerExecutor&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf7ea;strokeColor=#5cb85c;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="907" y="920" width="245" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="p3" value="&lt;b&gt;memory plane&lt;/b&gt;  ·  memory&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;claims with provenance — superseded,&lt;br&gt;never overwritten. SQLite.&lt;br&gt;BM25F + graph traversal · contradiction&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#fbf0e0;strokeColor=#d9a441;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1172" y="920" width="245" height="110" as="geometry" />
+        </mxCell>
+
+        <!-- ================= RECORD ================= -->
+        <mxCell id="cR" value="ONE RECORD" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#a57ad218;strokeColor=#a57ad2;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#8a5bbd;align=center;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1130" y="360" width="270" height="470" as="geometry" />
+        </mxCell>
+        <mxCell id="r0" value="what it did  ·  what it was ALLOWED to do  ·  why it stopped" style="text;html=1;whiteSpace=wrap;fontSize=10;fontColor=#8a5bbd;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1145" y="386" width="240" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="r1" value="&lt;b&gt;trace.jsonl&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;start / end / error per node.&lt;br&gt;Every reader below parses this&lt;br&gt;same file, so the dashboard and&lt;br&gt;the audit trail cannot disagree.&lt;/font&gt;" style="shape=document;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#f3ecfa;strokeColor=#a57ad2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="425" width="230" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="r2" value="&lt;b&gt;metrics · viz · diff&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;tokens, retries, termination reason,&lt;br&gt;per-node counts, executed path&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#f3ecfa;strokeColor=#a57ad2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="570" width="230" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="r3" value="&lt;b&gt;replay&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;the trace &lt;i&gt;is&lt;/i&gt; the replay point&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#f3ecfa;strokeColor=#a57ad2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="665" width="230" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="r4" value="&lt;b&gt;OpenTelemetry · cost attribution&lt;/b&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#f3ecfa;strokeColor=#a57ad2;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="750" width="230" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- ================= EDGES ================= -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4a90d9;strokeWidth=2.4;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="t1" target="c1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4a90d9;strokeWidth=2.4;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="t2" target="c1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="the only source&#10;of a node body" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#5cb85c;strokeWidth=2.2;exitX=0.25;exitY=1;entryX=0.25;entryY=0;fontSize=10;fontColor=#3f8f3f;" edge="1" parent="1" source="o1" target="c2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="decides edges" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#5cb85c;strokeWidth=2.2;exitX=0.5;exitY=1;entryX=1;entryY=0.5;fontSize=10;fontColor=#3f8f3f;" edge="1" parent="1" source="o2" target="c2">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="647" y="700" />
+              <mxPoint x="600" y="700" />
+              <mxPoint x="600" y="600" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e5" value="proposal — names only" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d9a441;strokeWidth=2.6;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=11;fontColor=#a97a1f;" edge="1" parent="1" source="c1" target="c2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="no" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#ff6b6b;strokeWidth=2;dashed=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontSize=11;fontColor=#d13b3b;" edge="1" parent="1" source="c2" target="c3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" value="ADMITTED" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d95c5c;strokeWidth=3;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=12;fontStyle=1;fontColor=#d95c5c;" edge="1" parent="1" source="c2" target="c4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" value="compiled graph" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#7aa5d2;strokeWidth=3;exitX=1;exitY=0.5;entryX=0.5;entryY=1;fontSize=11;fontColor=#4a7fb5;" edge="1" parent="1" source="c4" target="g1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="790" y="755" />
+              <mxPoint x="790" y="855" />
+              <mxPoint x="935" y="855" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#7aa5d2;strokeWidth=2;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="g1" target="g2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#7aa5d2;strokeWidth=2;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="g2" target="g3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#7aa5d2;strokeWidth=2;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="g3" target="g4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" value="model calls" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4a90d9;strokeWidth=2;exitX=0;exitY=0.5;entryX=0.5;entryY=0;fontSize=10;fontColor=#4a90d9;" edge="1" parent="1" source="g2" target="p1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="765" y="565" />
+              <mxPoint x="765" y="865" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e13" value="tool calls" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#5cb85c;strokeWidth=2;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=10;fontColor=#3f8f3f;" edge="1" parent="1" source="g4" target="p2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" value="recall / persist" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d9a441;strokeWidth=2;exitX=1;exitY=0.5;entryX=0.5;entryY=0;fontSize=10;fontColor=#a97a1f;" edge="1" parent="1" source="g3" target="p3">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1090" y="670" />
+              <mxPoint x="1090" y="860" />
+              <mxPoint x="1294" y="860" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e15" value="every step" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#a57ad2;strokeWidth=2;dashed=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontSize=10;fontColor=#8a5bbd;" edge="1" parent="1" source="g1" target="r1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e16" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#a57ad2;strokeWidth=2;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="r1" target="r2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e17" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#a57ad2;strokeWidth=2;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="r2" target="r3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e18" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#a57ad2;strokeWidth=2;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="r3" target="r4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- the two feedback edges: this is a runtime, not a pipeline -->
+        <mxCell id="fb1" value="reason codes feed&#10;the next proposal" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#ff6b6b;strokeWidth=2.4;dashed=1;exitX=0.5;exitY=0;entryX=1;entryY=0.5;fontSize=10;fontColor=#d13b3b;" edge="1" parent="1" source="c3" target="c1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="654" y="445" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="fb2" value="work discovered mid-run RE-ENTERS the gate&#10;no already-approved path, no cached authorisation" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d9a441;strokeWidth=3;exitX=0;exitY=0.5;entryX=1;entryY=0.5;fontSize=11;fontStyle=1;fontColor=#a97a1f;verticalAlign=bottom;" edge="1" parent="1" source="g3" target="c1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="790" y="670" />
+              <mxPoint x="790" y="345" />
+              <mxPoint x="426" y="345" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="legend" value="&lt;b&gt;The claim.&lt;/b&gt;&amp;nbsp; Everything above the gate &lt;i&gt;proposes&lt;/i&gt;. Nothing below it runs without passing through. The two curved returns are what make this a governed loop rather than a pipeline: a refusal comes back as traced reason codes, and work discovered mid-run re-enters admission." style="text;html=1;whiteSpace=wrap;fontSize=11;fontColor=#55555a;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="900" width="540" height="80" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram name="1 · Trust boundary" id="trust">
+    <mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="ttitle" value="The trust boundary — an operator declares, a model proposes, a checker decides" style="text;html=1;fontSize=22;fontStyle=1;align=left;fontColor=#1b1b1f;" vertex="1" parent="1">
+          <mxGeometry x="40" y="30" width="1000" height="34" as="geometry" />
+        </mxCell>
+
+        <mxCell id="b1" value="① THE OPERATOR DECLARES  ·  before any model runs" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#5cb85c18;strokeColor=#5cb85c;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#3f8f3f;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="110" width="300" height="500" as="geometry" />
+        </mxCell>
+        <mxCell id="b1a" value="&lt;b&gt;registry.py  ·  CODE&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px;color:#55555a;&quot;&gt;a name → a real function.&lt;br&gt;'patch' = an agent with edit_file,&lt;br&gt;a token cap, one writable field.&lt;br&gt;&lt;b&gt;Absence is refusal. No wildcard.&lt;/b&gt;&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf7ea;strokeColor=#5cb85c;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="60" y="160" width="260" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="b1b" value="&lt;b&gt;policy.toml  ·  DATA&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px;color:#55555a;&quot;&gt;which transitions are permitted.&lt;br&gt;deny &gt; ask &gt; allow; unmatched denies.&lt;br&gt;&lt;br&gt;Named by a flag, by grapharc.toml, or —&lt;br&gt;with neither — GENERATED once, written&lt;br&gt;to .grapharc/, and disclosed as policy_source.&lt;/font&gt;" style="shape=note;size=16;html=1;whiteSpace=wrap;fillColor=#eaf7ea;strokeColor=#5cb85c;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="60" y="305" width="260" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="b1c" value="also the operator's, not drawn: the state schema, Budget, LoopLimits, and grapharc.toml — which supplies any of these as a default.&lt;br&gt;&lt;b&gt;flag &gt; env &gt; grapharc.toml &gt; built-in&lt;/b&gt;; parent directories are never searched." style="text;html=1;whiteSpace=wrap;fontSize=10;fontColor=#55555a;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="475" width="260" height="115" as="geometry" />
+        </mxCell>
+
+        <mxCell id="b2" value="② THE MODEL PROPOSES  ·  nothing else" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#d9a44118;strokeColor=#d9a441;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#a97a1f;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="400" y="160" width="300" height="400" as="geometry" />
+        </mxCell>
+        <mxCell id="b2a" value="&lt;b&gt;a Subgraph, as JSON&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px;color:#55555a;font-family:monospace;&quot;&gt;{&quot;nodes&quot;: [{&quot;name&quot;: &quot;triage&quot;}],&lt;br&gt;&amp;nbsp;&quot;edges&quot;: [...]}&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px;color:#55555a;&quot;&gt;names and edges — the whole surface&lt;/font&gt;" style="shape=parallelogram;perimeter=parallelogramPerimeter;fixedSize=1;size=18;whiteSpace=wrap;html=1;fillColor=#fbf0e0;strokeColor=#d9a441;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="420" y="205" width="260" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="b2b" value="&lt;b&gt;CANNOT SUPPLY&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px;color:#55555a;&quot;&gt;a node body — extra=&quot;forbid&quot;&lt;br&gt;a callable — not JSON-serialisable, so it&lt;br&gt;cannot be fingerprinted and never reaches the gate&lt;br&gt;its own budget or approval&lt;br&gt;a new kind — the registry is frozen&lt;/font&gt;" style="shape=document;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fffaf0;strokeColor=#d9a441;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="420" y="360" width="260" height="140" as="geometry" />
+        </mxCell>
+
+        <mxCell id="b3" value="③ THE CHECKER DECIDES  ·  deterministic, model-free" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#d95c5c18;strokeColor=#d95c5c;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#d95c5c;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="760" y="130" width="310" height="460" as="geometry" />
+        </mxCell>
+        <mxCell id="b3a" value="&lt;b&gt;AdmissionChecker.check()&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;&quot;&gt;kind registered? edge permitted?&lt;br&gt;worst case within REMAINING budget?&lt;br&gt;depth? acyclic?&lt;/font&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fbeaea;strokeColor=#d95c5c;strokeWidth=3;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="775" y="175" width="280" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="b3b" value="&lt;b&gt;REFUSED&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px;color:#55555a;&quot;&gt;every objection at once, each a typed&lt;br&gt;reason code.&amp;nbsp; &lt;b&gt;No factory ran.&lt;br&gt;Nothing was built.&lt;/b&gt;&lt;/font&gt;" style="shape=document;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#ffecec;strokeColor=#ff6b6b;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="790" y="410" width="250" height="120" as="geometry" />
+        </mxCell>
+
+        <mxCell id="b4" value="④ ONLY THEN IS ANYTHING BUILT" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#7aa5d218;strokeColor=#7aa5d2;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#4a7fb5;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1130" y="160" width="300" height="400" as="geometry" />
+        </mxCell>
+        <mxCell id="b4a" value="&lt;b&gt;Materializer&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px;color:#55555a;&quot;&gt;authorisation is argument ONE,&lt;br&gt;hash-matched to the proposal.&lt;br&gt;Bodies looked up in the registry —&lt;br&gt;&lt;b&gt;no code is ever generated.&lt;/b&gt;&lt;/font&gt;" style="shape=process;whiteSpace=wrap;html=1;fillColor=#e9f0f8;strokeColor=#7aa5d2;fontSize=13;size=0.06;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="210" width="260" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="b4b" value="&lt;b&gt;the kernel runs it&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px;color:#55555a;&quot;&gt;declared writes · deep-copy isolation&lt;br&gt;budget metered without the node's help&lt;br&gt;max_seconds delivered as an interrupt&lt;br&gt;&lt;i&gt;into&lt;/i&gt; the running node&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e9f0f8;strokeColor=#7aa5d2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="375" width="260" height="120" as="geometry" />
+        </mxCell>
+
+        <mxCell id="b5" value="⑤ ONE RECORD" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#a57ad218;strokeColor=#a57ad2;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#8a5bbd;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1490" y="280" width="170" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="b5a" value="&lt;b&gt;trace.jsonl&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px;color:#55555a;&quot;&gt;what it did&lt;br&gt;what it was&lt;br&gt;&lt;b&gt;ALLOWED&lt;/b&gt; to do&lt;br&gt;why it stopped&lt;/font&gt;" style="shape=document;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#f3ecfa;strokeColor=#a57ad2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1510" y="325" width="130" height="140" as="geometry" />
+        </mxCell>
+
+        <mxCell id="te1" value="the only source&#10;of a node body" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#5cb85c;strokeWidth=2.4;exitX=1;exitY=0.5;entryX=0;entryY=0.35;fontSize=10;fontColor=#3f8f3f;" edge="1" parent="1" source="b1a" target="b3a">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="370" y="220" />
+              <mxPoint x="370" y="90" />
+              <mxPoint x="730" y="90" />
+              <mxPoint x="730" y="238" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="te2" value="decides edges" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#5cb85c;strokeWidth=2.4;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontSize=10;fontColor=#3f8f3f;" edge="1" parent="1" source="b1b" target="b3a">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="360" y="380" />
+              <mxPoint x="360" y="630" />
+              <mxPoint x="740" y="630" />
+              <mxPoint x="740" y="265" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="te3" value="names only" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d9a441;strokeWidth=3;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontSize=11;fontStyle=1;fontColor=#a97a1f;" edge="1" parent="1" source="b2a" target="b3a">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="te4" value="no" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#ff6b6b;strokeWidth=2;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=11;fontColor=#d13b3b;" edge="1" parent="1" source="b3a" target="b3b">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="te5" value="ADMITTED" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d95c5c;strokeWidth=3;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontSize=12;fontStyle=1;fontColor=#d95c5c;" edge="1" parent="1" source="b3a" target="b4a">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="te6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#7aa5d2;strokeWidth=2.6;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="b4a" target="b4b">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="te7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#a57ad2;strokeWidth=2.4;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="b4b" target="b5a">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="tfb1" value="reason codes feed&#10;the next proposal" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#ff6b6b;strokeWidth=2.4;dashed=1;exitX=0;exitY=0.5;entryX=0.5;entryY=1;fontSize=10;fontColor=#d13b3b;" edge="1" parent="1" source="b3b" target="b2b">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="720" y="470" />
+              <mxPoint x="720" y="540" />
+              <mxPoint x="550" y="540" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="tfb2" value="work discovered mid-run RE-ENTERS the gate — no already-approved path" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d9a441;strokeWidth=3;exitX=0.5;exitY=1;entryX=0.5;entryY=1;fontSize=11;fontStyle=1;fontColor=#a97a1f;verticalAlign=top;" edge="1" parent="1" source="b4b" target="b2a">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1280" y="700" />
+              <mxPoint x="550" y="700" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="tnote" value="The other views show &lt;i&gt;structure&lt;/i&gt;. This one shows the &lt;b&gt;boundary&lt;/b&gt; — the only question that decides whether the rest is a safety argument or decoration. Everything an operator authors happens before a model runs. The model contributes exactly one thing: JSON naming kinds and edges." style="text;html=1;whiteSpace=wrap;fontSize=11;fontColor=#55555a;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="740" width="700" height="70" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram name="2 · Subsystems (import graph)" id="subs">
+    <mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="stitle" value="Twelve subsystems — drawn from what actually imports what" style="text;html=1;fontSize=22;fontStyle=1;align=left;fontColor=#1b1b1f;" vertex="1" parent="1">
+          <mxGeometry x="40" y="25" width="900" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="ssub" value="Line counts re-derived 2026-07-29 from &lt;font style=&quot;font-family:monospace;&quot;&gt;find grapharc/&lt;pkg&gt; -name '*.py' | xargs cat | wc -l&lt;/font&gt;. A diagram rots exactly the way prose does — re-derive before trusting it." style="text;html=1;whiteSpace=wrap;fontSize=11;align=left;fontColor=#55555a;" vertex="1" parent="1">
+          <mxGeometry x="40" y="58" width="900" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sA" value="ENTRY POINTS" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#4a90d918;strokeColor=#4a90d9;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#4a90d9;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="110" width="780" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="sa1" value="&lt;b&gt;cli/&lt;/b&gt;&amp;nbsp; 2842&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;eleven commands&lt;br&gt;--json on each&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf2fb;strokeColor=#4a90d9;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="60" y="152" width="230" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="sa2" value="&lt;b&gt;server/&lt;/b&gt;&amp;nbsp; 1320&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;FastAPI + SSE&lt;br&gt;&lt;b&gt;own sessions (gap)&lt;/b&gt;&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf2fb;strokeColor=#4a90d9;dashed=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="315" y="152" width="230" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="sa3" value="&lt;b&gt;examples/&lt;/b&gt;&amp;nbsp; 1450&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;stages 0-6 · capstone&lt;br&gt;agent_fixit · plan_incident&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf2fb;strokeColor=#4a90d9;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="570" y="152" width="230" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sD" value="THE GOVERNED LOOP  ·  now reachable" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#d9a44118;strokeColor=#d9a441;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#a97a1f;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="870" y="110" width="440" height="300" as="geometry" />
+        </mxCell>
+        <mxCell id="sd1" value="&lt;font style=&quot;font-family:monospace;font-size:11px;&quot;&gt;grapharc plan &lt;goal&gt;&lt;/font&gt;&amp;nbsp; a model proposes&lt;br&gt;&lt;font style=&quot;font-family:monospace;font-size:11px;&quot;&gt;grapharc run graph.json&lt;/font&gt;&amp;nbsp; you wrote it&lt;br&gt;&lt;font style=&quot;font-family:monospace;font-size:11px;&quot;&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;--check-only&lt;/font&gt;&amp;nbsp; admission as a linter&lt;br&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;--registry swaps the kinds (stdlib ships some)&lt;br&gt;--policy compiles a TOML into the gate&lt;br&gt;grapharc.toml supplies either as a default&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#fffaf0;strokeColor=#d9a441;fontSize=12;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="890" y="152" width="400" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="sd2" value="&lt;b&gt;planner/&lt;/b&gt;&amp;nbsp; 2696&lt;br&gt;&lt;font style=&quot;font-size:11px;color:#55555a;&quot;&gt;proposal · admission · materialize · loop&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#fbf0e0;strokeColor=#d9a441;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="890" y="315" width="400" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sB" value="CORE" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#7aa5d218;strokeColor=#7aa5d2;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#4a7fb5;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="285" width="780" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="sb1" value="&lt;b&gt;runtime/&lt;/b&gt;&amp;nbsp; 1960&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;typed state, declared writes,&lt;br&gt;budgets, async, traces&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#e9f0f8;strokeColor=#7aa5d2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="60" y="327" width="360" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="sb2" value="&lt;b&gt;session/&lt;/b&gt;&amp;nbsp; 2084&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;resume across processes,&lt;br&gt;interrupt, human approval&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#e9f0f8;strokeColor=#7aa5d2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="440" y="327" width="360" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sC" value="PLANES" style="rounded=1;html=1;whiteSpace=wrap;fillColor=#5cb85c18;strokeColor=#5cb85c;strokeWidth=1.6;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#3f8f3f;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="470" width="1270" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="sc1" value="&lt;b&gt;harness/&lt;/b&gt;&amp;nbsp; 2234&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;AgentNode, permissions,&lt;br&gt;sandbox, container executor&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf7ea;strokeColor=#5cb85c;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="65" y="515" width="380" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="sc2" value="&lt;b&gt;gateway/&lt;/b&gt;&amp;nbsp; 1679&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;Claude CLI · OpenRouter&lt;br&gt;OpenAI · Ollama · resilience · spend&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf7ea;strokeColor=#5cb85c;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="465" y="515" width="380" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="sc3" value="&lt;b&gt;memory/&lt;/b&gt;&amp;nbsp; 2530&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;claims with provenance, SQLite,&lt;br&gt;BM25F + graph traversal, contradiction&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf7ea;strokeColor=#5cb85c;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="865" y="515" width="380" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="sc4" value="&lt;b&gt;tools/&lt;/b&gt;&amp;nbsp; 1054&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;seven core tools, workspace-confined&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf7ea;strokeColor=#5cb85c;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="65" y="625" width="380" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="sc5" value="&lt;b&gt;policy/&lt;/b&gt;&amp;nbsp; 908&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;TOML rules → the admission gate&lt;br&gt;via PolicyEngine.edge_policy()&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf7ea;strokeColor=#5cb85c;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="465" y="625" width="380" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="sc6" value="&lt;b&gt;observe/&lt;/b&gt;&amp;nbsp; 1801&lt;br&gt;&lt;font style=&quot;font-size:10px;color:#55555a;&quot;&gt;traces, replay, diff, metrics, OTel, cost&lt;/font&gt;" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#eaf7ea;strokeColor=#5cb85c;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="865" y="625" width="380" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="se1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4a90d9;strokeWidth=1.8;exitX=0.25;exitY=1;entryX=0.25;entryY=0;" edge="1" parent="1" source="sa1" target="sb1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4a90d9;strokeWidth=1.8;exitX=0.5;exitY=1;entryX=0.75;entryY=0;" edge="1" parent="1" source="sa3" target="sb1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4a90d9;strokeWidth=1.8;exitX=0.5;exitY=1;entryX=0.25;entryY=0;" edge="1" parent="1" source="sa2" target="sb2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#7aa5d2;strokeWidth=1.8;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="sb2" target="sb1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4a90d9;strokeWidth=1.8;exitX=0;exitY=0.5;entryX=0.15;entryY=0;" edge="1" parent="1" source="sa1" target="sc1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="25" y="187" />
+              <mxPoint x="25" y="490" />
+              <mxPoint x="122" y="490" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="se6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#7aa5d2;strokeWidth=1.8;exitX=0.75;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="sb1" target="sc6">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="330" y="440" />
+              <mxPoint x="1055" y="440" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="se7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#7aa5d2;strokeWidth=1.8;exitX=0.9;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="sb1" target="sc3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#5cb85c;strokeWidth=1.8;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="sc1" target="sc2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#5cb85c;strokeWidth=1.8;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="sc1" target="sc4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#5cb85c;strokeWidth=1.8;exitX=0.75;exitY=1;entryX=0.25;entryY=0;" edge="1" parent="1" source="sc1" target="sc5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sf1" value="plan" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d9a441;strokeWidth=2.4;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontSize=11;fontStyle=1;fontColor=#a97a1f;" edge="1" parent="1" source="sa1" target="sd1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="860" y="187" />
+              <mxPoint x="860" y="217" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="sf2" value="drives" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d9a441;strokeWidth=2.4;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=11;fontColor=#a97a1f;" edge="1" parent="1" source="sd1" target="sd2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="sf3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d9a441;strokeWidth=1.8;dashed=1;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="sd2" target="sb1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="845" y="350" />
+              <mxPoint x="845" y="362" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="sf4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d9a441;strokeWidth=1.8;dashed=1;exitX=0.75;exitY=1;entryX=0.75;entryY=0;" edge="1" parent="1" source="sd2" target="sc6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="sf5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d9a441;strokeWidth=1.8;dashed=1;exitX=0.25;exitY=1;entryX=0.75;entryY=0;" edge="1" parent="1" source="sd2" target="sc5">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="990" y="440" />
+              <mxPoint x="750" y="440" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="snote" value="&lt;b&gt;This view is drawn from the import graph, not from intent.&lt;/b&gt;&amp;nbsp; It used to show &lt;font style=&quot;font-family:monospace;&quot;&gt;planner/&lt;/font&gt; in its own box with arrows leaving and none arriving — the largest gap this project had, rendered rather than described. &lt;font style=&quot;font-family:monospace;&quot;&gt;grapharc plan&lt;/font&gt; closed it, so the arrow &lt;i&gt;into&lt;/i&gt; that box is the point. &lt;font style=&quot;font-family:monospace;&quot;&gt;server/&lt;/font&gt; carries the one remaining gap marker: it still runs its own in-process session layer instead of the durable one.&lt;br&gt;&lt;br&gt;Re-derive before trusting the picture:&amp;nbsp; &lt;font style=&quot;font-family:monospace;font-size:10px;&quot;&gt;grep -rn &quot;grapharc.planner&quot; grapharc/ --include=*.py | grep -v &quot;^grapharc/planner/&quot;&lt;/font&gt;" style="text;html=1;whiteSpace=wrap;fontSize=11;fontColor=#55555a;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="770" width="1270" height="100" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

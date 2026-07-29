@@ -159,7 +159,7 @@ keys at all:
 <!-- verified: cli varies -->
 ```console
 $ grapharc models --check
-claude-cli   usable    'claude' on PATH at /home/shashank/.local/bin/claude
+claude-cli   usable    'claude' on PATH at ~/.local/bin/claude
                        credential: claude subscription login (no API key)
 openrouter   unusable  no API key (set OPENROUTER_API_KEY, or add one to .env)
                        credential: <unset>
