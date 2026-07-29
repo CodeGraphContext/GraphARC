@@ -5,31 +5,82 @@
 [![CI](https://github.com/CodeGraphContext/GraphARC/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeGraphContext/GraphARC/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**A governed agent runtime built on [LangGraph](https://github.com/langchain-ai/langgraph).** A planner *proposes* a subgraph, a deterministic checker *admits* it, and only then does anything execute — so every transition was permitted, every loop was bounded, and afterwards you can prove what happened and why it stopped. Underneath that sits the discipline layer it grew out of: typed state contracts, per-node write permissions, enforced budgets, and JSONL traces that double as replay points.
+**A governed agent runtime built on [LangGraph](https://github.com/langchain-ai/langgraph).** 
 
-Early days (`0.1.0`) — the API is not stable yet. `pip install grapharc` — see [Install](#install).
+Build production-grade multi-agent systems with built-in safety, auditability, and control. GraphARC adds a governance layer on top of LangGraph: a planner *proposes* a subgraph, a deterministic checker *admits* it, and only then does anything execute. Every transition is permitted, every loop is bounded, and afterwards you can prove what happened and why it stopped.
+
+**Status:** Early days (`0.1.1`) — the API is not stable yet. `pip install grapharc` — see [Install](#install).
+
+### What makes GraphARC different
+
+- **Admission gate**: All runtime topology changes go through deterministic approval before execution
+- **Typed state contracts**: Pydantic-based state validation at every node boundary
+- **Per-node write permissions**: Explicit control over what each node can modify
+- **Enforced budgets**: Token spend and execution time limits with hard cutoffs
+- **Complete auditability**: JSONL traces that serve as replay points and proof of execution
+- **Governed topology**: New nodes and edges proposed at runtime are checked before being built
 
 > *Graph engineering*: when one agent loop stops being enough, coordination becomes the engineering. Nodes do work (agent loops, model calls, deterministic functions, humans approving things), edges decide what runs next, and a typed shared state flows between them. GraphARC implements the discipline that makes such graphs production-grade rather than demos — the ideas emerging from the July 2026 loops-vs-graphs debate (Steinberger, Ng, et al.), the "Two Graphs, Two Jobs" split, and twenty years of pre-AI graph systems where every edge means something and every path can be explained.
 
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+- [Core Components](#core-components)
+- [What it adds on top of LangGraph](#what-it-adds-on-top-of-langgraph)
+- [Install](#install)
+- [Usage](#usage)
+- [Documentation](#documentation)
+
+## Quick Start
+
+```python
+from grapharc.runtime import StateGraph
+from pydantic import BaseModel
+
+# Define your state
+class MyState(BaseModel):
+    messages: list[str]
+    result: str = ""
+
+# Create a graph
+graph = StateGraph(MyState)
+
+# Add nodes and edges
+graph.add_node("process", lambda state: {"result": "done"})
+graph.add_edge("START", "process")
+graph.add_edge("process", "END")
+
+# Compile and run
+compiled = graph.compile()
+result = compiled.invoke({"messages": ["hello"]})
+```
+
+See [Usage](#usage) for more detailed examples.
+
+## Architecture
+
 ![The GraphARC architecture: a CLI or HTTP request reaches a planner, which emits a typed proposal; a deterministic admission checker either refuses it with reasons or admits it; only an admitted proposal is materialised and run by the graph kernel, on top of the model, tool and memory planes; everything lands on one JSONL record, and work discovered mid-run re-enters the gate.](docs/diagrams/architecture.png)
 
-The amber curve along the top is the claim. Refusals return as traced reason codes, and work discovered mid-run **re-enters admission** — there is no already-approved path and no cached authorisation. Rendered from [`docs/diagrams/grapharc-architecture.drawio`](docs/diagrams/grapharc-architecture.drawio), whose other two pages cover the trust boundary and which subsystems actually import which; [five more views](docs/diagrams/) generated from [`architecture.py`](docs/diagrams/architecture.py) cover the lifecycle, the planes, the agent node, the trust boundary and the import graph.
+The amber curve along the top is the claim: refusals return as traced reason codes, and work discovered mid-run **re-enters admission** — there is no already-approved path and no cached authorisation. 
 
-## What's here
+For detailed architecture views, see [`docs/diagrams/grapharc-architecture.drawio`](docs/diagrams/grapharc-architecture.drawio) and [five more views](docs/diagrams/) generated from [`architecture.py`](docs/diagrams/architecture.py).
 
-| | | |
+## Core Components
+
+| Component | Purpose | Module |
 |---|---|---|
-| **Kernel** | typed state, declared writes, budgets, traces, fan-out, async | `grapharc.runtime` |
-| **Planner + admission** | propose a subgraph, admit it or reject it with reasons, materialise, replan | `grapharc.planner` |
-| **Agent node** | observe → model → permission check → sandboxed tool → repeat | `grapharc.harness` |
-| **Tools** | seven core tools, workspace-confined; container executor | `grapharc.tools` |
-| **Sessions** | long-lived, resumable across processes, human approval gates | `grapharc.session` |
-| **HTTP API** | FastAPI + SSE | `grapharc.server` |
-| **Policy** | TOML rules over nodes, edges, tools and spend; decision audit | `grapharc.policy` |
-| **Memory** | durable claims with provenance, artifacts, BM25F + graph retrieval | `grapharc.memory` |
-| **Observability** | replay, run diffing, OpenTelemetry spans, cost attribution | `grapharc.observe` |
+| **Kernel** | Typed state contracts, declared writes, budgets, traces, fan-out, async support | `grapharc.runtime` |
+| **Planner + Admission** | Propose subgraphs, admit/reject with reasons, materialise, replan | `grapharc.planner` |
+| **Agent Node** | Observe → model → permission check → sandboxed tool → repeat loop | `grapharc.harness` |
+| **Tools** | Seven core tools with workspace confinement; container executor | `grapharc.tools` |
+| **Sessions** | Long-lived, resumable across processes, human approval gates | `grapharc.session` |
+| **HTTP API** | FastAPI + Server-Sent Events for streaming | `grapharc.server` |
+| **Policy** | TOML rules over nodes, edges, tools and spend; decision audit trail | `grapharc.policy` |
+| **Memory** | Durable claims with provenance, artifacts, BM25F + graph retrieval | `grapharc.memory` |
+| **Observability** | Replay, run diffing, OpenTelemetry spans, cost attribution | `grapharc.observe` |
 
-Every box above is now reachable from a shipped command. `planner` and `policy` were for a while built, tested and imported by nothing else in the package; `grapharc plan` drives the first and compiles the second's document into the gate. [ROADMAP.md](ROADMAP.md) §12 tracks the seams that remain — the HTTP API still runs its own in-process session layer instead of the durable one —.
+Every component above is reachable from a shipped command. See [ROADMAP.md](ROADMAP.md) §12 for known gaps — the HTTP API still runs its own in-process session layer instead of the durable one.
 
 ## What it adds on top of LangGraph
 
