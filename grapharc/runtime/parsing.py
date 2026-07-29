@@ -21,11 +21,8 @@ from typing import Any
 _FENCE = re.compile(r"```(?:json|JSON)?\s*(.*?)```", re.DOTALL)
 
 
-def _balanced_span(text: str) -> str | None:
-    """The first balanced {...} or [...] region, ignoring braces inside strings."""
-    start = next((i for i, ch in enumerate(text) if ch in "{["), None)
-    if start is None:
-        return None
+def _span_from(text: str, start: int) -> str | None:
+    """The balanced {...} or [...] region opening at `start`, or None if unclosed."""
     opener = text[start]
     closer = "}" if opener == "{" else "]"
     depth = 0
@@ -52,6 +49,29 @@ def _balanced_span(text: str) -> str | None:
     return None
 
 
+def _balanced_spans(text: str) -> list[str]:
+    """Every balanced {...} or [...] region, longest first.
+
+    Every opener is tried, not just the first one in the text. Taking only the
+    first meant any bracket in the model's *prose* hijacked the span and the real
+    JSON was never reached: `Based on the context [lines 3-5]: {...}` yielded the
+    unparseable `[lines 3-5]` and the reply was rejected, and — worse —
+    `Analysis (note [1]): {"supported": false}` yielded a perfectly valid `[1]`,
+    substituting a fabricated value for the model's actual answer.
+
+    Longest first is what makes the ranking safe. It prefers a complete structure
+    over both a prose fragment that happens to parse and a nested piece of the
+    answer itself, so `{"claims": [{...}]}` returns the whole object rather than
+    the inner list.
+    """
+    spans = [
+        span
+        for i, ch in enumerate(text)
+        if ch in "{[" and (span := _span_from(text, i)) is not None
+    ]
+    return sorted(spans, key=len, reverse=True)
+
+
 def extract_json(content: Any) -> Any | None:
     """Best-effort JSON from a model reply. None when nothing valid is found."""
     text = content if isinstance(content, str) else str(content)
@@ -59,13 +79,14 @@ def extract_json(content: Any) -> Any | None:
     if not text:
         return None
 
+    # Whole reply first, then the fence, then balanced spans: the earlier a
+    # candidate is, the more of the model's reply it accounts for, so a fenced
+    # top-level array still wins over any span found inside it.
     candidates = [text]
     fenced = _FENCE.search(text)
     if fenced:
         candidates.append(fenced.group(1).strip())
-    span = _balanced_span(text)
-    if span:
-        candidates.append(span)
+    candidates.extend(_balanced_spans(text))
 
     for candidate in candidates:
         try:

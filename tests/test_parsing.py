@@ -45,6 +45,33 @@ def test_unrecoverable_replies_return_none(reply):
     assert extract_json(reply) is None
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        'Based on the context [lines 3-5]: {"supported": true, "reason": "ok"}',
+        'The quote "{" is fine. {"supported": true, "reason": "ok"}',
+        'Analysis (note [1]): {"supported": true, "reason": "ok"}',
+        'See table[0] and figure{2}: {"supported": true, "reason": "ok"}',
+    ],
+)
+def test_a_bracket_in_the_prose_does_not_hijack_the_answer(reply):
+    """Only the *first* opener used to be tried, so any bracket in the preamble
+    captured the span and the real JSON was never reached."""
+    assert extract_json(reply) == {"supported": True, "reason": "ok"}
+
+
+def test_a_prose_bracket_is_never_substituted_for_the_answer():
+    """The worst shape of the bug above: `[1]` is valid JSON, so it was returned
+    as the model's verdict. A wrong answer is worse than no answer."""
+    reply = 'Analysis (note [1]): {"supported": false, "reason": "negated"}'
+    assert extract_json(reply) == {"supported": False, "reason": "negated"}
+
+
+def test_the_outermost_structure_wins_over_a_nested_piece_of_it():
+    reply = 'Verdict: {"claims": [{"text": "a"}], "n": 1}'
+    assert extract_json(reply) == {"claims": [{"text": "a"}], "n": 1}
+
+
 def test_verifier_still_fails_closed_on_junk():
     from grapharc.runtime.verify import verify_claim
     from grapharc.testing import ScriptedChatModel

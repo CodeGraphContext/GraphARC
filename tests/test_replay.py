@@ -258,6 +258,100 @@ def test_replay_reconstructs_a_fan_out(trace):
     ]
 
 
+def _fanout_token_run(trace, run_id, *, serial):
+    """Three workers, one model call each, overlapping in time."""
+    import time
+
+    from grapharc.runtime.budget import Budget
+    from grapharc.testing import ScriptedChatModel
+
+    class F(GraphARCState):
+        seeds: list[str] = []
+        said: Annotated[list[str], operator.add] = []
+
+    class Shard(GraphARCState):
+        seed: str = ""
+
+    def worker(shard):
+        ScriptedChatModel(responses=["a scripted reply of some length"]).invoke(
+            "hello " + shard.seed
+        )
+        time.sleep(0.05)  # hold the window open so the siblings overlap
+        return {"said": [shard.seed]}
+
+    g = GraphARC(F, name="fan", trace=trace, budget=Budget())
+    g.add_node("fan", lambda s: {"seeds": s.seeds}, writes={"seeds"})
+    g.add_node("w", worker, writes={"said"}, input_schema=Shard)
+    g.add_edge(START, "fan")
+    g.add_fanout_edge("fan", lambda s: [("w", Shard(seed=x)) for x in s.seeds])
+    g.add_edge("w", END)
+    compiled = g.compile()
+    compiled.invoke(
+        {"seeds": ["a", "b", "c"]},
+        run_id=run_id,
+        budget=Budget(max_concurrency=1) if serial else Budget(),
+    )
+    per_worker = [
+        e.tokens for e in trace.read_events(run_id) if e.phase == "end" and e.node == "w"
+    ]
+    return compiled.last_run.meter.tokens, per_worker
+
+
+def test_a_fanout_worker_is_charged_its_own_tokens_not_its_siblings(trace):
+    """A node's `end` event used to report the movement of the run's *shared*
+    total while it ran, so overlapping workers each absorbed the others' spend.
+
+    Three workers costing the same each traced as 24/16/8, and `metrics` and
+    `cost` both reported three times one worker's spend for the whole run —
+    doubling the estimated bill purely because the work ran in parallel.
+    """
+    real, parallel = _fanout_token_run(trace, "par", serial=False)
+
+    assert len(parallel) == 3
+    assert len(set(parallel)) == 1, f"workers absorbed each other's spend: {parallel}"
+    assert sum(parallel) == real
+
+
+def test_fanout_token_attribution_does_not_depend_on_concurrency(trace):
+    """The same work must cost the same whether it runs in parallel or serially —
+    including the dollar figure `cost` estimates from it."""
+    serial_real, serial_per = _fanout_token_run(trace, "ser", serial=True)
+    par_real, par_per = _fanout_token_run(trace, "par", serial=False)
+
+    assert serial_real == par_real
+    assert sorted(serial_per) == sorted(par_per)
+
+    rates = RateCard(default=3.0)
+    assert summarize(trace, "par").tokens == summarize(trace, "ser").tokens == serial_real
+    assert (
+        attribute(trace, "par", rates=rates).estimated_cost_usd
+        == attribute(trace, "ser", rates=rates).estimated_cost_usd
+    )
+
+
+def test_a_hand_charged_token_still_lands_on_the_nodes_end_event(trace):
+    """Attribution moved to the meter's per-node scope, which must still capture a
+    charge the node makes itself — not only the ones the usage callback saw."""
+    from grapharc.runtime.budget import Budget
+    from grapharc.runtime.graph import RunContext
+
+    class H(GraphARCState):
+        ok: bool = False
+
+    def node(state, ctx: RunContext):
+        ctx.meter.charge_tokens(777)
+        return {"ok": True}
+
+    g = GraphARC(H, name="hand", trace=trace, budget=Budget())
+    g.add_node("n", node, writes={"ok"})
+    g.add_edge(START, "n")
+    g.add_edge("n", END)
+    g.compile().invoke({}, run_id="r1")
+
+    ends = [e for e in trace.read_events("r1") if e.phase == "end"]
+    assert [e.tokens for e in ends] == [777]
+
+
 def test_a_named_sub_step_finds_its_worker_among_parallel_nodes(trace):
     trace.event(run_id="r1", graph="demo", node="w1", phase="start", step=1)
     trace.event(run_id="r1", graph="demo", node="w2", phase="start", step=2)

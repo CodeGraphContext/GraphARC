@@ -657,11 +657,20 @@ class GraphARC:
         # one, so `observe.cost` can keep a measured figure apart from a
         # rate-card estimate instead of recording a guess as a fact.
         models = getattr(usage, "models", ())
+        # This node's own spend, from the meter's per-node scope, not the movement
+        # of the run's shared total while the node ran. Under fan-out those differ:
+        # the workers' windows overlap, so every worker used to be credited with
+        # each sibling's concurrent spend — three workers costing 8 tokens each
+        # traced as 24/16/8, and `metrics` and `cost` both reported 48 for 24
+        # tokens of real work, doubling the estimated bill purely because the work
+        # ran in parallel. Falls back to the difference when no scope was open, so
+        # a caller driving `_leave` outside `charging()` still gets a figure.
+        spent = getattr(usage, "tokens", None)
         emit(
             "end",
             state_delta=delta,
             duration_ms=duration_ms,
-            tokens=ctx.meter.tokens - tokens_before,
+            tokens=ctx.meter.tokens - tokens_before if spent is None else spent,
             cost_usd=getattr(usage, "cost_usd", None),
             model=models[0] if len(models) == 1 else None,
         )
