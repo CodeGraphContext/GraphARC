@@ -216,3 +216,38 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ── GraphARC's own output ─────────────────────────────────────────────────────
+# Everything below is something a *run* produces, not something a person wrote.
+# Note: `[tool.hatch.build] ignore-vcs = true` in pyproject.toml means this file
+# has no vote on what ships in the wheel — the exclude list there is the
+# authority. Adding a path here cannot silently drop a subpackage from a build,
+# which it could before that was set.
+
+# Traces. The audit format is JSONL and `--trace PATH` writes wherever it is
+# told, so a run started in the repo root leaves one behind. A trace that is
+# deliberately a test fixture can still be committed with `git add -f`.
+*.jsonl
+
+# A policy generated because no `--policy`, no `grapharc.toml` and no existing
+# one was found. Generated rather than authored: the design is that you *promote*
+# it — read it, edit it, move it, pass `--policy` — instead of committing it from
+# where a tool dropped it. `grapharc.toml` itself is deliberately NOT ignored;
+# that one is yours and belongs in version control.
+.grapharc/
+
+# Durable claim stores from `grapharc demo --memory PATH`, and the two sidecars
+# WAL mode creates alongside them.
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Scratch workspaces. `grapharc agent` defaults to a temp dir, but pointing
+# `--workspace` at the repo is the obvious thing to try.
+/workspace/
+/scratch/
+
+# Claude Code's per-machine settings. Already covered by many people's global
+# ignore; named here so a fresh clone does not depend on that being true.
+.claude/settings.local.json
+HANDOFF.md

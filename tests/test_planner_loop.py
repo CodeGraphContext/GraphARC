@@ -1,4 +1,4 @@
-"""Gates for materialisation and the governed loop (ARCHITECTURE.md §2, ROADMAP §5.4).
+"""Gates for materialisation and the governed loop (ROADMAP §5.4).
 
 Admission decides what *may* run. These two modules are what makes that decision
 bite: `materialize` is the only path from an admitted proposal to a runnable

@@ -1,7 +1,7 @@
 # GraphARC — live build list
 
 Everything between today and a full-fledged general-purpose agent runtime, as
-described in [VISION.md](VISION.md). Status is measured, not aspirational.
+Status is measured, not aspirational.
 
 **Legend:** `[x]` done · `[~]` partial · `[ ]` not started · **B** blocks other
 work · **!** known-false claim shipping today
@@ -23,7 +23,7 @@ had no command driving the governed loop, `policy/` had no caller and no bridge
 from its TOML document to the `EdgePolicy` admission consults, the CLI handed
 graphs the in-process memory store instead of the SQLite one, and no trace event
 carried the provider's cost. All four are closed — `grapharc plan`,
-`PolicyEngine.edge_policy()`, `grapharc run --memory`, and `cost_usd` on the
+`PolicyEngine.edge_policy()`, `grapharc demo --memory`, and `cost_usd` on the
 `end` and `model` events. **One seam is left:** `server/` still ships its own
 in-process session runtime instead of the durable `session/` one (§12.3). Code
 that works and is unreachable scores as built here and is worth less than that
@@ -168,11 +168,19 @@ came through, which is what unblocked the HTTP API and the session layer.
       a call the provider does not price cannot be charged, and those land in
       `unpriced_calls` rather than being guessed at — `unpriced_calls > 0` means
       the ceiling saw less than the whole bill.
-- [x] **2.9 — Backend registry** — `claude-cli`, `openrouter`, `mock`; a
-      mistyped backend is rejected rather than folded into a model name.
-- [~] **2.4 — Provider adapters:** OpenRouter and Claude CLI done, plus a
-      `mock` backend for tests. Direct Anthropic API and local (Ollama/vLLM)
-      pending; the `api` extra exists with nothing importing `anthropic`.
+- [x] **2.9 — Backend registry** — `claude-cli`, `openrouter`, `openai`,
+      `ollama`, `mock`; a mistyped backend is rejected rather than folded into a
+      model name. `openai` is both a backend and an OpenRouter author slug, and
+      the backend wins.
+- [~] **2.4 — Provider adapters:** OpenRouter, Claude CLI, the OpenAI API and a
+      local Ollama server, plus a `mock` backend for tests. The three
+      OpenAI-wire backends share one base class, so tool-calling, streaming,
+      retries and the usage envelope are identical across them. Direct
+      Anthropic API and vLLM pending; the `api` extra exists with nothing
+      importing `anthropic`. **What the new backends do not bring:** OpenAI
+      returns no per-call price, so a dollar ceiling there counts calls unless
+      a `price_per_million=` card is supplied, and Ollama's probe reports
+      configuration rather than a running daemon.
       *No model count is quoted here any more.* This line used to say "~340
       models" while the CLI help said "~400" — nobody re-checks a number like
       that and it rots into a contradiction. The CLI settled on wording with no
@@ -417,7 +425,7 @@ Everything here works and nothing calls it.
       against the real SDK — verified during this pass against
       `opentelemetry-sdk` 1.44.0, with spans reaching an `InMemorySpanExporter`.
 - [~] **10.4 — Cost attribution** per run, thread (session) and node. The
-      price is now recorded, not guessed: both gateways publish the provider's
+      price is now recorded, not guessed: every gateway publishes a
       `cost_usd` through the same `llm_output` envelope, the runtime's usage
       callback accumulates it per node and writes it onto the `end` event, and
       an `AgentNode` writes the per-call figure onto each `model` event. A
@@ -436,7 +444,7 @@ Everything here works and nothing calls it.
 
 - [x] Builds a clean wheel; **1,381 tests**; CI; ruff clean. Verified in a fresh
       virtualenv: a bare wheel install imports most of the 94 submodules and runs
-      `grapharc run stage0` — `gateway.openrouter` and the whole `server`
+      `grapharc demo stage0` — `gateway.openrouter` and the whole `server`
       package need their extras — and installing `[all]` imports all 93.
 - [x] **11.6 — Classifiers, `[project.urls]`, contribution guide.** Every URL
       names a file that exists, and the `all` extra is self-referential so it

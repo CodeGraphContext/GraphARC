@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -38,6 +39,7 @@ from grapharc.cli.agent import (
 )
 from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit, fail
 from grapharc.observe.metrics import summarize, to_mermaid
+from grapharc.observe.replay import ReplayError
 from grapharc.observe.trace import TraceRecorder
 
 EXAMPLES = (
@@ -52,25 +54,39 @@ EXAMPLES = (
 )
 
 
-def _memory_store(path: Path | None):
+def _memory_store(path: Path | None, backend: str = "sqlite"):
     """The claim store the shipped graphs get.
 
     In-process by default, so `grapharc run` stays hermetic and repeatable and
-    writes nothing a caller did not ask for. Given `--memory PATH`, the durable
-    SQLite backend instead — the same store the memory tests prove survives a
-    process restart. This is the only difference between a demo that forgets
-    and one whose claims are still there on the next run.
+    writes nothing a caller did not ask for. Given `--memory PATH`, a durable
+    backend instead — the same stores the memory tests prove survive a process
+    restart. This is the only difference between a demo that forgets and one
+    whose claims are still there on the next run.
+
+    `--memory-backend` picks which durable one. SQLite is the default because
+    it needs no extra and tolerates concurrent processes; LadybugDB stores the
+    same claims as a property graph you can query in Cypher, at the cost of an
+    exclusive lock on the database (see `grapharc.memory.ladybug_store`).
     """
     if path is None:
         from grapharc.memory import MemoryStore
 
         return MemoryStore()
+    if backend == "ladybug":
+        from grapharc.memory import LadybugMemoryStore
+
+        return LadybugMemoryStore(path)
     from grapharc.memory import SQLiteMemoryStore
 
     return SQLiteMemoryStore(path)
 
 
-def _run_example(name: str, trace_path: Path, memory_path: Path | None = None) -> dict:
+def _run_example(
+    name: str,
+    trace_path: Path,
+    memory_path: Path | None = None,
+    memory_backend: str = "sqlite",
+) -> dict:
     trace = TraceRecorder(trace_path)
     workdir = Path(tempfile.mkdtemp(prefix=f"grapharc-{name}-"))
     if name == "stage0":
@@ -165,7 +181,7 @@ def _run_example(name: str, trace_path: Path, memory_path: Path | None = None) -
         from grapharc.examples.stage6_memory import build_stage6
         from grapharc.testing import ScriptedChatModel
 
-        store = _memory_store(memory_path)
+        store = _memory_store(memory_path, memory_backend)
         model = ScriptedChatModel(
             responses=[
                 json.dumps(
@@ -200,7 +216,9 @@ def _run_example(name: str, trace_path: Path, memory_path: Path | None = None) -
             responses=['{"supported": true, "reason": "quote supports it"}'],
             on_exhausted="repeat",
         )
-        return build_capstone(worker, reviewer, _memory_store(memory_path), trace=trace).invoke(
+        return build_capstone(
+            worker, reviewer, _memory_store(memory_path, memory_backend), trace=trace
+        ).invoke(
             {
                 "question": "How does GraphARC bound work with budgets?",
                 "corpus": DEMO_CORPUS,
@@ -225,8 +243,23 @@ def _existing_trace(path: Path, *, command: str, as_json: bool) -> TraceRecorder
 # -- command handlers ---------------------------------------------------------
 
 
-def _cmd_run(args: argparse.Namespace) -> int:
+def _cmd_demo(args: argparse.Namespace) -> int:
+    from grapharc.cli.config import ConfigError
+    from grapharc.cli.config import load as load_settings
+
     trace_path = args.trace or Path(tempfile.mkdtemp(prefix="grapharc-")) / "trace.jsonl"
+    # `model`, `reviewer_model` and `memory` are declared in `config.KEYS`, and
+    # for a while nothing read the last two — the same file made `plan` fail on
+    # a bad model spec and left `demo` running scripted. Resolving them here is
+    # what makes those keys mean something.
+    try:
+        settings = load_settings(args.config)
+        args.model = settings.resolve("model", args.model)
+        args.reviewer_model = settings.resolve("reviewer_model", args.reviewer_model)
+        memory = settings.resolve_path("memory", args.memory)
+        args.memory = memory
+    except ConfigError as exc:
+        return fail(str(exc), as_json=args.json, command="demo", example=args.example)
     if args.model:
         from grapharc.cli.live import run_live
 
@@ -237,11 +270,28 @@ def _cmd_run(args: argparse.Namespace) -> int:
             reviewer_spec=args.reviewer_model,
             as_json=args.json,
             memory_path=args.memory,
+            memory_backend=args.memory_backend,
         )
-    result = _run_example(args.example, trace_path, memory_path=args.memory)
+    try:
+        result = _run_example(
+            args.example,
+            trace_path,
+            memory_path=args.memory,
+            memory_backend=args.memory_backend,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        # `--memory` takes a path from a human, so it can name a directory, a
+        # parent that does not exist, or somewhere unwritable. That is a report,
+        # not a traceback with empty stdout in `--json` mode.
+        return fail(
+            f"--memory {str(args.memory)!r}: {exc}",
+            as_json=args.json,
+            command="demo",
+            example=args.example,
+        )
     payload = {
         "ok": True,
-        "command": "run",
+        "command": "demo",
         "example": args.example,
         "trace": str(trace_path),
         "result": result,
@@ -250,6 +300,23 @@ def _cmd_run(args: argparse.Namespace) -> int:
     lines += ["", f"trace: {trace_path}"]
     emit(payload, lines, as_json=args.json)
     return EXIT_OK
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    from grapharc.cli.graphrun import run_graph
+
+    return run_graph(
+        args.graph,
+        registry_target=args.registry,
+        policy_path=args.policy,
+        tenant=args.tenant,
+        trace_path=args.trace,
+        run_id=args.run_id,
+        max_tokens=args.max_tokens,
+        check_only=args.check_only,
+        config_path=args.config,
+        as_json=args.json,
+    )
 
 
 def _cmd_plan(args: argparse.Namespace) -> int:
@@ -265,12 +332,19 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         run_id=args.run_id,
         max_rounds=args.max_rounds,
         max_tokens=args.max_tokens,
+        config_path=args.config,
         as_json=args.json,
     )
 
 
 def _cmd_models(args: argparse.Namespace) -> int:
-    from grapharc.gateway import describe, openrouter_api_key, redact
+    from grapharc.gateway import (
+        describe,
+        ollama_base_url,
+        openai_api_key,
+        openrouter_api_key,
+        redact,
+    )
     from grapharc.gateway.registry import BACKENDS
 
     if args.check:
@@ -286,7 +360,17 @@ def _cmd_models(args: argparse.Namespace) -> int:
         return EXIT_OK if usable else EXIT_FAILED
 
     if args.spec:
-        resolved = describe(args.spec)
+        # Imported here, not at module scope: `test_building_the_parser_imports_
+        # no_optional_package` pins that building the parser pulls in no optional
+        # dependency, so `--help` stays fast and works without extras installed.
+        from grapharc.gateway.registry import UnknownBackendError
+
+        try:
+            resolved = describe(args.spec)
+        except UnknownBackendError as exc:
+            # The top-level help lists "a model spec names no backend" under
+            # exit 2; this used to escape as a traceback with exit 1.
+            return fail(str(exc), as_json=args.json, command="models", spec=args.spec)
         emit(
             {"ok": True, "command": "models", **resolved},
             [f"{key}: {value}" for key, value in resolved.items()],
@@ -302,17 +386,25 @@ def _cmd_models(args: argparse.Namespace) -> int:
         "claude-cli/claude-sonnet-5": "subscription, no API key",
         "openrouter/anthropic/claude-haiku-4.5": "many providers, one key",
         "openrouter/openai/gpt-4o-mini:floor": "cheapest provider for that model",
+        "openai/gpt-4o-mini": "the OpenAI API directly, your key",
+        "ollama/llama3.1": "a local server, no key and no bill",
     }
     payload = {
         "ok": True,
         "command": "models",
         "backends": list(BACKENDS),
         "openrouter_key": redact(openrouter_api_key()),
+        "openai_key": redact(openai_api_key()),
+        # An address, not a secret: it is printed whole, and it is where a
+        # request would go rather than proof that anything is listening.
+        "ollama_base_url": ollama_base_url(),
         "examples": examples,
     }
     lines = [
         f"backends: {', '.join(BACKENDS)}",
         f"openrouter key: {redact(openrouter_api_key())}",
+        f"openai key: {redact(openai_api_key())}",
+        f"ollama url: {ollama_base_url()}",
         "",
         "examples:",
         *[f"  {spec:<38}  {note}" for spec, note in examples.items()],
@@ -414,7 +506,13 @@ def _cmd_viz(args: argparse.Namespace) -> int:
     recorder = _existing_trace(args.path, command="viz", as_json=args.json)
     if isinstance(recorder, int):
         return recorder
-    mermaid = to_mermaid(recorder, args.run_id)
+    try:
+        mermaid = to_mermaid(recorder, args.run_id)
+    except ReplayError as exc:
+        # Every other reading command answers this as a document; `viz` used to
+        # let it out as a traceback with empty stdout, which breaks the CLI's own
+        # promise that in JSON mode the failure *is* the document.
+        return fail(str(exc), as_json=args.json, command="viz", code=EXIT_FAILED)
     emit(
         {
             "ok": True,
@@ -443,11 +541,30 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "--json", action="store_true", help="print one JSON document instead of text"
     )
+    # `--config` belongs only to the commands that resolve settings. It used to
+    # live on `common`, so every command accepted it and nine silently ignored
+    # it — including rejecting a missing file on two commands and not the rest.
+    configurable = argparse.ArgumentParser(add_help=False)
+    configurable.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "read defaults from PATH instead of ./grapharc.toml. Parent "
+            "directories are never searched: a run must not be governed by a "
+            "file the operator did not know about"
+        ),
+    )
 
-    run = sub.add_parser("run", parents=[common], help="run a built-in example graph")
-    run.add_argument("example", choices=EXAMPLES)
-    run.add_argument("--trace", type=Path, default=None, help="trace JSONL output path")
-    run.add_argument(
+    demo = sub.add_parser(
+        "demo",
+        parents=[common, configurable],
+        help="run one of the built-in example graphs",
+    )
+    demo.add_argument("example", choices=EXAMPLES)
+    demo.add_argument("--trace", type=Path, default=None, help="trace JSONL output path")
+    demo.add_argument(
         "--model",
         default=None,
         metavar="SPEC",
@@ -456,28 +573,81 @@ def build_parser() -> argparse.ArgumentParser:
             "openrouter/anthropic/claude-haiku-4.5 or claude-cli/claude-sonnet-5"
         ),
     )
-    run.add_argument(
+    demo.add_argument(
         "--reviewer-model",
         default=None,
         metavar="SPEC",
         help="model for verifier nodes; should be a different provider from --model",
     )
-    run.add_argument(
+    demo.add_argument(
         "--memory",
         type=Path,
         default=None,
         metavar="PATH",
         help=(
-            "persist claims to a durable SQLite store at PATH instead of the "
+            "persist claims to a durable store at PATH instead of the "
             "in-process one, so stage6 and capstone remember across runs"
         ),
+    )
+    demo.add_argument(
+        "--memory-backend",
+        choices=("sqlite", "ladybug"),
+        default="sqlite",
+        help=(
+            "durable backend for --memory: sqlite (default, no extra needed, "
+            "safe for concurrent processes) or ladybug (a LadybugDB property "
+            "graph you can query in Cypher; needs the ladybug extra, and only "
+            "one process may hold it at a time)"
+        ),
+    )
+    demo.set_defaults(handler=_cmd_demo)
+
+    run = sub.add_parser(
+        "run",
+        parents=[common, configurable],
+        help="admit and execute a topology file you wrote",
+    )
+    run.add_argument("graph", help="path to a JSON or TOML topology file")
+    run.add_argument(
+        "--registry",
+        default=None,
+        metavar="MODULE:ATTR",
+        help="the node kinds this graph may name",
+    )
+    run.add_argument(
+        "--policy",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="TOML policy document whose edge rules gate this graph",
+    )
+    run.add_argument(
+        "--tenant", default=None, metavar="NAME", help="tenant to compile --policy for"
+    )
+    run.add_argument("--trace", type=Path, default=None, help="trace JSONL output path")
+    run.add_argument("--run-id", default=None, help="name this run")
+    run.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help=(
+            "refuse a topology whose worst case exceeds this many tokens. "
+            "Without it the budget dimension is unlimited and admits anything"
+        ),
+    )
+    run.add_argument(
+        "--check-only",
+        action="store_true",
+        help="validate the topology against the policy and stop; execute nothing",
     )
     run.set_defaults(handler=_cmd_run)
 
     from grapharc.cli.plan import DEFAULT_REGISTRY
 
     plan = sub.add_parser(
-        "plan", parents=[common], help="drive the governed planning loop against a goal"
+        "plan",
+        parents=[common, configurable],
+        help="drive the governed planning loop against a goal",
     )
     plan.add_argument("goal", help="what the planner should plan for")
     plan.add_argument(
@@ -488,9 +658,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan.add_argument(
         "--registry",
-        default=DEFAULT_REGISTRY,
+        default=None,
         metavar="MODULE:ATTR",
-        help="the node kinds a planner may propose (default: %(default)s)",
+        help=f"the node kinds a planner may propose (default: {DEFAULT_REGISTRY})",
     )
     plan.add_argument(
         "--policy",
@@ -500,24 +670,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="TOML policy document whose edge rules become the admission gate's EdgePolicy",
     )
     plan.add_argument(
-        "--tenant",
-        default="default",
-        metavar="NAME",
-        help="tenant to compile --policy for (default: %(default)s)",
+        "--tenant", default=None, metavar="NAME", help="tenant to compile --policy for"
     )
     plan.add_argument("--trace", type=Path, default=None, help="trace JSONL output path")
     plan.add_argument("--run-id", default=None, help="name this run")
     plan.add_argument(
-        "--max-rounds",
-        type=int,
-        default=8,
-        help="planning rounds the loop may take (default: %(default)s)",
+        "--max-rounds", type=int, default=None,
+        help="planning rounds the loop may take (default: 8)",
     )
     plan.add_argument(
-        "--max-tokens",
-        type=int,
-        default=100_000,
-        help="run token ceiling across every round (default: %(default)s)",
+        "--max-tokens", type=int, default=None,
+        help="run token ceiling across every round (default: 100000)",
     )
     plan.set_defaults(handler=_cmd_plan)
 

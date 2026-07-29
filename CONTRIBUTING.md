@@ -87,7 +87,7 @@ test what it costs to run.
   genuinely wrong, say so in the PR and explain why in the same breath as
   changing it.
 - **Keep `ruff check .` clean.** Line length is 100.
-- **Add to `CHANGELOG.md`** under `## [Unreleased]` when you change behaviour,
+- **Note behaviour changes in the commit message** when you change behaviour,
   the public API, or what ships.
 
 ## The honesty rule for documentation
@@ -125,7 +125,7 @@ provide. A missing feature is fine. A feature that is documented as working and
 is not will cost somebody a debugging session, or worse, will be trusted with
 something it cannot hold.
 
-If you cannot close a gap, write the gap down. `CHANGELOG.md` has a
+If you cannot close a gap, write the gap down. `ROADMAP.md` has a
 *Known gaps* section for exactly that, and `ROADMAP.md` tracks the rest.
 
 ## Packaging changes
@@ -162,5 +162,5 @@ token in this repository or in its secrets.
 
 1. Bump `version` in `pyproject.toml` **and** `__version__` in
    `grapharc/__init__.py`. CI fails if the two disagree.
-2. Move `## [Unreleased]` in `CHANGELOG.md` into a dated version section.
+2. Tag the release; the commit log is the record of what changed.
 3. Tag `vX.Y.Z` and push it.

@@ -350,14 +350,16 @@ print(compiled.invoke({"source_text": DEMO_SOURCE})["accepted"])
 The CLI equivalent, which warns on a shared vendor rather than making you write the check:
 
 ```bash
-grapharc run stage5 --model openrouter/anthropic/claude-haiku-4.5 \
+grapharc demo stage5 --model openrouter/anthropic/claude-haiku-4.5 \
                     --reviewer-model openrouter/openai/gpt-4o-mini
 ```
 
-**Why it works this way.** `different_providers` compares the backend first and then the
-model *author* (`anthropic/…` vs `openai/…`), so two Anthropic models on OpenRouter come
-back `False` even though they are different models. Correlated agreement follows training
-lineage, not model names.
+**Why it works this way.** `different_providers` compares the *vendor* each spec reaches —
+the model author when the id names one (`anthropic/…` vs `openai/…`), the backend's own
+vendor otherwise — so two Anthropic models on OpenRouter come back `False` even though they
+are different models, and so does a Claude-CLI author paired with an Anthropic model over
+OpenRouter. Correlated agreement follows training lineage, not model names, and not which
+API you happened to reach the model through.
 
 ---
 
@@ -610,6 +612,71 @@ Two caveats worth knowing before you rely on the protocol. `isinstance(x, ClaimS
 the invariants hold; the shared conformance suite in `tests/` is what enforces those.
 And `SQLiteMemoryStore` holds an open connection: use it as a context manager or call
 `close()`, or you leak a file handle per store.
+
+---
+
+## Can I query the claim graph in Cypher?
+
+Yes, with the third backend. `LadybugMemoryStore` implements the same `ClaimStore` protocol
+against [LadybugDB](https://ladybugdb.com/) — an embedded property-graph database with
+Cypher, forked from Kuzu after Apple acquired and closed it. Embedded means the same deal
+SQLite offers: a path on disk, no server to run.
+
+The difference is what gets stored. The other two backends keep claims as rows and rebuild
+the graph in Python — `ClaimIndex` scans the whole corpus to build the subject/object
+adjacency, every time you construct one. This backend stores the edges: `superseded_by` is a
+`SUPERSEDED_BY` edge rather than a column, and the subject and object of every claim are
+`Entity` nodes. So a correction chain is a path you can walk, and the escape hatch from the
+seven-method protocol is a query rather than a scan.
+
+```python
+# Not executed by the docs test — needs the `ladybug` extra, which CI does not install.
+from grapharc.memory import Claim, LadybugMemoryStore
+
+with LadybugMemoryStore("memory.lbdb") as store:
+    old = store.add(Claim(subject="auth-service", predicate="times out after",
+                          object="30s", source="config/prod.yaml", run_id="run-12"))
+    store.supersede(old.id, Claim(subject="auth-service", predicate="times out after",
+                                  object="5s", source="incident-114", run_id="run-37"))
+
+    # What did an earlier run believe that a later one corrected, and on whose authority?
+    for was, now, source in store.cypher(
+        "MATCH (old:Claim)-[:SUPERSEDED_BY]->(new:Claim) "
+        "RETURN old.object, new.object, new.source"
+    ):
+        print(f"{was} -> {now} ({source})")
+
+    # A question about A reaching facts about B, as a hop in the database.
+    store.cypher(
+        "MATCH (:Claim {subject: $s})-[:MENTIONS]->(e:Entity)<-[:ABOUT]-(next:Claim) "
+        "RETURN next.subject, next.predicate, next.object",
+        {"s": "auth-service"},
+    )
+```
+
+```text
+30s -> 5s (incident-114)
+```
+
+Install it with `pip install 'grapharc[ladybug]'`. **The distribution is `real-ladybug`, not
+`ladybug`** — that name on PyPI belongs to Ladybug Tools, an unrelated building-science
+package, and installing it will not give you a database. The store checks what it imported
+and says so rather than failing later with an `AttributeError`.
+
+**The cost, which decides whether you can use it at all.** LadybugDB takes an *exclusive lock
+on the database*. One process may open it for writing, or several may open it read-only, and
+those two groups cannot overlap — while a writer holds it, a second process opening the same
+path fails outright, even with `read_only=True`, rather than waiting. `SQLiteMemoryStore` in
+WAL mode allows concurrent readers alongside a writer and makes competing writers queue on
+`busy_timeout`. So sequential hand-off works (run #12 writes and exits, run #37 opens the
+same path and reads it), and concurrent multi-process writing does not. If two agent
+processes must write the same memory at once, use SQLite. That limitation is not just
+documented — `tests/test_ladybug_store.py` spawns a second process against a held database
+and asserts it fails, so if a later release relaxes the lock, the claim above gets corrected
+instead of quietly going stale.
+
+Pass values as parameters, never by formatting them into the query string: a claim's object
+is arbitrary text, and string interpolation is the graph-database spelling of SQL injection.
 
 ---
 
@@ -1110,5 +1177,5 @@ The pattern the two subsystems are meant to be used in:
    instead of re-deriving the old answer.
 
 `grapharc/examples/stage5_verifier.py` and `grapharc/examples/stage6_memory.py` are the
-smallest complete graphs doing exactly this; `grapharc run stage5` and `grapharc run stage6`
+smallest complete graphs doing exactly this; `grapharc demo stage5` and `grapharc demo stage6`
 execute them on scripted models for free.

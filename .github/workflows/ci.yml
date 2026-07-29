@@ -244,7 +244,6 @@ jobs:
           names = {name.split("/", 1)[1] for name in root if "/" in name}
 
           required = {
-              "CHANGELOG.md",
               "CONTRIBUTING.md",
               "LICENSE",
               "MANIFEST.in",

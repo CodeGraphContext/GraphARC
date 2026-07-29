@@ -29,9 +29,13 @@ from __future__ import annotations
 
 import importlib
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from grapharc.cli.config import ConfigError, Settings
+from grapharc.cli.config import load as load_settings
+from grapharc.cli.generate import resolve_or_generate_policy
 from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit, fail
 
 DEFAULT_REGISTRY = "grapharc.examples.plan_incident:build_registry"
@@ -41,7 +45,28 @@ class PlanSetupError(Exception):
     """Raised before anything runs, so a bad flag never half-executes a plan."""
 
 
-def resolve_registry(target: str) -> tuple[Any, Any, dict[str, set[str]] | None]:
+@dataclass
+class RegistryBundle:
+    """Everything a registry module supplies, travelling together.
+
+    Separated fields would let a registry be paired with someone else's schema,
+    write map or policy — each of which fails quietly rather than loudly.
+    """
+
+    registry: Any
+    state_schema: Any = None
+    writes: dict[str, set[str]] | None = None
+    #: The module's own `default_edge_policy()`, used when no policy is named
+    #: and none was generated. A policy written for other kinds would deny names
+    #: that do not exist and permit ones that do.
+    default_policy: Any = None
+    #: Kinds the module considers dangerous, from its `MUTATING_KINDS`. Handed to
+    #: the policy generator so it knows what to deny; empty means it denies
+    #: nothing, which is why a module that can change things should say so.
+    mutating: tuple[str, ...] = ()
+
+
+def resolve_registry(target: str, model: Any = None) -> RegistryBundle:
     """Import `module:attr` and return `(registry, state_schema, writes)`.
 
     A callable attribute is called, so both `mypkg:build_registry` and
@@ -49,12 +74,19 @@ def resolve_registry(target: str) -> tuple[Any, Any, dict[str, set[str]] | None]
     be confused. Mirrors `grapharc.cli.serve.resolve_registry` deliberately —
     two flags that look the same should behave the same.
 
+    **A factory that accepts an argument is given the model.** Any registry with
+    agent-backed kinds needs one to build them, and there is nowhere else for it
+    to come from; `grapharc.stdlib:build_registry` relies on this, and leaves its
+    agent kinds out entirely when the model is None. A zero-argument factory is
+    called bare, so a registry of plain functions never has to care.
+
     A registry alone is not enough to run a loop: the kinds have to agree with a
-    state schema, and each kind needs a declared write set or it may write
-    nothing. So the module may also export `STATE_SCHEMA` and `WRITES`, and a
-    module that exports neither gets the demo's — which is right only when its
-    kinds write `notes`. Returning them together keeps a custom registry from
-    being silently paired with a schema that has no field its nodes can reach.
+    state schema, each kind needs a declared write set or it may write nothing,
+    and *something* has to say which transitions between those kinds are sane
+    when no policy file is given. So the module may also export `STATE_SCHEMA`,
+    `WRITES` and `default_edge_policy`, and all four travel together — a registry
+    silently paired with a schema its nodes cannot write to, or with a policy
+    written for someone else's kinds, is worse than one that refuses to load.
     """
     module_name, separator, attribute = target.partition(":")
     if not separator or not attribute:
@@ -66,8 +98,31 @@ def resolve_registry(target: str) -> tuple[Any, Any, dict[str, set[str]] | None]
     registry = getattr(module, attribute, None)
     if registry is None:
         raise PlanSetupError(f"--registry {target!r}: {module_name} has no {attribute!r}")
-    registry = registry() if callable(registry) else registry
-    return registry, getattr(module, "STATE_SCHEMA", None), getattr(module, "WRITES", None)
+    if callable(registry):
+        registry = registry(model) if _accepts_an_argument(registry) else registry()
+    default_policy = getattr(module, "default_edge_policy", None)
+    return RegistryBundle(
+        registry=registry,
+        state_schema=getattr(module, "STATE_SCHEMA", None),
+        writes=getattr(module, "WRITES", None),
+        default_policy=default_policy() if callable(default_policy) else default_policy,
+        mutating=tuple(getattr(module, "MUTATING_KINDS", ())),
+    )
+
+
+def _accepts_an_argument(factory: Any) -> bool:
+    """Whether `factory` takes a positional parameter we can hand the model to."""
+    import inspect
+
+    try:
+        signature = inspect.signature(factory)
+    except (TypeError, ValueError):  # a builtin or C callable
+        return False
+    return any(
+        parameter.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        for parameter in signature.parameters.values()
+    )
 
 
 def resolve_edge_policy(policy_path: Path | None, *, tenant: str) -> tuple[Any, str]:
@@ -106,13 +161,15 @@ def plan(
     goal: str,
     *,
     model_spec: str | None = None,
-    registry_target: str = DEFAULT_REGISTRY,
+    registry_target: str | None = None,
     policy_path: Path | None = None,
-    tenant: str = "default",
+    tenant: str | None = None,
     trace_path: Path | None = None,
     run_id: str | None = None,
-    max_rounds: int = 8,
-    max_tokens: int = 100_000,
+    max_rounds: int | None = None,
+    max_tokens: int | None = None,
+    config_path: Path | None = None,
+    settings: Settings | None = None,
     as_json: bool = False,
 ) -> int:
     """Run one governed planning loop against `goal`. Returns the exit code."""
@@ -125,10 +182,31 @@ def plan(
     # Everything that can be wrong about the setup is decided before a model is
     # asked anything, so a bad flag cannot half-execute a plan.
     try:
-        registry, state_schema, writes = resolve_registry(registry_target)
-        edge_policy, policy_description = resolve_edge_policy(policy_path, tenant=tenant)
+        if settings is None:
+            settings = load_settings(config_path)
+        model_spec = settings.resolve("model", model_spec)
+        registry_target = settings.resolve("registry", registry_target, DEFAULT_REGISTRY)
+        policy_path = settings.resolve_path("policy", policy_path)
+        tenant = settings.resolve("tenant", tenant, "default")
+        max_rounds = settings.resolve("max_rounds", max_rounds, 8)
+        max_tokens = settings.resolve("max_tokens", max_tokens, 100_000)
         model, model_description = _model_for(model_spec)
-    except PlanSetupError as exc:
+        bundle = resolve_registry(registry_target, model)
+        registry, state_schema, writes = bundle.registry, bundle.state_schema, bundle.writes
+        edge_policy, policy_description, policy_source = resolve_or_generate_policy(
+            policy_path,
+            tenant=tenant,
+            # Only a *real* backend generates. The scripted planner has no
+            # opinion worth asking for, and a deterministic demo that quietly
+            # produced a different policy each run would not be one.
+            model=model if model_spec else None,
+            goal=goal,
+            catalog=registry.catalog(),
+            mutating=bundle.mutating,
+            fallback=bundle.default_policy,
+            fallback_label=f"{registry_target} default",
+        )
+    except (ConfigError, PlanSetupError) as exc:
         return fail(str(exc), as_json=as_json, command="plan", goal=goal)
     except Exception as exc:  # noqa: BLE001 — a backend that will not load is a setup failure
         return fail(f"could not build the plan: {exc}", as_json=as_json, command="plan", goal=goal)
@@ -170,7 +248,9 @@ def plan(
         "registry": registry_target,
         "kinds": sorted(registry.names()),
         "policy": policy_description,
+        "policy_source": policy_source,
         "trace": str(trace_path),
+        **settings.provenance(policy_source=policy_source),
         "stop": result.stop.value,
         "detail": result.detail,
         "rounds": rounds,
@@ -183,7 +263,8 @@ def plan(
         f"model     : {model_description}",
         f"registry  : {registry_target}",
         f"kinds     : {', '.join(sorted(registry.names())) or '(none)'}",
-        f"policy    : {policy_description}",
+        f"policy    : {policy_description}  [{policy_source}]",
+        f"config    : {settings.describe()}",
         "",
         f"stopped   : {result.stop.value}  ({result.detail})",
         f"rounds    : {len(rounds)} of max {max_rounds}",

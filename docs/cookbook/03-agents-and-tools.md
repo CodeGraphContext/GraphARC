@@ -1536,7 +1536,7 @@ Output:
 {
   "ok": false,
   "command": "agent",
-  "error": "model ScriptedChatModel does not implement bind_tools, so it cannot drive a tool loop (5 tools are visible to it); use a tool-calling backend such as openrouter/*",
+  "error": "model ScriptedChatModel does not implement bind_tools, so it cannot drive a tool loop (5 tools are visible to it); use a tool-calling backend such as openrouter/*, openai/* or ollama/*",
   "task": "list the files",
   "model": "mock/none",
   "run_id": "demo",

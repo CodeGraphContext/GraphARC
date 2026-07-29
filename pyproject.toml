@@ -50,7 +50,6 @@ dependencies = [
 Homepage = "https://github.com/CodeGraphContext/GraphARC"
 Repository = "https://github.com/CodeGraphContext/GraphARC"
 Issues = "https://github.com/CodeGraphContext/GraphARC/issues"
-Changelog = "https://github.com/CodeGraphContext/GraphARC/blob/main/CHANGELOG.md"
 Contributing = "https://github.com/CodeGraphContext/GraphARC/blob/main/CONTRIBUTING.md"
 Documentation = "https://github.com/CodeGraphContext/GraphARC/blob/main/README.md"
 Roadmap = "https://github.com/CodeGraphContext/GraphARC/blob/main/ROADMAP.md"
@@ -60,8 +59,21 @@ Roadmap = "https://github.com/CodeGraphContext/GraphARC/blob/main/ROADMAP.md"
 # not, the extra exists so the feature being built against it has somewhere to
 # declare itself. Check ROADMAP.md before assuming an extra buys you a feature.
 [project.optional-dependencies]
-# Imported by grapharc/gateway/openrouter.py.
+# Imported by grapharc/gateway/openai_compat.py, which the openrouter, openai
+# and ollama backends all build on. Three extras naming one dependency is not
+# duplication: `uv sync --extra ollama` is the instruction the Ollama backend
+# and its probe both give, and an extra that did not exist would make that a
+# lie.
 openrouter = [
+    "langchain-openai>=0.2",
+]
+# Imported by grapharc/gateway/openai.py.
+openai = [
+    "langchain-openai>=0.2",
+]
+# Imported by grapharc/gateway/ollama.py. Ollama speaks the OpenAI wire format,
+# so the local backend needs the same client and no ollama-specific package.
+ollama = [
     "langchain-openai>=0.2",
 ]
 # HTTP API surface (ROADMAP 9.1). `httpx` is in the dev group for the test client.
@@ -78,6 +90,13 @@ mcp = [
 memory = [
     "neo4j>=5.20",
 ]
+# LadybugDB-backed claim store — grapharc/memory/ladybug_store.py imports this
+# one, unlike the `memory` extra above. The distribution is `real-ladybug`, not
+# `ladybug`: the latter name belongs to Ladybug Tools, an unrelated
+# building-science package.
+ladybug = [
+    "real-ladybug>=0.15.3",
+]
 # OpenTelemetry export (ROADMAP 10.3).
 otel = [
     "opentelemetry-api>=1.27",
@@ -91,7 +110,7 @@ api = [
 ]
 # Everything above. Self-referential so it cannot drift out of sync.
 all = [
-    "grapharc[api,mcp,memory,openrouter,otel,server]",
+    "grapharc[api,ladybug,mcp,memory,ollama,openai,openrouter,otel,server]",
 ]
 
 [dependency-groups]
@@ -126,6 +145,11 @@ exclude = [
     "**/.ruff_cache",
     "**/*.sqlite",
     "**/*.jsonl",
+    # An internal working note, not documentation. It carries local paths and
+    # account details, and `.gitignore` cannot keep it out of a build because
+    # `ignore-vcs` is on — this line is the only thing that does.
+    "/HANDOFF.md",
+    "/.grapharc",
 ]
 
 # `packages` is recursive: every subpackage under `grapharc/` ships without
@@ -147,6 +171,10 @@ packages = ["grapharc"]
 include = [
     "/grapharc",
     "/tests",
+    # `/docs` ships because six `tests/test_cookbook_*.py` modules read their
+    # page at *import* time. Without it `pytest` inside an unpacked sdist dies
+    # with five collection errors rather than running.
+    "/docs",
     "/*.md",
     "/LICENSE",
     "/MANIFEST.in",

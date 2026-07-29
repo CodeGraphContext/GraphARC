@@ -1,6 +1,6 @@
 """The governed loop: plan -> admit -> materialise -> execute -> observe -> replan.
 
-ARCHITECTURE.md §2, driven. One `run()` call carries a goal from a planner's
+The admission cycle, driven. One `run()` call carries a goal from a planner's
 first proposal to a recorded stop, and every round of it goes through the same
 gate:
 

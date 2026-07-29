@@ -1,4 +1,4 @@
-"""Gates for the planner/admission split (ARCHITECTURE.md §2, ROADMAP §5).
+"""Gates for the planner/admission split (ROADMAP §5).
 
 The invariant under test: a node may *propose* nodes and edges and may never
 execute them. Every test here is written so that deleting the thing it covers

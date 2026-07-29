@@ -15,6 +15,7 @@
 
 graft grapharc
 graft tests
+graft docs
 include *.md
 include LICENSE
 include MANIFEST.in
@@ -29,3 +30,5 @@ global-exclude .pytest_cache
 global-exclude .ruff_cache
 global-exclude *.sqlite
 global-exclude *.jsonl
+global-exclude /HANDOFF.md
+global-exclude /.grapharc

@@ -1,4 +1,4 @@
-"""The session runtime: stage ② of ARCHITECTURE.md, sitting over the graph kernel.
+"""The session runtime, sitting over the graph kernel.
 
 A `Session` is a graph thread plus everything the kernel deliberately does not
 know about: who is driving it, what was said to it since it last ran, whether a

@@ -1580,7 +1580,7 @@ was negative (two runs differed, a run id had no events, no backend was usable),
 A whole session, verbatim:
 
 ```console
-$ grapharc run stage1 --trace trace.jsonl
+$ grapharc demo stage1 --trace trace.jsonl
 ...
 no_progress_rounds: 0
 proposal: verifier
@@ -1627,7 +1627,7 @@ $ grapharc replay trace.jsonl 2a47f18064b7 | tail -4
         termination_reason = 'target_met'
   8 nodes · 81 tokens · stopped: target_met
 
-$ grapharc run stage1 --trace trace.jsonl > /dev/null   # a second run, same file
+$ grapharc demo stage1 --trace trace.jsonl > /dev/null   # a second run, same file
 $ grapharc diff trace.jsonl 2a47f18064b7 3c0d1b4b4b3e; echo "exit $?"
 2a47f18064b7 == 3c0d1b4b4b3e: same path (8 nodes), same state
 exit 0
@@ -1678,6 +1678,10 @@ claude-cli   usable    'claude' on PATH at /home/you/.local/bin/claude
                        credential: claude subscription login (no API key)
 openrouter   unusable  no API key (set OPENROUTER_API_KEY, or add one to .env)
                        credential: <unset>
+openai       unusable  no API key (set OPENAI_API_KEY, or add one to .env)
+                       credential: <unset>
+ollama       usable    local server at http://localhost:11434/v1
+                       credential: none needed (local server)
 mock         usable    scripted test double; never reaches a provider
 
 local probe only — no provider was contacted, so a configured key

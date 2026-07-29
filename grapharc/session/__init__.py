@@ -1,4 +1,4 @@
-"""Long-lived, resumable sessions over the GraphARC kernel (ARCHITECTURE.md ②).
+"""Long-lived, resumable sessions over the GraphARC kernel.
 
     from grapharc.session import SessionManager
     from grapharc.session.demo import GRAPH_NAME   # registers the graph

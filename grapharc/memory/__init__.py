@@ -16,6 +16,10 @@ from grapharc.memory.contradiction import (
 )
 from grapharc.memory.embeddings import Embedder, HashingEmbedder
 from grapharc.memory.index import ClaimIndex
+
+# Safe to import unconditionally: the LadybugDB driver is loaded inside the
+# store's constructor, not at module scope, so this costs nothing without it.
+from grapharc.memory.ladybug_store import LadybugMemoryStore
 from grapharc.memory.retrieval import (
     ScoredClaim,
     known_entities,
@@ -38,6 +42,7 @@ __all__ = [
     "Contradiction",
     "Embedder",
     "HashingEmbedder",
+    "LadybugMemoryStore",
     "MemoryArtifactStore",
     "MemoryStore",
     "SQLiteArtifactStore",

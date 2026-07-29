@@ -6,6 +6,8 @@ nodes take a spec string and the registry decides which adapter serves it:
     claude-cli/claude-sonnet-5              -> Claude Code CLI (subscription, no key)
     openrouter/anthropic/claude-sonnet-4.5  -> OpenRouter
     openrouter/openai/gpt-4o:floor          -> OpenRouter, cheapest provider
+    openai/gpt-4o-mini                      -> OpenAI directly (OPENAI_API_KEY)
+    ollama/llama3.1                         -> a local Ollama server, no key
     mock/anything                           -> scripted test double
 
 This is the seam that makes the backend a config change rather than a rewrite,
@@ -26,7 +28,7 @@ class UnknownBackendError(Exception):
     """The spec named a backend that is not registered."""
 
 
-BACKENDS = ("claude-cli", "openrouter", "mock")
+BACKENDS = ("claude-cli", "openrouter", "openai", "ollama", "mock")
 
 # Authors that appear in OpenRouter model ids. A spec starting with one of
 # these is a model name, not a mistyped backend — `anthropic/claude-haiku-4.5`
@@ -36,6 +38,16 @@ KNOWN_AUTHORS = (
     "qwen", "x-ai", "cohere", "nvidia", "perplexity", "amazon", "microsoft",
     "z-ai", "moonshotai", "inclusionai", "nousresearch", "openrouter",
 )
+
+#: Which vendor's models a backend serves, for the independence check below.
+#: OpenRouter is deliberately absent: it serves everyone, so its vendor comes
+#: from the author slug in the model id instead.
+BACKEND_VENDOR = {
+    "claude-cli": "anthropic",
+    "openai": "openai",
+    "ollama": "ollama",
+    "mock": "mock",
+}
 
 
 def split_spec(spec: str) -> tuple[str, str]:
@@ -48,6 +60,12 @@ def split_spec(spec: str) -> tuple[str, str]:
     model author is rejected rather than silently folded into a model name —
     otherwise a typo like `opnerouter/anthropic/x` becomes a Claude-CLI call
     with a nonsense model and fails much later with a confusing error.
+
+    `openai` is both a backend name and an OpenRouter author slug, and the
+    backend wins: `openai/gpt-4o-mini` means the OpenAI API, which is what
+    someone typing it means. Reaching the same model through the broker is
+    still `openrouter/openai/gpt-4o-mini`, because only the first segment is
+    ever read as a backend.
     """
     head, sep, rest = spec.partition("/")
     if sep and head in BACKENDS:
@@ -86,6 +104,28 @@ def get_model(spec: str, **kwargs: Any) -> BaseChatModel:
 
         return OpenRouterChatModel(model, **kwargs)
 
+    if backend == "openai":
+        try:
+            from grapharc.gateway.openai import OpenAIChatModel
+        except ImportError as exc:  # pragma: no cover - depends on install extras
+            raise UnknownBackendError(
+                "The OpenAI backend needs langchain-openai. "
+                "Install it with: uv sync --extra openai"
+            ) from exc
+
+        return OpenAIChatModel(model, **kwargs)
+
+    if backend == "ollama":
+        try:
+            from grapharc.gateway.ollama import OllamaChatModel
+        except ImportError as exc:  # pragma: no cover - depends on install extras
+            raise UnknownBackendError(
+                "The Ollama backend needs langchain-openai (it speaks the "
+                "OpenAI wire format). Install it with: uv sync --extra ollama"
+            ) from exc
+
+        return OllamaChatModel(model, **kwargs)
+
     if backend == "mock":
         from grapharc.testing import ScriptedChatModel
 
@@ -103,17 +143,36 @@ def describe(spec: str) -> dict[str, str]:
     return {"spec": spec, "backend": backend, "model": model}
 
 
-def different_providers(a: str, b: str) -> bool:
-    """True when two specs come from genuinely different providers.
+def vendor(spec: str) -> str:
+    """Whose models a spec reaches, ignoring how it reaches them.
 
-    The correlated-agreement guard wants real independence. Two OpenRouter
-    specs from the same author (`anthropic/…` vs `anthropic/…`) share a model
-    family and are weaker evidence than a cross-vendor pair.
+    A model author named in the id wins, because that is the most specific
+    thing the string says: `openrouter/anthropic/…` is Anthropic's, and so is
+    a bare `anthropic/…` that fell through to the default backend. Otherwise
+    the backend decides — `claude-cli` serves Anthropic, `openai` serves
+    OpenAI, and `ollama` serves whatever you pulled onto the box.
     """
-    backend_a, model_a = split_spec(a)
-    backend_b, model_b = split_spec(b)
-    if backend_a != backend_b:
-        return True
-    author_a = model_a.split("/")[0] if "/" in model_a else backend_a
-    author_b = model_b.split("/")[0] if "/" in model_b else backend_b
-    return author_a != author_b
+    backend, model = split_spec(spec)
+    if "/" in model:
+        return model.split("/")[0]
+    return BACKEND_VENDOR.get(backend, backend)
+
+
+def different_providers(a: str, b: str) -> bool:
+    """True when two specs come from genuinely different vendors.
+
+    The correlated-agreement guard wants real independence. Two specs from the
+    same author (`anthropic/…` vs `anthropic/…`) share a model family and are
+    weaker evidence than a cross-vendor pair, however they were reached — so
+    the comparison is on vendor and not on backend. A Claude-CLI author paired
+    with an Anthropic model over OpenRouter is *correlated*, and used to read
+    as independent here because the two backends differed.
+
+    Two limits remain, and neither is fixable by comparing strings. A
+    re-seller that fronts someone else's model under its own slug is invisible.
+    And `ollama/llama3.1` against `openrouter/meta-llama/llama-3.1-70b` reads
+    as different vendors when it is the same family of weights on two
+    machines. Read the result as "am I obviously grading my own family", not
+    as a proof of independence.
+    """
+    return vendor(a) != vendor(b)

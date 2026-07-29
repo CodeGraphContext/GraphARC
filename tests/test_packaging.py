@@ -278,3 +278,13 @@ def test_the_declared_version_matches_the_package():
     import grapharc
 
     assert grapharc.__version__ == config()["project"]["version"]
+
+
+def test_the_sdist_ships_the_docs_the_tests_read():
+    """`tests/` shipped and `docs/` did not, so six `test_cookbook_*` modules —
+    which open their page at import time — turned `pytest` inside an unpacked
+    sdist into five collection errors. The suite could not run from a release."""
+    include = config()["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
+
+    assert "/docs" in include
+    assert "graft docs" in (REPO / "MANIFEST.in").read_text(encoding="utf-8")

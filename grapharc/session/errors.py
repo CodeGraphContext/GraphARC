@@ -1,6 +1,6 @@
 """Every refusal the session layer can make, as a distinct type.
 
-Invariant 4 in ARCHITECTURE.md — every rejection is recorded with a reason —
+The invariant that every rejection is recorded with a reason
 starts with the refusals being nameable. A caller that cannot tell "someone
 else is running this session" from "this session is finished" from "this
 session is waiting on a human" cannot do anything sensible about either.

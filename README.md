@@ -6,9 +6,9 @@ Alpha (`0.1.0a0`). Installable from source; not on PyPI yet — see [Install](#i
 
 > *Graph engineering*: when one agent loop stops being enough, coordination becomes the engineering. Nodes do work (agent loops, model calls, deterministic functions, humans approving things), edges decide what runs next, and a typed shared state flows between them. GraphARC implements the discipline that makes such graphs production-grade rather than demos — the ideas emerging from the July 2026 loops-vs-graphs debate (Steinberger, Ng, et al.), the "Two Graphs, Two Jobs" split, and twenty years of pre-AI graph systems where every edge means something and every path can be explained.
 
-![The governed lifecycle: a trigger reaches a session, a planner proposes a subgraph, admission admits or refuses it, materialisation binds the build to that authorisation, and the executed graph feeds both an outcome and the next round of planning.](docs/diagrams/01-lifecycle.png)
+![The GraphARC architecture: a CLI or HTTP request reaches a planner, which emits a typed proposal; a deterministic admission checker either refuses it with reasons or admits it; only an admitted proposal is materialised and run by the graph kernel, on top of the model, tool and memory planes; everything lands on one JSONL record, and work discovered mid-run re-enters the gate.](docs/diagrams/00-architecture.png)
 
-The two curves back to *③ PLAN* are the claim. Refusals return as traced reason codes, and work discovered mid-run **re-enters admission** — there is no already-approved path and no cached authorisation. Rendered from [`docs/diagrams/architecture.py`](docs/diagrams/architecture.py); [three more views](docs/diagrams/) cover the planes, the agent node, and which subsystems actually import which.
+The amber curve along the bottom is the claim. Refusals return as traced reason codes, and work discovered mid-run **re-enters admission** — there is no already-approved path and no cached authorisation. Rendered from [`docs/diagrams/architecture.py`](docs/diagrams/architecture.py); [five more views](docs/diagrams/) cover the lifecycle, the planes, the agent node, the trust boundary, and which subsystems actually import which.
 
 ## What's here
 
@@ -24,7 +24,7 @@ The two curves back to *③ PLAN* are the claim. Refusals return as traced reaso
 | **Memory** | durable claims with provenance, artifacts, BM25F + graph retrieval | `grapharc.memory` |
 | **Observability** | replay, run diffing, OpenTelemetry spans, cost attribution | `grapharc.observe` |
 
-Every box above is now reachable from a shipped command. `planner` and `policy` were for a while built, tested and imported by nothing else in the package; `grapharc plan` drives the first and compiles the second's document into the gate. [ROADMAP.md](ROADMAP.md) §12 tracks the seams that remain — the HTTP API still runs its own in-process session layer instead of the durable one — and [ARCHITECTURE.md](ARCHITECTURE.md) §7 re-derives every box above by running it.
+Every box above is now reachable from a shipped command. `planner` and `policy` were for a while built, tested and imported by nothing else in the package; `grapharc plan` drives the first and compiles the second's document into the gate. [ROADMAP.md](ROADMAP.md) §12 tracks the seams that remain — the HTTP API still runs its own in-process session layer instead of the durable one —.
 
 ## What it adds on top of LangGraph
 
@@ -64,22 +64,26 @@ This works now. It did not for most of the project's life — the public remote 
 git clone https://github.com/CodeGraphContext/GraphARC
 cd GraphARC
 uv sync --group dev              # Python >= 3.12
-uv sync --all-extras --group dev # everything: openrouter, server, otel, mcp, api
+uv sync --all-extras --group dev # everything: openrouter, openai, ollama, server, otel, mcp, api
 ```
 
-Not on PyPI yet. The wheel does build: `uv build` produces one that installs into a clean virtualenv, imports every one of the package's 94 submodules with `[all]` (`gateway.openrouter` and the whole `server` package need their extras, so a bare install imports fewer), and runs `grapharc run stage0`.
+Not on PyPI yet. The wheel does build: `uv build` produces one that installs into a clean virtualenv, imports every one of the package's 103 submodules with `[all]` (`gateway.openrouter` and the whole `server` package need their extras, so a bare install imports fewer), and runs `grapharc demo stage0`.
 
 ## Quickstart
 
 ```bash
-grapharc run stage0        # deterministic DAG: load -> split -> count -> report
-grapharc run stage1        # one earned agent loop: discover -> act -> verify -> repeat
-grapharc run stage2        # typed cyclic graph: extract claims -> verify -> retry
-grapharc run stage3        # bounded fan-out with failure isolation and dedup
-grapharc run stage4        # bounded investigation loop with convergence guards
-grapharc run stage5        # verifier: fresh context + deterministic evidence anchor
-grapharc run stage6        # memory: provenance, supersession, recall
-grapharc run capstone      # all of the above in one research agent
+grapharc demo stage0        # deterministic DAG: load -> split -> count -> report
+grapharc demo stage1        # one earned agent loop: discover -> act -> verify -> repeat
+grapharc demo stage2        # typed cyclic graph: extract claims -> verify -> retry
+grapharc demo stage3        # bounded fan-out with failure isolation and dedup
+grapharc demo stage4        # bounded investigation loop with convergence guards
+grapharc demo stage5        # verifier: fresh context + deterministic evidence anchor
+grapharc demo stage6        # memory: provenance, supersession, recall
+grapharc demo capstone      # all of the above in one research agent
+
+grapharc plan "look into the outage"   # governed loop: propose -> admit -> execute -> replan
+grapharc run graph.json                # a topology you wrote, through the same gate
+grapharc run graph.json --check-only   # admission as a linter; executes nothing
 
 grapharc agent "fix the failing test" --workspace ./sandbox   # agent + the seven core tools
 grapharc serve --port 8000       # the HTTP API (needs the `server` extra)
@@ -131,7 +135,8 @@ goal      : investigate the checkout outage
 model     : scripted
 registry  : grapharc.examples.plan_incident:build_registry
 kinds     : deploy, patch, triage, verify
-policy    : built-in demo (deny -> deploy, allow otherwise)
+policy    : grapharc.examples.plan_incident:build_registry default (deny -> deploy, otherwise allow)  [registry-default]
+config    : no grapharc.toml (flags and defaults only)
 
 stopped   : goal_met  (the goal check was satisfied)
 rounds    : 2 of max 8
@@ -141,7 +146,11 @@ rounds    : 2 of max 8
 state     : goal='investigate the checkout outage' notes=['triage ran', 'patch ran', 'verify ran']
 ```
 
-Round 1 wanted to deploy and **never executed**. Round 2 went through the *same* checker and ran. `--model SPEC` swaps in a real backend and changes none of the enforcement; `--policy policy.toml` moves the rules into a document.
+Round 1 wanted to deploy and **never executed**. Round 2 went through the *same* checker and ran.
+
+The `policy` line ends in `[registry-default]` — that is the **provenance**, and it is on the JSON payload too as `policy_source`. It matters because a policy can now come from four places: a `--policy` flag, a `grapharc.toml`, one an LLM generated on a first run, or the registry's own default. A generated run and an authored one look identical on the command line, so the source is the only thing that tells them apart afterwards.
+
+`--model SPEC` swaps in a real backend and changes none of the enforcement; `--policy policy.toml` moves the rules into a document.
 
 Here is the assembly, complete and runnable as written:
 
@@ -234,6 +243,26 @@ Three limits, because this is exactly the sort of claim people over-read:
 
 **One surface, one demo registry.** `grapharc plan` drives the loop, and the kinds it plans over come from `grapharc/examples/plan_incident.py` unless you point `--registry module:attr` at your own. That module is also where a custom registry declares its `STATE_SCHEMA` and `WRITES`; a registry alone is not enough, because a kind nobody declared writes for may write nothing. There is no session-backed or HTTP-backed planning surface yet — [ROADMAP.md](ROADMAP.md) §12.3.
 
+## Configuration, and the zero-config path
+
+Three flags carry every run: `--registry` (what may be proposed), `--policy` (what may connect to what), `--model`. Typing them repeatedly is how people stop using a tool, so they can come from a file:
+
+```toml
+# grapharc.toml
+[grapharc]
+registry   = "myco.incident:build_registry"
+policy     = "policy.toml"
+max_rounds = 6
+```
+
+Resolution is `flag > env (GRAPHARC_*) > grapharc.toml > built-in`, and **every value reports which layer supplied it** — `--json` carries a `sources` block, the human view prints a `config` line. A config file makes "which policy was I subject to" *less* visible on the command line, so the provenance is part of the output rather than something a reader reconstructs.
+
+**It does not search parent directories.** git, npm and cargo all walk upward; this deliberately doesn't. A run must never be silently governed by a policy file in a directory you didn't know about. Read from the working directory, or name one with `--config PATH`. A relative path *inside* a config resolves against the config, so the file means the same thing from anywhere.
+
+**With nothing configured at all**, a run still works. [`grapharc.stdlib`](grapharc/stdlib.py) ships general-purpose node kinds — `collect_context`, `investigate`, `verify`, `summarize`, and `apply_change`, which is registered *and denied by default*. No phase anywhere is given `run_command`. If a model is available and no policy was named, one is **generated**, written to `.grapharc/generated-policy.toml` with a `REVIEW THIS` header, and reported as `policy_source: generated`. The second run reads it off disk as an ordinary file — so generation is a one-time state, and promoting it to a policy you own is an edit and a `mv`.
+
+**Policy is generated; a registry never is.** Policy is data, and the worst case is bad rules you can read. A registry holds *functions*, so generating one would mean a model writing code that then executes — and the gate would be checking a list the gated thing wrote. The model selects from the shipped kinds instead. Selecting is safe; authoring is not.
+
 ## The model gateway
 
 The primary backend drives the **Claude Code CLI** (`claude -p`), so GraphARC runs on a Claude subscription with no API key. That CLI is a full agent, so the adapter invokes it as a pure inference endpoint: every tool disallowed, no settings sources loaded, no CLAUDE.md pickup, prompt via stdin, flags via an argv array — never a shell string. An injected "run this command" has no tool to run it with.
@@ -248,24 +277,28 @@ worker = get_model("claude-cli/claude-sonnet-5")
 # tool-calling, structured output, streaming, and async.
 worker   = get_model("openrouter/anthropic/claude-haiku-4.5")
 reviewer = get_model("openrouter/openai/gpt-4o-mini")   # a genuinely different vendor
+
+# Or go direct: your own OpenAI key, or a model on your own machine.
+reviewer = get_model("openai/gpt-4o-mini")              # OPENAI_API_KEY
+local    = get_model("ollama/llama3.1")                 # no key, no bill, no egress
 ```
 
-A spec is `backend/model`; a mistyped backend is rejected rather than quietly folded into a model name. `grapharc models` shows what a spec resolves to.
+A spec is `backend/model`. A mistyped *backend* with a slash is rejected — `openrouterr/x` exits 2 naming the known backends. But a **bare name with no slash is treated as a model on the `claude-cli` backend**, so `--model mock` reaches the Claude subscription with a nonsense model name rather than the scripted double; the double needs `mock/anything`. Worth knowing before you type a bare spec, because that backend spends subscription quota. `grapharc models` shows what a spec resolves to.
 
 Run an example graph against real models:
 
 ```bash
-grapharc run stage5 --model openrouter/anthropic/claude-haiku-4.5 \
+grapharc demo stage5 --model openrouter/anthropic/claude-haiku-4.5 \
                     --reviewer-model openrouter/openai/gpt-4o-mini
 ```
 
-OpenRouter also carries routing: model-level `fallback_models` chains, provider `order` / `sort` / `max_price`, and per-call cost in the usage envelope. Both backends report usage in the same shape, with cached input folded into the total, so a budget meter reads the same fields whichever backend produced the turn.
+OpenRouter also carries routing: model-level `fallback_models` chains, provider `order` / `sort` / `max_price`, and per-call cost in the usage envelope. Every backend reports usage in the same shape, with cached input folded into the total, so a budget meter reads the same fields whichever one produced the turn. `openrouter`, `openai` and `ollama` share a base class — same tool-calling, streaming, retry policy and envelope — and differ only in routing and in where a price comes from.
 
 **Retries have a policy, not a loop.** Three attempts by default, 0.5s initial backoff doubling to a 20s cap, with jitter drawn from `[0.75, 1]` — shrinking rather than centred, so successive delays stay strictly increasing rather than merely trending upward. What gets retried is the deliberate part: a timeout, a connection reset, a 429 or a 5xx is transient and re-issued; a 400, 401, 402, 403 or a content refusal is a verdict that will not change and is raised on the first attempt; anything unrecognised is treated as deterministic rather than retried hopefully. A `Retry-After` header raises the delay but never lowers it, and is itself capped. Streaming is not retried — once a chunk has reached the caller the request cannot be re-issued transparently.
 
 **Cost ceilings are enforced, on both sides of a call.** A `SpendMeter` refuses before a call once the ceiling is reached, and after a call it charges the cost and *then* raises if that crossed the line — so overspend is bounded by the single call that crossed it rather than discovered a node later. The limit worth stating: a call whose cost the provider does not report cannot be charged, and those land in `unpriced_calls` rather than being guessed at. `unpriced_calls > 0` means the ceiling saw less than the whole bill.
 
-Caveats each backend accepts openly. **Claude CLI:** `bind_tools` and `with_structured_output` raise `NotImplementedError` — the adapter implements neither, so what you get is LangChain's `BaseChatModel` default, and `claude -p` in the tool-free mode GraphARC drives it in offers nothing to implement them with. GraphARC also has no cache control on this path — the CLI decides and the usage envelope reports what it did — and calls spend subscription quota. **OpenRouter:** credit is reserved against `max_tokens`, so the default is deliberately modest. **Both:** the per-call `cost_usd` is captured, budgeted against, *and* written onto the trace, so `observe.cost` reports a recorded figure rather than an estimate whenever the provider gave one. See [ROADMAP.md](ROADMAP.md) §10.4 for what is still missing (a tenant on the event).
+Caveats each backend accepts openly. **Claude CLI:** `bind_tools` and `with_structured_output` raise `NotImplementedError` — the adapter implements neither, so what you get is LangChain's `BaseChatModel` default, and `claude -p` in the tool-free mode GraphARC drives it in offers nothing to implement them with. GraphARC also has no cache control on this path — the CLI decides and the usage envelope reports what it did — and calls spend subscription quota. **OpenRouter:** credit is reserved against `max_tokens`, so the default is deliberately modest. **OpenAI:** the API returns token counts and no price, so `cost_usd` is `None` and a dollar ceiling counts calls instead of enforcing — pass `price_per_million=` or price the trace afterwards with `observe.cost.RateCard`; token budgets are unaffected. **Ollama:** free by definition, so calls are charged `0.0` rather than counted as unpriced, and whether tool-calling works depends on the model you pulled rather than on the adapter. **All of them:** the per-call `cost_usd` is captured, budgeted against, *and* written onto the trace, so `observe.cost` reports a recorded figure rather than an estimate whenever the provider gave one. See [ROADMAP.md](ROADMAP.md) §10.4 for what is still missing (a tenant on the event).
 
 ## Independent verification
 
@@ -274,7 +307,7 @@ Caveats each backend accepts openly. **Claude CLI:** `bind_tools` and `with_stru
 - **The anchor runs before the model.** The citation must appear verbatim in the source (whitespace is the only latitude, so a paraphrase is still caught). A fabricated quote is rejected with the reviewer's call count still at zero — a hallucinated citation costs nothing.
 - **The reviewer gets a fresh context.** If the anchor holds, the reviewer sees only the claim, the quote, and a mechanically extracted window of surrounding source — never the author's conversation. That window is what lets it catch a real quote lifted out of a negated sentence.
 - **Ambiguity fails closed.** An unparseable reply, a non-boolean `supported` value, or a citation under 12 characters is a rejection.
-- **Independence is enforced in two places, both worth knowing exactly.** `build_stage5` and `build_capstone` refuse the *same object* for author and reviewer — an identity check, which will not catch two separate instances of the same model. The CLI does the stronger check: `different_providers()` compares backend and model author, and `grapharc run … --model … --reviewer-model …` warns when the pair shares a vendor, because correlated agreement is exactly what the verifier exists to prevent.
+- **Independence is enforced in two places, both worth knowing exactly.** `build_stage5` and `build_capstone` refuse the *same object* for author and reviewer — an identity check, which will not catch two separate instances of the same model. The CLI does the stronger check: `different_providers()` compares the *vendor* each spec reaches — the model author when the id names one, the backend's own vendor otherwise, so a Claude-CLI author and an Anthropic model over OpenRouter are correctly read as correlated — and `grapharc demo --model … --reviewer-model …` warns when the pair shares a vendor, because correlated agreement is exactly what the verifier exists to prevent.
 
 ## Tools and the harness
 
@@ -300,11 +333,13 @@ Claims carry provenance — source, observation time, and the run that produced 
 
 **It has a disk.** `SQLiteMemoryStore` and `SQLiteArtifactStore` share one file and are verified durable across genuinely separate processes, not merely across objects. Artifacts are append-only with versions rather than overwrites, provenance is mandatory, and blob content is written before the row that references it — so a crash leaves an unreferenced blob (garbage) and never a row pointing at content that does not exist (a lie).
 
+**And it has a graph backend, if the rows are not the shape you want.** `LadybugMemoryStore` implements the same `ClaimStore` protocol against [LadybugDB](https://ladybugdb.com/) — an embedded property-graph database with Cypher, forked from Kuzu after Apple closed it. The two SQLite-shaped backends keep claims as rows and rebuild the adjacency in Python on every `ClaimIndex`; this one stores the edges, so `superseded_by` is a `SUPERSEDED_BY` edge and a correction chain is a path you can walk in Cypher rather than a scan you pay for. It buys queryability, and it costs concurrency: LadybugDB takes an exclusive lock on the database, so one process may write it or several may read it, never both at once — sequential hand-off between runs works, concurrent multi-process writing does not. A test spawns a second process against a held database and asserts the failure, so that sentence cannot rot. Install with `pip install 'grapharc[ladybug]'` — the distribution is `real-ladybug`; the `ladybug` name on PyPI is an unrelated building-science package.
+
 **Retrieval is real, and its limits are arithmetic rather than adjectives.** Okapi BM25F over subject + predicate + object with the subject weighted highest; an optional injected vector channel that stays silent below a similarity floor instead of confidently returning its least bad row; and graph traversal that reads a claim's object as an entity, so a question about A reaches facts about B, each hop decaying the inherited score. Scoring needs corpus statistics, so it is O(claims) per call — nothing here is sublinear and nothing here pretends to be. `render_context` takes `max_tokens`, so what reaches a node is budgeted.
 
 **Contradiction detection reports; it never resolves.** A new claim sharing a normalized (subject, predicate) with a stored one and differing in object is flagged. That is a structural test: it will not relate "is fast" to "is slow", will not match a rephrased object, and *will* flag a legitimately multi-valued predicate as disagreement. Auto-superseding on a detected conflict would delete half a multi-valued fact inside the one subsystem whose promise is that facts are never destroyed, so a caller supersedes on purpose or not at all.
 
-The limit to know: **the CLI still constructs the in-process `MemoryStore()`**. `grapharc run stage6` and `grapharc run capstone` keep claims in a dict for the life of the process, so the "later run" in the Stage 6 story still means a later run in the same interpreter. The durable store exists and the shipped graphs do not use it ([ROADMAP.md](ROADMAP.md) §8.7). `pyproject.toml` also declares a `memory` extra for Neo4j that has no implementation behind it.
+The limit to know: **the in-process store is still the default.** `grapharc demo stage6` and `grapharc demo capstone` keep claims in a dict for the life of the process unless you pass `--memory PATH`, which hands them the `SQLiteMemoryStore` — verified to survive across two separate interpreters, not just two calls in one. In-process stays the default so a plain run writes nothing you did not ask for. `pyproject.toml` also declares a `memory` extra for Neo4j that has no implementation behind it.
 
 ## Sessions, the HTTP API, and policy
 
@@ -369,7 +404,7 @@ Re-derived on 2026-07-28 by running each item, not by reading the commit log.
 **Built and unreachable** — this used to be the honest headline, four subsystems deep. One seam is left.
 
 - **The HTTP API does not use the durable session layer.** It has its own `InProcessRuntime`, whose sessions die with the process and whose approvals are recorded without being delivered. [ROADMAP.md](ROADMAP.md) §12.3.
-- *Closed:* `grapharc plan` drives the governed loop; `PolicyEngine.edge_policy()` compiles the TOML document into the gate `AdmissionChecker` consults, and `grapharc plan --policy` is the caller; `grapharc run --memory PATH` hands the shipped graphs the durable SQLite store.
+- *Closed:* `grapharc plan` drives the governed loop; `PolicyEngine.edge_policy()` compiles the TOML document into the gate `AdmissionChecker` consults, and `grapharc plan --policy` is the caller; `grapharc demo --memory PATH` hands the shipped graphs the durable SQLite store.
 
 **Real limits of things that do work**
 
@@ -379,12 +414,15 @@ Re-derived on 2026-07-28 by running each item, not by reading the commit log.
 - **`interrupt()` suspends but cannot be resumed.** LangGraph's native interrupt stops the graph and shows on `get_state`, and there is no supported resume path — resuming means passing a `Command` as *input*, which is closed by design. Use the session layer's approval gate for human-in-the-loop.
 - **Still unwrapped from LangGraph:** `retry_policy`, `cache_policy`, `durability`, subgraphs. `.inner` reaches them, but execution entry points there fail closed, so `.inner` is an inspection escape hatch and not a way to run the graph.
 - **Cost is recorded when a backend reports one, estimated when it does not.** Both gateways publish the provider's `cost_usd` through the same `llm_output` envelope, the runtime's usage callback writes it onto the node's `end` event, and an agent's `model` events carry the per-call breakdown. A backend that reports no price still falls back to a `RateCard` estimate, and the two figures stay apart — `recorded_cost_usd` is never a guess. Still missing: no tenant on a trace event, so per-tenant attribution is not offered.
-- **The Claude CLI backend is completion-only.** Tool calling and structured output need OpenRouter.
+- **The Claude CLI backend is completion-only.** Tool calling and structured output need one of the OpenAI-wire backends: `openrouter`, `openai`, or a local `ollama`.
 - **A session turn is synchronous**, and a runner claim is a claim rather than a lease — nothing reclaims a session whose runner died holding it.
+- **A bare model spec resolves to the paid `claude-cli` backend.** `--model mock` does not reach the scripted double; it becomes the model name `mock` on the subscription backend. Only the slash form (`mock/anything`) reaches the double. A mistyped backend *with* a slash is rejected properly, exit 2.
+- **`.env` is found by walking up parent directories; `grapharc.toml` is not.** The config layer refuses an upward search on purpose — a run must not be governed by a file you did not know about. The credential loader predates that decision and still searches upward, so the thing that *spends money* is discovered more eagerly than the thing that *constrains* it.
+- **`grapharc run` has no budget unless you give it one.** `--max-tokens` is the only ceiling; without it the gate's budget dimension is unlimited and admits a topology of any worst-case cost.
 
-**Verified this pass:** `pytest` → 1,381 passed, 10 deselected (the live ones); `ruff check .` clean; all eight `grapharc run` stages green and `grapharc plan` green; the wheel builds and imports all 94 submodules in a clean virtualenv with `[all]`. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
+**Verified this pass:** `pytest` → 1,533 passed, 12 deselected (the live ones); `ruff check .` clean; all eight `grapharc demo` stages green, plus `grapharc plan` and `grapharc run`; the wheel builds and imports all 103 submodules in a clean virtualenv with `[all]`. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
 
-[ROADMAP.md](ROADMAP.md) tracks what is built and what is not, item by item. [ASSESSMENT.md](ASSESSMENT.md) is an outside review that argued much of this repo is a thin wrapper on LangGraph — it describes an earlier state of the tree and is kept unedited on purpose, because the parts it got right are worth more than the parts it has outlived.
+[ROADMAP.md](ROADMAP.md) tracks what is built and what is not, item by item.
 
 ## Design lineage
 

@@ -1452,6 +1452,13 @@ model = get_model("claude-cli/claude-sonnet-5")
 # OpenRouter: needs OPENROUTER_API_KEY and the `openrouter` extra
 # (uv sync --extra openrouter). Tool calling, structured output, streaming, async.
 model = get_model("openrouter/anthropic/claude-haiku-4.5")
+
+# OpenAI directly: needs OPENAI_API_KEY and the `openai` extra.
+model = get_model("openai/gpt-4o-mini")
+
+# Ollama: a model on this machine. No key, no bill — the one real backend you
+# can run without an account. Needs the `ollama` extra and a pulled model.
+model = get_model("ollama/llama3.1")
 ```
 
 What you *can* check without spending anything is how a spec resolves:

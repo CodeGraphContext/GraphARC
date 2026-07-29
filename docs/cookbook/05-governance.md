@@ -3,7 +3,7 @@
 This is the part that makes GraphARC a *governed* runtime rather than a loop
 with a nice trace file.
 
-**The invariant** ([ARCHITECTURE.md §2](../../ARCHITECTURE.md)): a node may
+**The invariant**: a node may
 **propose** nodes and edges; it may never **execute** them. Dynamism lives in
 construction, governance lives in admission.
 

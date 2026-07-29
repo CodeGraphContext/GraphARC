@@ -39,6 +39,7 @@ def run_live(
     reviewer_spec: str | None = None,
     as_json: bool = False,
     memory_path: Path | None = None,
+    memory_backend: str = "sqlite",
 ) -> int:
     """Run one example against real models. Returns the process exit code.
 
@@ -83,7 +84,9 @@ def run_live(
         "trace": str(trace_path),
     }
 
-    result = _build_and_run(example, model, reviewer, trace, run_id, memory_path)
+    result = _build_and_run(
+        example, model, reviewer, trace, run_id, memory_path, memory_backend
+    )
     if result is None:
         emit(
             {"ok": False, **header, "error": f"'{example}' has no live wiring yet"},
@@ -113,7 +116,9 @@ def run_live(
     return EXIT_OK
 
 
-def _build_and_run(example, model, reviewer, trace, run_id, memory_path=None):
+def _build_and_run(
+    example, model, reviewer, trace, run_id, memory_path=None, memory_backend="sqlite"
+):
     from grapharc.cli.main import _memory_store
 
     common = {"trace": trace, "budget": LIVE_BUDGET}
@@ -159,7 +164,7 @@ def _build_and_run(example, model, reviewer, trace, run_id, memory_path=None):
     if example == "stage6":
         from grapharc.examples.stage6_memory import build_stage6
 
-        return build_stage6(model, _memory_store(memory_path), **common).invoke(
+        return build_stage6(model, _memory_store(memory_path, memory_backend), **common).invoke(
             {
                 "entities": ["GraphARC"],
                 "source_name": "plan.md",
@@ -171,7 +176,8 @@ def _build_and_run(example, model, reviewer, trace, run_id, memory_path=None):
     if example == "capstone":
         from grapharc.examples.capstone import DEMO_CORPUS, build_capstone
 
-        return build_capstone(model, reviewer, _memory_store(memory_path), **common).invoke(
+        store = _memory_store(memory_path, memory_backend)
+        return build_capstone(model, reviewer, store, **common).invoke(
             {
                 "question": "How does GraphARC bound work with budgets?",
                 "corpus": DEMO_CORPUS,

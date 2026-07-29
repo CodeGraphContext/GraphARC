@@ -180,7 +180,7 @@ def two_runs(tmp_path) -> Path:
 
 
 EVERY_COMMAND = [
-    ["run", "stage0"],
+    ["demo", "stage0"],
     ["agent", "do the thing"],
     ["serve"],
     ["models"],
@@ -259,7 +259,7 @@ def test_a_read_of_a_missing_trace_creates_nothing(tmp_path, capsys):
 
 def test_run_example_writes_a_trace_and_reports_it(tmp_path, capsys):
     trace = tmp_path / "trace.jsonl"
-    code, out, _ = call(["run", "stage0", "--trace", str(trace)], capsys)
+    code, out, _ = call(["demo", "stage0", "--trace", str(trace)], capsys)
     assert code == 0
     assert trace.exists()
     assert str(trace) in out
@@ -267,7 +267,7 @@ def test_run_example_writes_a_trace_and_reports_it(tmp_path, capsys):
 
 def test_run_example_json_carries_the_result(tmp_path, capsys):
     trace = tmp_path / "trace.jsonl"
-    code, payload, _ = call_json(["run", "stage0", "--trace", str(trace)], capsys)
+    code, payload, _ = call_json(["demo", "stage0", "--trace", str(trace)], capsys)
     assert code == 0
     assert payload["ok"] is True
     assert payload["example"] == "stage0"
@@ -291,7 +291,7 @@ def test_run_against_a_model_emits_one_document(tmp_path, capsys, monkeypatch):
         ),
     )
     code, payload, _ = call_json(
-        ["run", "stage1", "--trace", str(tmp_path / "t.jsonl"), "--model", "mock/x"], capsys
+        ["demo", "stage1", "--trace", str(tmp_path / "t.jsonl"), "--model", "mock/x"], capsys
     )
     assert code == 0
     assert payload["live"] is True
@@ -307,7 +307,7 @@ def test_run_against_a_model_says_when_an_example_has_no_live_wiring(
 
     monkeypatch.setattr("grapharc.cli.live.get_model", lambda spec, **kw: ScriptedChatModel())
     code, payload, _ = call_json(
-        ["run", "stage0", "--trace", str(tmp_path / "t.jsonl"), "--model", "mock/x"], capsys
+        ["demo", "stage0", "--trace", str(tmp_path / "t.jsonl"), "--model", "mock/x"], capsys
     )
     assert code == 1
     assert "no live wiring" in payload["error"]
@@ -367,18 +367,52 @@ def test_models_check_never_prints_the_key(monkeypatch, capsys):
 
 
 def test_models_check_exits_one_when_nothing_is_configured(monkeypatch, capsys):
-    for name in ("OPENROUTER_API_KEY", "OPENROUTER_KEY", "open-router-api-key"):
+    for name in (
+        "OPENROUTER_API_KEY", "OPENROUTER_KEY", "open-router-api-key",
+        "OPENAI_API_KEY", "OPENAI_KEY", "openai-api-key",
+        "OLLAMA_HOST", "OLLAMA_BASE_URL",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("grapharc.gateway.config.find_env_file", lambda start=None: None)
+    # No claude binary and no ollama binary: nothing on this machine is real.
     monkeypatch.setattr("grapharc.cli.probe.shutil.which", lambda _: None)
     code, payload, _ = call_json(["models", "--check"], capsys)
     assert code == 1
     assert payload["ok"] is False
     usable = {b["backend"]: b["usable"] for b in payload["backends"]}
-    assert usable == {"claude-cli": False, "openrouter": False, "mock": True}
-    assert next(b for b in payload["backends"] if b["backend"] == "openrouter")[
-        "credential"
-    ] == "<unset>"
+    assert usable == {
+        "claude-cli": False,
+        "openrouter": False,
+        "openai": False,
+        "ollama": False,
+        "mock": True,
+    }
+    for backend in ("openrouter", "openai"):
+        assert next(b for b in payload["backends"] if b["backend"] == backend)[
+            "credential"
+        ] == "<unset>"
+
+
+def test_models_check_never_prints_the_openai_key(monkeypatch, capsys):
+    secret = "sk-proj-0123456789abcdef0123456789abcdef"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    code, out, _ = call(["models", "--check"], capsys)
+    _, payload, _ = call_json(["models", "--check"], capsys)
+    assert code == 0  # a key is configured, so at least one provider is usable
+    assert secret not in out
+    assert secret not in json.dumps(payload)
+    openai = next(b for b in payload["backends"] if b["backend"] == "openai")
+    assert openai["usable"] is True
+    assert openai["credential"] == "sk-proj…cdef"
+
+
+def test_models_lists_the_ollama_address_but_no_key(monkeypatch, capsys):
+    """It is an address, not a secret — printed whole, and not a claim that
+    anything is listening on it."""
+    monkeypatch.setenv("OLLAMA_HOST", "gpu-box:11434")
+    _, payload, out = call_json(["models"], capsys)
+    assert payload["ollama_base_url"] == "http://gpu-box:11434/v1"
+    assert "ollama_key" not in payload
 
 
 def test_models_check_flags_a_backend_it_cannot_probe(monkeypatch, capsys):
@@ -897,7 +931,7 @@ def test_diff_against_the_shipped_engine(two_runs, capsys):
 
 def test_run_without_memory_stays_in_process_and_writes_no_file(tmp_path, capsys):
     """The default must not start writing files nobody asked for."""
-    code, _, _ = call(["run", "capstone", "--trace", str(tmp_path / "t.jsonl")], capsys)
+    code, _, _ = call(["demo", "capstone", "--trace", str(tmp_path / "t.jsonl")], capsys)
 
     assert code == 0
     assert list(tmp_path.glob("*.sqlite")) == []
@@ -907,7 +941,7 @@ def test_run_with_memory_persists_claims_to_the_named_store(tmp_path, capsys):
     store = tmp_path / "claims.sqlite"
 
     code, payload, _ = call_json(
-        ["run", "capstone", "--trace", str(tmp_path / "t.jsonl"), "--memory", str(store)],
+        ["demo", "capstone", "--trace", str(tmp_path / "t.jsonl"), "--memory", str(store)],
         capsys,
     )
 
@@ -919,7 +953,7 @@ def test_run_with_memory_persists_claims_to_the_named_store(tmp_path, capsys):
 def test_a_second_run_recalls_what_the_first_one_persisted(tmp_path, capsys):
     """Durability, stated as the behaviour a reader would check."""
     store = tmp_path / "claims.sqlite"
-    args = ["run", "capstone", "--trace", str(tmp_path / "t.jsonl"), "--memory", str(store)]
+    args = ["demo", "capstone", "--trace", str(tmp_path / "t.jsonl"), "--memory", str(store)]
 
     _, first, _ = call_json([*args], capsys)
     _, second, _ = call_json([*args], capsys)
@@ -933,7 +967,7 @@ def test_the_durable_store_survives_a_real_process_boundary(tmp_path):
     """Two interpreters, one file — an in-process dict cannot fake this."""
     store = tmp_path / "claims.sqlite"
     cmd = [
-        sys.executable, "-m", "grapharc.cli.main", "run", "capstone",
+        sys.executable, "-m", "grapharc.cli.main", "demo", "capstone",
         "--json", "--trace", str(tmp_path / "t.jsonl"), "--memory", str(store),
     ]
     first = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -1095,3 +1129,294 @@ def test_the_shipped_command_is_what_finally_imports_the_policy_package(tmp_path
 
     assert policy.rules, "the document's edge rules must reach the admission gate"
     assert "tenant 'default'" in description
+
+
+# --------------------------------------------------------------------------
+# `grapharc run` — a topology the operator wrote, through the same gate.
+# `run` used to mean "execute one of eight canned examples", which left no
+# command for the common case: a graph you already know the shape of. The
+# examples moved to `demo`. A hand-written file earns no exemption from
+# admission — that is the property these pin.
+# --------------------------------------------------------------------------
+
+_LEGAL_GRAPH = {
+    "nodes": [{"name": "triage"}, {"name": "fix", "kind": "patch"}, {"name": "verify"}],
+    "edges": [
+        {"source": "__start__", "target": "triage"},
+        {"source": "triage", "target": "fix"},
+        {"source": "fix", "target": "verify"},
+        {"source": "verify", "target": "__end__"},
+    ],
+}
+_DENIED_GRAPH = {
+    "nodes": [{"name": "triage"}, {"name": "ship", "kind": "deploy"}],
+    "edges": [
+        {"source": "__start__", "target": "triage"},
+        {"source": "triage", "target": "ship"},
+        {"source": "ship", "target": "__end__"},
+    ],
+}
+
+
+def _write_graph(tmp_path, document, name="graph.json"):
+    path = tmp_path / name
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def test_run_executes_a_topology_the_operator_wrote(tmp_path, capsys):
+    graph = _write_graph(tmp_path, _LEGAL_GRAPH)
+
+    code, payload, _ = call_json(
+        ["run", str(graph), "--trace", str(tmp_path / "t.jsonl")], capsys
+    )
+
+    assert code == 0
+    assert payload["admitted"] is True
+    assert payload["checked_only"] is False
+    assert payload["nodes"] == 3
+    assert payload["state"]["notes"] == ["triage ran", "fix ran", "verify ran"]
+
+
+def test_a_hand_written_graph_is_refused_like_any_other_proposal(tmp_path, capsys):
+    """The gate does not care who authored the topology."""
+    graph = _write_graph(tmp_path, _DENIED_GRAPH)
+
+    code, payload, _ = call_json(
+        ["run", str(graph), "--trace", str(tmp_path / "t.jsonl")], capsys
+    )
+
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["admitted"] is False
+    assert [r["code"] for r in payload["rejections"]] == ["edge_denied"]
+    assert "state" not in payload, "nothing may run when the gate refused"
+
+
+def test_check_only_validates_without_executing(tmp_path, capsys):
+    """Admission as a linter: legal or not, and nothing runs either way."""
+    graph = _write_graph(tmp_path, _LEGAL_GRAPH)
+
+    code, payload, _ = call_json(
+        ["run", str(graph), "--check-only", "--trace", str(tmp_path / "t.jsonl")], capsys
+    )
+
+    assert code == 0
+    assert payload["checked_only"] is True
+    assert payload["fingerprint"]
+    assert "state" not in payload
+
+
+def test_check_only_still_fails_on_an_illegal_topology(tmp_path, capsys):
+    graph = _write_graph(tmp_path, _DENIED_GRAPH)
+
+    code, payload, _ = call_json(
+        ["run", str(graph), "--check-only", "--trace", str(tmp_path / "t.jsonl")], capsys
+    )
+
+    assert code == 1
+    assert [r["code"] for r in payload["rejections"]] == ["edge_denied"]
+
+
+def test_a_toml_topology_works_the_same_as_json(tmp_path, capsys):
+    graph = tmp_path / "graph.toml"
+    graph.write_text(
+        '[[nodes]]\nname = "triage"\n\n'
+        '[[nodes]]\nname = "fix"\nkind = "patch"\n\n'
+        '[[edges]]\nsource = "__start__"\ntarget = "triage"\n\n'
+        '[[edges]]\nsource = "triage"\ntarget = "fix"\n\n'
+        '[[edges]]\nsource = "fix"\ntarget = "__end__"\n',
+        encoding="utf-8",
+    )
+
+    code, payload, _ = call_json(
+        ["run", str(graph), "--trace", str(tmp_path / "t.jsonl")], capsys
+    )
+
+    assert code == 0
+    assert payload["admitted"] is True
+
+
+def test_a_topology_file_cannot_carry_a_node_body(tmp_path, capsys):
+    """The same boundary a model is held to. A file is authored by whoever can
+    write to the directory, so it gets no more trust than a proposal."""
+    graph = _write_graph(
+        tmp_path,
+        {"nodes": [{"name": "triage", "body": "os.system('id')"}], "edges": []},
+    )
+
+    code, _, err = call(["run", str(graph), "--trace", str(tmp_path / "t.jsonl")], capsys)
+
+    assert code == 2
+    assert "not a valid topology" in err
+
+
+def test_run_redirects_the_old_stage_form_to_demo(tmp_path, capsys):
+    """`grapharc run stage0` worked before the split; it must not read as a
+    missing file."""
+    code, _, err = call(["run", "stage0"], capsys)
+
+    assert code == 2
+    assert "grapharc demo stage0" in err
+
+
+def test_run_says_which_file_is_missing(tmp_path, capsys):
+    code, _, err = call(["run", str(tmp_path / "nope.json")], capsys)
+
+    assert code == 2
+    assert "no such graph file" in err
+
+
+def test_a_policy_document_gates_a_hand_written_graph_too(tmp_path, capsys):
+    """§12.2 on the deterministic path: the TOML file decides here as well."""
+    graph = _write_graph(tmp_path, _DENIED_GRAPH)
+    permissive = tmp_path / "allow.toml"
+    permissive.write_text(_PERMISSIVE, encoding="utf-8")
+
+    code, payload, _ = call_json(
+        ["run", str(graph), "--policy", str(permissive), "--trace", str(tmp_path / "t.jsonl")],
+        capsys,
+    )
+
+    assert code == 0
+    assert payload["admitted"] is True, "the deny rule was the only thing refusing it"
+
+
+# --------------------------------------------------------------------------
+# Defects an adversarial end-to-end pass found after `run`/`demo` landed. Each
+# one violated a promise the CLI makes in its own `--help`: that the reading
+# commands and the runtime share one record, and that in JSON mode the failure
+# *is* the document rather than a traceback with empty stdout.
+# --------------------------------------------------------------------------
+
+
+def test_run_records_the_execution_it_says_it_performed(tmp_path, capsys):
+    """It reported "ADMITTED and executed" and wrote only the admission event —
+    `Materializer` takes a `trace=` and the call omitted it."""
+    graph = _write_graph(tmp_path, _LEGAL_GRAPH)
+    trace = tmp_path / "t.jsonl"
+
+    call(["run", str(graph), "--trace", str(trace)], capsys)
+
+    phases = [e.phase for e in TraceRecorder(trace).read_events()]
+    assert phases.count("end") == 3, phases
+    assert "admission" in phases
+
+
+def test_run_honours_the_run_id_it_was_given(tmp_path, capsys):
+    """`--run-id` was accepted and discarded, so `metrics <trace> <id>` found
+    nothing under the id the operator chose."""
+    graph = _write_graph(tmp_path, _LEGAL_GRAPH)
+    trace = tmp_path / "t.jsonl"
+
+    call(["run", str(graph), "--trace", str(trace), "--run-id", "chosen"], capsys)
+    code, payload, _ = call_json(["metrics", str(trace), "chosen"], capsys)
+
+    assert code == 0
+    assert payload["run_id"] == "chosen"
+    assert payload["nodes_executed"] == 3
+
+
+def test_check_only_refuses_a_topology_that_passes_the_gate_but_cannot_be_built(
+    tmp_path, capsys
+):
+    """A linter that says ADMITTED and then crashes on the same file is worse
+    than no linter. All three of these pass admission and fail materialisation."""
+    unbuildable = {
+        "no edge out of START": {"nodes": [{"name": "triage"}], "edges": []},
+        "no nodes at all": {"nodes": [], "edges": []},
+        "a node START cannot reach": {
+            "nodes": [{"name": "triage"}, {"name": "orphan", "kind": "patch"}],
+            "edges": [{"source": "__start__", "target": "triage"}],
+        },
+    }
+    for label, document in unbuildable.items():
+        graph = _write_graph(tmp_path, document, name=f"{abs(hash(label))}.json")
+        code, payload, _ = call_json(
+            ["run", str(graph), "--check-only", "--trace", str(tmp_path / "t.jsonl")], capsys
+        )
+        assert code == 1, label
+        assert payload["buildable"] is False, label
+        assert payload["error"], label
+
+
+def test_a_topology_that_cannot_be_built_reports_rather_than_crashing(tmp_path, capsys):
+    """`MaterializationError` escaped `run_graph` as a raw traceback, leaving
+    stdout empty in --json mode."""
+    graph = _write_graph(tmp_path, {"nodes": [{"name": "triage"}], "edges": []})
+
+    code, payload, _ = call_json(
+        ["run", str(graph), "--trace", str(tmp_path / "t.jsonl")], capsys
+    )
+
+    assert code == 1
+    assert payload["ok"] is False
+    assert "has no edge out of START" in payload["error"]
+
+
+def test_run_can_be_given_a_token_ceiling(tmp_path, capsys):
+    """A comment claimed the budget dimension was bounded; `Budget()` is
+    unlimited on every dimension, so a 400,000-token worst case was admitted."""
+    chain = {
+        "nodes": [{"name": f"p{i}", "kind": "patch"} for i in range(40)],
+        "edges": (
+            [{"source": "__start__", "target": "p0"}]
+            + [{"source": f"p{i}", "target": f"p{i + 1}"} for i in range(39)]
+            + [{"source": "p39", "target": "__end__"}]
+        ),
+    }
+    graph = _write_graph(tmp_path, chain)
+    args = ["run", str(graph), "--check-only", "--trace", str(tmp_path / "t.jsonl")]
+
+    _, unbounded, _ = call_json(args, capsys)
+    code, bounded, _ = call_json([*args, "--max-tokens", "1000"], capsys)
+
+    assert unbounded["admitted"] is True, "no ceiling given, so nothing bounds it"
+    assert code == 1
+    assert "over_token_budget" in [r["code"] for r in bounded["rejections"]]
+
+
+def test_viz_answers_an_unknown_run_id_as_a_document(tmp_path, capsys):
+    """Every other reading command did; `viz` let `ReplayError` out raw."""
+    graph = _write_graph(tmp_path, _LEGAL_GRAPH)
+    trace = tmp_path / "t.jsonl"
+    call(["run", str(graph), "--trace", str(trace)], capsys)
+
+    code, payload, _ = call_json(["viz", str(trace), "nosuchrun"], capsys)
+
+    assert code == 1
+    assert payload["ok"] is False
+    assert "nosuchrun" in payload["error"]
+
+
+def test_a_mistyped_backend_exits_two_with_a_document(capsys):
+    """The top-level help lists "a model spec names no backend" under exit 2;
+    this crashed with exit 1 and no output."""
+    code, payload, _ = call_json(["models", "openrouterr/whatever"], capsys)
+
+    assert code == 2
+    assert payload["ok"] is False
+    assert "unknown backend" in payload["error"]
+
+
+def test_an_unusable_memory_path_reports_rather_than_crashing(tmp_path, capsys):
+    """`--memory` takes a path from a human, so it can name a directory."""
+    code, payload, _ = call_json(
+        ["demo", "stage6", "--memory", str(tmp_path), "--trace", str(tmp_path / "t.jsonl")],
+        capsys,
+    )
+
+    assert code == 2
+    assert payload["ok"] is False
+    assert "--memory" in payload["error"]
+
+
+def test_config_is_only_accepted_by_commands_that_read_it(capsys):
+    """It was on the shared parser, so all eleven accepted it and nine ignored
+    it — including erroring on a missing file for two of them and not the rest."""
+    for command in (["plan", "g"], ["demo", "stage0"], ["run", "x.json"]):
+        code, _, err = call([*command, "--config", "/no/such/file.toml"], capsys)
+        assert code == 2 and "--config" in err, command
+    for command in (["models"], ["trace", "f"], ["viz", "f", "r"]):
+        with pytest.raises(SystemExit):
+            main([*command, "--config", "/no/such/file.toml"])

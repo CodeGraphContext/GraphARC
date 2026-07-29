@@ -1,6 +1,6 @@
 """Render GraphARC's architecture as PNGs with `diagrams` (mingrammer).
 
-Four views, matching how `ARCHITECTURE.md` decomposes the system:
+Five views of the same system, from the trust boundary outwards:
 
   1. lifecycle   — trigger to outcome, including the replan loop (§1, §2)
   2. planes      — what every node sits on, and what constrains it (§3)
@@ -8,8 +8,8 @@ Four views, matching how `ARCHITECTURE.md` decomposes the system:
   4. subsystems  — the twelve packages, and which ones actually import which
 
 View 4 is drawn from the import graph rather than from intent. It used to show
-`planner/` sitting unwired — nothing in the tree imported it — which was
-ARCHITECTURE.md §7 gap 1; `grapharc plan` closed it, and `policy/` now reaches
+`planner/` sitting unwired — nothing in the tree imported it — the largest gap
+this project had; `grapharc plan` closed it, and `policy/` now reaches
 the admission gate through `PolicyEngine.edge_policy()`. Verify before trusting
 the picture, because a diagram rots exactly the way prose does:
 
@@ -26,6 +26,11 @@ from __future__ import annotations
 import pathlib
 
 from diagrams import Cluster, Diagram, Edge
+from diagrams.generic.storage import Storage
+from diagrams.onprem.compute import Server
+from diagrams.onprem.container import Docker
+from diagrams.onprem.monitoring import Grafana
+from diagrams.onprem.security import Vault
 from diagrams.programming.flowchart import (
     Action,
     Database,
@@ -38,11 +43,13 @@ from diagrams.programming.flowchart import (
     StartEnd,
     StoredData,
 )
+from diagrams.programming.framework import Fastapi
+from diagrams.programming.language import Python
 
 OUT = pathlib.Path(__file__).parent
 
-# Palette. Deliberately consistent with ARCHITECTURE.md's mermaid classDefs so
-# the two renderings of the same system do not look like two systems.
+# Palette. One colour per plane, reused across all five views so the same idea
+# is the same colour wherever it appears.
 INK = "#1b1b1f"
 TRIGGER = "#4a90d9"
 SESSION = "#5cb85c"
@@ -107,7 +114,7 @@ def lifecycle() -> None:
         edge_attr=EDGE_ATTR,
     ):
         with cluster("① TRIGGERS", TRIGGER):
-            cli = ManualInput("grapharc run / agent")
+            cli = ManualInput("grapharc plan / run / demo / agent")
             api = ManualInput("HTTP API + SSE")
             resume = ManualInput("session resume")
             triggers = [cli, api, resume]
@@ -300,9 +307,9 @@ def subsystems() -> None:
         edge_attr=EDGE_ATTR,
     ):
         with cluster("ENTRY POINTS", TRIGGER):
-            cli = Action("cli/  1849\nten commands\n--json on each")
+            cli = Action("cli/  2711\neleven commands\n--json on each")
             server = Action("server/  1320\nFastAPI + SSE\nown sessions (gap)")
-            examples = Action("examples/  1445\nstages 0-6 · capstone\nagent_fixit\nplan_incident")
+            examples = Action("examples/  1450\nstages 0-6 · capstone\nagent_fixit · plan_incident")
 
         with cluster("CORE", EXEC):
             runtime = Action(
@@ -311,23 +318,25 @@ def subsystems() -> None:
             session = Action("session/  2084\nresume, interrupt, approval")
 
         with cluster("PLANES", TOOL):
-            harness = Action("harness/  2189\ntools, permissions,\nsandbox, AgentNode")
-            gateway = Action("gateway/  1223\nClaude CLI\n+ OpenRouter")
-            memory = Action("memory/  2165\nclaims, SQLite, traversal")
+            harness = Action("harness/  2190\ntools, permissions,\nsandbox, AgentNode")
+            gateway = Action("gateway/  1679\nClaude CLI \u00b7 OpenRouter\nOpenAI \u00b7 Ollama")
+            memory = Action("memory/  2530\nclaims, SQLite, traversal")
             tools = Action("tools/  1054\nseven core tools")
             policy = Action("policy/  908\nTOML rules\n→ admission gate")
             observe = Action("observe/  1801\ntraces, replay, metrics, OTel")
 
         with cluster("THE GOVERNED LOOP  ·  now reachable", PLAN):
             planner = Action(
-                "planner/  2696  ← the largest subsystem\n"
+                "planner/  2696\n"
                 "proposal · admission · materialize · loop"
             )
             surface = Action(
-                "grapharc plan <goal>\n"
-                "cli/plan.py + examples/plan_incident.py\n"
-                "--registry swaps the kinds\n"
-                "--policy compiles the TOML into the gate"
+                "grapharc plan <goal>   a model proposes\n"
+                "grapharc run graph.json   you wrote it\n"
+                "        --check-only   admission as a linter\n\n"
+                "--registry swaps the kinds (stdlib ships some)\n"
+                "--policy compiles a TOML into the gate\n"
+                "grapharc.toml supplies either as a default"
             )
             surface >> Edge(color=PLAN, penwidth="2.0", label="drives") >> planner
 
@@ -350,10 +359,230 @@ def subsystems() -> None:
         planner >> Edge(color=PLAN, style="dashed", constraint="false") >> policy
 
 
+def trust_boundary() -> None:
+    """The architecture at its most honest: who supplies what, and the gate.
+
+    The other four views show structure. This one shows the *boundary* — the
+    only question that decides whether the rest is a safety argument or
+    decoration. Everything an operator authors happens before a model runs. The
+    model contributes exactly one thing: JSON naming kinds and edges.
+
+    Kept deliberately sparse. An earlier version routed every operator input to
+    the gate and collided its own labels; the secondary inputs are stated inside
+    the cluster instead of drawn, because a diagram that has to be decoded is
+    not doing its job.
+    """
+    with Diagram(
+        "GraphARC — the trust boundary: an operator declares, a model proposes, a checker decides",
+        filename=str(OUT / "05-trust-boundary"),
+        show=False,
+        direction="LR",
+        outformat="png",
+        graph_attr={**GRAPH_ATTR, "ranksep": "1.4", "nodesep": "0.5"},
+        node_attr=NODE_ATTR,
+        edge_attr=EDGE_ATTR,
+    ):
+        with cluster("① THE OPERATOR DECLARES  ·  before any model runs", TOOL):
+            registry = StoredData(
+                "registry.py  ·  CODE\n"
+                "a name -> a real function\n"
+                "'patch' = an agent with edit_file,\n"
+                "a token cap, one writable field\n"
+                "absence is refusal, no wildcard"
+            )
+            policy = Document(
+                "policy.toml  ·  DATA\n"
+                "which transitions are permitted\n"
+                "deny > ask > allow; unmatched denies\n\n"
+                "named by a flag, by grapharc.toml,\n"
+                "or — with none of those — GENERATED\n"
+                "once, written to .grapharc/, and\n"
+                "disclosed as policy_source"
+            )
+            Document(
+                "also the operator's, not drawn:\n"
+                "the state schema, Budget, LoopLimits,\n"
+                "and grapharc.toml — which supplies any\n"
+                "of these as a default.\n"
+                "flag > env > grapharc.toml > built-in;\n"
+                "parent directories are never searched"
+            )
+
+        with cluster("② THE MODEL PROPOSES  ·  nothing else", PLAN):
+            proposal = InputOutput(
+                "a Subgraph, as JSON\n"
+                '{"nodes": [{"name": "triage"}],\n'
+                ' "edges": [...]}\n'
+                "names and edges — the whole surface"
+            )
+            Document(
+                "CANNOT SUPPLY\n"
+                "a node body (extra='forbid')\n"
+                "a callable (not JSON-serialisable,\n"
+                "so it never reaches the gate)\n"
+                "its own budget or approval\n"
+                "a new kind (the registry is frozen)"
+            )
+
+        with cluster("③ THE CHECKER DECIDES  ·  deterministic, model-free", GATE):
+            gate = Decision(
+                "AdmissionChecker.check()\n"
+                "all five, every round:\n"
+                "kind registered? edge permitted?\n"
+                "worst case within REMAINING budget?\n"
+                "depth? acyclic?"
+            )
+            refused = Document(
+                "REFUSED\n"
+                "every objection at once,\n"
+                "each a typed reason code.\n"
+                "No factory ran. Nothing was built."
+            )
+
+        with cluster("④ ONLY THEN IS ANYTHING BUILT", EXEC):
+            mat = PredefinedProcess(
+                "Materializer\n"
+                "authorisation is argument ONE,\n"
+                "hash-matched to the proposal.\n"
+                "Bodies looked up in the registry —\n"
+                "no code is ever generated"
+            )
+            kernel = Action(
+                "the kernel runs it\n"
+                "declared writes · deep-copy isolation\n"
+                "budget metered without the node's help"
+            )
+
+        with cluster("⑤ ONE RECORD", OUTCOME):
+            trace = Document(
+                "trace.jsonl\n"
+                "what it did\n"
+                "what it was\n"
+                "ALLOWED to do\n"
+                "why it stopped"
+            )
+
+        registry >> Edge(
+            color=TOOL, penwidth="2.0", label="the only source\nof a node body"
+        ) >> gate
+        policy >> Edge(color=TOOL, label="decides edges") >> gate
+        proposal >> Edge(color=PLAN, penwidth="2.2", label="names only") >> gate
+
+        gate >> Edge(label="  no", color=REJECT, style="dashed") >> refused
+        gate >> Edge(taillabel="  ADMITTED  ", color=GATE, penwidth="2.4") >> mat
+        mat >> Edge(color=EXEC, penwidth="2.2") >> kernel
+        kernel >> Edge(color=OUTCOME, penwidth="2.0") >> trace
+
+        # The loop. Unconstrained so the back-edges do not reorder the ranks.
+        refused >> Edge(color=REJECT, style="dashed", constraint="false",
+                        label="reason codes feed\nthe next proposal") >> proposal
+        kernel >> Edge(color=PLAN, penwidth="2.4", constraint="false",
+                       label="work discovered mid-run RE-ENTERS the gate\n"
+                             "no already-approved path") >> proposal
+
+
+
+
+def architecture() -> None:
+    """The canonical view: the whole system in one frame.
+
+    The other five views each answer one question. This is the one for the top of
+    a README.
+
+    Four decisions about how it is drawn, each learned by drawing it badly first:
+
+    - **Restraint over completeness.** The first attempt had twenty nodes and
+      twenty-five edges, and the back-edges swept across the whole page. Bands of
+      three or four, and exactly two feedback edges.
+    - **Labels are two to four words.** The prose belongs in the README.
+    - **Icons are semantic.** Docker *is* the real sandbox boundary; Vault *is*
+      the policy document; a diamond *is* a decision. An earlier draft used the
+      Postgres elephant for the claim store, which implies a dependency this
+      project does not have — memory is SQLite. A wrong icon is a wrong claim.
+    - **The gate is on the critical path, drawn heaviest.** Everything above it
+      proposes; nothing below it runs without passing through.
+    """
+    with Diagram(
+        "GraphARC — a governed agent runtime",
+        filename=str(OUT / "00-architecture"),
+        show=False,
+        # LR, not TB. A banded top-to-bottom layout is a 2D grid, and Graphviz
+        # is a hierarchical engine — asking for bands made the operator's inputs
+        # sweep around the outside and cross their own cluster titles. Left to
+        # right gives the spine one rank per stage and lets what the operator
+        # supplies sit above it, and the planes below it, without crossings.
+        direction="LR",
+        outformat="png",
+        graph_attr={**GRAPH_ATTR, "fontsize": "26", "ranksep": "1.3", "nodesep": "0.7"},
+        node_attr={**NODE_ATTR, "fontsize": "12"},
+        edge_attr=EDGE_ATTR,
+    ):
+        with cluster("WHAT STARTS A RUN", TRIGGER):
+            cli = Python("grapharc CLI")
+            api = Fastapi("HTTP API")
+
+        with cluster("THE OPERATOR DECLARES  ·  before any model runs", TOOL):
+            registry = Storage("registry\nname -> function")
+            policy = Vault("policy.toml\npermitted edges")
+
+        with cluster("THE CONTROL PLANE  ·  propose, admit, build", GATE):
+            planner = PredefinedProcess("planner\nemits typed JSON")
+            gate = Decision("ADMISSION\nregistered? permitted?\nin budget? acyclic?")
+            refused = Document("REFUSED\nevery reason at once")
+            builder = PredefinedProcess("materialise\nbound by hash")
+            planner >> Edge(color=PLAN, penwidth="2.6", label="proposal") >> gate
+            gate >> Edge(label=" no", color=REJECT, style="dashed") >> refused
+            gate >> Edge(label="ADMITTED", color=GATE, penwidth="3.0") >> builder
+
+        with cluster("THE GRAPH RUNS  ·  typed state, declared writes, metered", EXEC):
+            kernel = Server("kernel")
+            agent = Action("agent nodes")
+            verifier = Inspection("verifiers")
+            kernel >> Edge(color=EXEC) >> agent >> Edge(color=EXEC) >> verifier
+
+        with cluster("THE PLANES EVERY NODE SITS ON", MODEL):
+            models = Server("model plane\nClaude CLI · OpenRouter")
+            tools = Docker("tool plane\ndeny > ask > allow")
+            memory = Storage("memory plane\nSQLite · provenance")
+
+        record_title = (
+            "ONE RECORD  ·  what it did · what it was allowed to do · why it stopped"
+        )
+        with cluster(record_title, OUTCOME):
+            trace = Document("trace.jsonl")
+            readers = Grafana("metrics · replay\ndiff · viz")
+            trace >> Edge(color=OUTCOME) >> readers
+
+        cli >> Edge(color=TRIGGER, penwidth="2.4") >> planner
+        api >> Edge(color=TRIGGER, penwidth="2.4") >> planner
+        registry >> Edge(
+            color=TOOL, penwidth="2.2", label="the only source\nof a node body"
+        ) >> gate
+        policy >> Edge(color=TOOL, penwidth="2.2") >> gate
+        builder >> Edge(color=EXEC, penwidth="3.0") >> kernel
+        agent >> Edge(color=MODEL, penwidth="2.0") >> models
+        agent >> Edge(color=TOOL, penwidth="2.0") >> tools
+        verifier >> Edge(color=MEMORY, penwidth="2.0") >> memory
+        kernel >> Edge(color=OUTCOME, style="dotted") >> trace
+
+        # The two edges that make this a runtime and not a pipeline. Both
+        # unconstrained, or Graphviz reorders every rank above them.
+        refused >> Edge(
+            color=REJECT, style="dashed", constraint="false",
+            label="reasons feed\nthe next proposal",
+        ) >> planner
+        verifier >> Edge(
+            color=PLAN, penwidth="2.8", constraint="false",
+            label="work found mid-run\nRE-ENTERS the gate",
+        ) >> planner
+
+
 if __name__ == "__main__":
+    architecture()
     lifecycle()
     planes()
     agent_node()
     subsystems()
+    trust_boundary()
     for png in sorted(OUT.glob("*.png")):
         print(f"wrote {png.relative_to(pathlib.Path.cwd())}  ({png.stat().st_size:,} bytes)")

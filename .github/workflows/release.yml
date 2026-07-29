@@ -112,7 +112,7 @@ jobs:
           root = tarfile.open(glob.glob("dist/*.tar.gz")[0]).getnames()
           names = {name.split("/", 1)[1] for name in root if "/" in name}
 
-          missing = sorted({"CHANGELOG.md", "LICENSE", "README.md", "pyproject.toml"} - names)
+          missing = sorted({"LICENSE", "README.md", "pyproject.toml"} - names)
           if missing:
               sys.exit(f"refusing to publish: missing from the sdist: {missing}")
 

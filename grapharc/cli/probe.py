@@ -8,8 +8,8 @@ What this is and is not: a *local* probe. No request is sent to any provider, so
 it can report that a key is configured and never that the key is valid, in
 credit, or entitled to a given model. Each result says which of the two it is.
 
-No secret is printed. The OpenRouter key is rendered through `gateway.redact`,
-which is the only form of it that leaves this module.
+No secret is printed. API keys are rendered through `gateway.redact`, which is
+the only form of them that leaves this module.
 """
 
 from __future__ import annotations
@@ -61,6 +61,64 @@ def _probe_openrouter() -> dict[str, Any]:
     }
 
 
+def _probe_openai() -> dict[str, Any]:
+    from grapharc.gateway import openai_api_key, openai_base_url, redact
+
+    key = openai_api_key()
+    endpoint = openai_base_url()
+    has_dependency = importlib.util.find_spec("langchain_openai") is not None
+    missing = []
+    if not key:
+        missing.append("no API key (set OPENAI_API_KEY, or add one to .env)")
+    if not has_dependency:
+        missing.append("langchain-openai not installed (uv sync --extra openai)")
+    ready = "api key configured and langchain-openai installed"
+    if endpoint:
+        # Worth printing: a key plus a base-url override means requests are not
+        # going where the backend name implies.
+        ready += f"; endpoint override {endpoint}"
+    return {
+        "backend": "openai",
+        "kind": KIND_PROVIDER,
+        "usable": bool(key) and has_dependency,
+        "credential": redact(key),
+        "detail": "; ".join(missing) or ready,
+        "checked": "credential presence only; no request was sent to the endpoint",
+    }
+
+
+def _probe_ollama() -> dict[str, Any]:
+    from grapharc.gateway import ollama_base_url
+
+    base_url = ollama_base_url()
+    has_dependency = importlib.util.find_spec("langchain_openai") is not None
+    binary = shutil.which("ollama")
+    # No credential to check, so what stands in for one is evidence that a
+    # server exists: the CLI on PATH, or an address someone set on purpose.
+    # Neither proves the daemon is running — only a request would, and this
+    # command makes none.
+    configured = binary is not None or _ollama_host_is_explicit()
+    missing = []
+    if not has_dependency:
+        missing.append("langchain-openai not installed (uv sync --extra ollama)")
+    if not configured:
+        missing.append("no 'ollama' on PATH and no OLLAMA_HOST set")
+    return {
+        "backend": "ollama",
+        "kind": KIND_PROVIDER,
+        "usable": has_dependency and configured,
+        "credential": "none needed (local server)",
+        "detail": "; ".join(missing) or f"local server at {base_url}",
+        "checked": "PATH and configuration only; the server was not contacted",
+    }
+
+
+def _ollama_host_is_explicit() -> bool:
+    from grapharc.gateway.config import OLLAMA_BASE_URL_KEYS, get_secret
+
+    return get_secret(OLLAMA_BASE_URL_KEYS) is not None
+
+
 def _probe_mock() -> dict[str, Any]:
     return {
         "backend": "mock",
@@ -85,6 +143,8 @@ def probe_backends(*, claude_path: str = "claude") -> list[dict[str, Any]]:
     probes = {
         "claude-cli": lambda: _probe_claude_cli(claude_path),
         "openrouter": _probe_openrouter,
+        "openai": _probe_openai,
+        "ollama": _probe_ollama,
         "mock": _probe_mock,
     }
     results = []

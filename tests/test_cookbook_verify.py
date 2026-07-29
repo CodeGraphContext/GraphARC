@@ -10,8 +10,9 @@ pids — are normalized on both sides before comparison. Nothing else is: a
 reordered result list or a changed error message fails the test, which is the
 point.
 
-One snippet in the page calls a real model. It carries `SKIP_MARKER` and is
-never executed here; the count is asserted so a broken snippet cannot be
+Two snippets in the page cannot run here: one calls a real model, and one needs
+the optional `ladybug` extra that CI does not install. Both carry `SKIP_MARKER`
+and are never executed; the count is asserted so a broken snippet cannot be
 quietly retired by adding the marker.
 """
 
@@ -33,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DOC = REPO_ROOT / "docs" / "cookbook" / "04-verification-and-memory.md"
 
 SKIP_MARKER = "Not executed by the docs test"
-EXPECTED_SKIPPED = 1
+EXPECTED_SKIPPED = 2
 
 _FENCE = re.compile(r"^```([a-z]*)\n(.*?)^```$", re.DOTALL | re.MULTILINE)
 

@@ -40,7 +40,13 @@ from pathlib import Path
 import pytest
 
 from grapharc.gateway import DEFAULT_RETRY_POLICY, NO_RETRY
-from grapharc.gateway.config import OPENROUTER_KEYS
+from grapharc.gateway.config import (
+    OLLAMA_BASE_URL_KEYS,
+    OLLAMA_KEYS,
+    OPENAI_BASE_URL_KEYS,
+    OPENAI_KEYS,
+    OPENROUTER_KEYS,
+)
 from grapharc.gateway.registry import BACKENDS, DEFAULT_BACKEND
 from grapharc.gateway.resilience import RETRYABLE_STATUS
 
@@ -60,6 +66,14 @@ _FENCE = re.compile(r"^```(\w*)\s*$")
 _COMMENT = re.compile(r"^<!--\s*(.*?)\s*-->$")
 
 _HAS_OPENROUTER = importlib.util.find_spec("langchain_openai") is not None
+
+# Stripped from every snippet's environment. A machine that happens to have a
+# key — or an OLLAMA_HOST pointing somewhere unusual — must run the same page
+# as a machine with nothing configured, or `grapharc models` prints a
+# fingerprint where the page shows `<unset>`.
+_CREDENTIAL_ENV = frozenset(
+    (*OPENROUTER_KEYS, *OPENAI_KEYS, *OPENAI_BASE_URL_KEYS, *OLLAMA_KEYS, *OLLAMA_BASE_URL_KEYS)
+)
 
 
 @dataclass(frozen=True)
@@ -118,7 +132,7 @@ def _expected_output(position: int) -> str:
 
 
 def _clean_env() -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if k not in OPENROUTER_KEYS}
+    env = {k: v for k, v in os.environ.items() if k not in _CREDENTIAL_ENV}
     env["PYTHONIOENCODING"] = "utf-8"
     return env
 
@@ -164,7 +178,15 @@ def _run_console(body: str, workdir: Path) -> tuple[str, subprocess.CompletedPro
 
 
 def _needs_openrouter(body: str) -> bool:
-    return "openrouter" in body or "langchain_openai" in body
+    """True for a snippet that cannot run without the langchain-openai extra.
+
+    All three OpenAI-wire backends need it, not just OpenRouter — a snippet
+    building `openai/…` or `ollama/…` fails the same way on a bare install.
+    """
+    return any(
+        marker in body
+        for marker in ("openrouter", "langchain_openai", '"openai/', '"ollama/')
+    )
 
 
 # --------------------------------------------------------------- the contract
@@ -256,9 +278,20 @@ def test_cli_command_with_machine_dependent_output_runs(position, tmp_path):
 
 def test_the_backend_list_the_page_prints_is_the_real_one():
     page = DOC.read_text(encoding="utf-8")
-    assert "`claude-cli` (a Claude subscription" in page
-    assert BACKENDS == ("claude-cli", "openrouter", "mock")
+    assert BACKENDS == ("claude-cli", "openrouter", "openai", "ollama", "mock")
     assert DEFAULT_BACKEND == "claude-cli"
+    assert "There are five backends:" in page
+    # Every backend has a row in the page's table. A backend added to the
+    # gateway and not to the page fails here rather than going undocumented.
+    for backend in BACKENDS:
+        assert f"| `{backend}` |" in page, f"{backend} has no row in the table"
+
+
+def test_the_ollama_default_endpoint_quoted_on_the_page_is_the_real_one():
+    from grapharc.gateway.config import DEFAULT_OLLAMA_BASE_URL
+
+    assert DEFAULT_OLLAMA_BASE_URL == "http://localhost:11434/v1"
+    assert f"base_url: {DEFAULT_OLLAMA_BASE_URL}" in DOC.read_text(encoding="utf-8")
 
 
 def test_the_retry_defaults_quoted_on_the_page_are_the_real_ones():

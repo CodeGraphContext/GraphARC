@@ -527,7 +527,8 @@ class AgentNode:
             raise AgentConfigError(
                 f"model {type(self.model).__name__} does not implement bind_tools, "
                 f"so it cannot drive a tool loop ({len(schemas)} tools are visible "
-                "to it); use a tool-calling backend such as openrouter/*"
+                "to it); use a tool-calling backend such as openrouter/*, "
+                "openai/* or ollama/*"
             ) from exc
 
     @staticmethod

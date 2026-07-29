@@ -98,7 +98,7 @@ def test_spec_splitting_keeps_openrouter_author_slugs_intact(spec, backend, mode
 def test_a_typoed_backend_is_caught_early_not_folded_into_a_model_name():
     """`opnerouter/...` must fail here, not become a Claude-CLI call with a
     nonsense model that errors confusingly much later."""
-    with pytest.raises(UnknownBackendError, match="claude-cli, openrouter, mock"):
+    with pytest.raises(UnknownBackendError, match="claude-cli, openrouter, openai, ollama, mock"):
         split_spec("opnerouter/anthropic/claude-haiku-4.5")
     with pytest.raises(UnknownBackendError):
         get_model("nope/some-model")
@@ -122,6 +122,11 @@ def test_registry_builds_a_mock_without_credentials():
         ("openrouter/anthropic/claude-haiku-4.5", "openrouter/openai/gpt-4o-mini", True),
         ("openrouter/anthropic/claude-opus-4.5", "openrouter/anthropic/claude-haiku-4.5", False),
         ("claude-cli/claude-sonnet-5", "openrouter/openai/gpt-4o-mini", True),
+        # The same vendor reached two ways is not two vendors. Both of these
+        # read as independent while the check compared backends.
+        ("claude-cli/claude-sonnet-5", "openrouter/anthropic/claude-haiku-4.5", False),
+        ("openai/gpt-4o-mini", "openrouter/openai/gpt-4o-mini", False),
+        ("openai/gpt-4o-mini", "ollama/llama3.1", True),
     ],
 )
 def test_different_providers_distinguishes_vendor_from_model(a, b, expected):

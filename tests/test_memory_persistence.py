@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from grapharc.memory import Claim, MemoryStore, SQLiteMemoryStore
+from grapharc.memory import Claim, LadybugMemoryStore, MemoryStore, SQLiteMemoryStore
 from grapharc.memory.store import ClaimStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -463,17 +463,27 @@ def test_concurrent_threads_share_one_store_safely(tmp_path, db):
     store.close()
 
 
-def test_both_backends_satisfy_the_claim_store_protocol(db):
+def test_every_backend_satisfies_the_claim_store_protocol(db, tmp_path):
     assert isinstance(MemoryStore(), ClaimStore)
     store = SQLiteMemoryStore(db)
     assert isinstance(store, ClaimStore)
     store.close()
+    pytest.importorskip("real_ladybug", reason="needs the ladybug extra")
+    ladybug = LadybugMemoryStore(tmp_path / "memory.lbdb")
+    assert isinstance(ladybug, ClaimStore)
+    ladybug.close()
 
 
-def test_the_two_backends_agree_on_every_interface_signature():
+def test_the_three_backends_agree_on_every_interface_signature():
     """isinstance against a runtime protocol only checks names, so check the
-    signatures too — a backend that renamed a parameter would still pass."""
+    signatures too — a backend that renamed a parameter would still pass.
+
+    `LadybugMemoryStore` is checked without its driver installed, which is the
+    point of loading that driver in the constructor rather than at import: the
+    signature contract is verifiable in an environment that cannot open a
+    LadybugDB database at all."""
     for name in INTERFACE:
         protocol = inspect.signature(getattr(ClaimStore, name))
         assert inspect.signature(getattr(MemoryStore, name)) == protocol
         assert inspect.signature(getattr(SQLiteMemoryStore, name)) == protocol
+        assert inspect.signature(getattr(LadybugMemoryStore, name)) == protocol

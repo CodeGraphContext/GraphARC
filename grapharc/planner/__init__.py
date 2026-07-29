@@ -1,6 +1,6 @@
 """Planner and admission: propose freely, run only what a gate authorised.
 
-The split this package exists for — ARCHITECTURE.md §2 — is that a node may
+The split this package exists for is that a node may
 *propose* nodes and edges and may never *execute* them. `proposal` holds the
 typed thing a planner emits; `admission` holds the deterministic, model-free
 checker that is the only way one becomes work; `materialize` turns an admitted

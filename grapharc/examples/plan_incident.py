@@ -190,6 +190,11 @@ def build_loop(
 #: Read by `grapharc plan --registry` so a custom module can supply its own.
 STATE_SCHEMA = IncidentState
 
+#: The kind this demo treats as dangerous. Read by the policy generator so a
+#: generated policy knows what is worth denying; without it, generation would
+#: produce a document that denies nothing.
+MUTATING_KINDS = ("deploy",)
+
 __all__ = [
     "STATE_SCHEMA",
     "WRITES",
