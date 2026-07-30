@@ -32,6 +32,9 @@ class SlackBotConfig:
     timeout_seconds: float = 120.0
     # Opt-in: allow `--model` / `--reviewer-model`, which reach paid backends.
     allow_model: bool = False
+    # Second opt-in: allow `agent`, which executes tools on the host. Only
+    # effective together with allow_model — an agent cannot run spend-free.
+    allow_agent: bool = False
     slash_command: str = "/grapharc"
 
     @classmethod
@@ -72,5 +75,6 @@ class SlackBotConfig:
             workdir=workdir,
             timeout_seconds=timeout,
             allow_model=env.get("GRAPHARC_SLACK_ALLOW_MODEL", "") == "1",
+            allow_agent=env.get("GRAPHARC_SLACK_ALLOW_AGENT", "") == "1",
             slash_command=env.get("GRAPHARC_SLACK_COMMAND", "/grapharc"),
         )

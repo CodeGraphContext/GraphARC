@@ -31,7 +31,11 @@ def handle_text(text: str, config: SlackBotConfig) -> str:
     stripped = _MENTION.sub("", text).strip()
     try:
         argv = parse_command(
-            stripped, workdir=config.workdir, allow_model=config.allow_model
+            stripped,
+            workdir=config.workdir,
+            allow_model=config.allow_model,
+            allow_agent=config.allow_agent,
+            timeout_seconds=config.timeout_seconds,
         )
     except SlackCommandError as exc:
         return str(exc)
@@ -57,7 +61,7 @@ def build_app(config: SlackBotConfig) -> Any:
     def _slash(ack: Any, respond: Any, command: dict[str, Any]) -> None:
         text = command.get("text", "").strip()
         if not text:
-            ack(usage_text(allow_model=config.allow_model))
+            ack(usage_text(allow_model=config.allow_model, allow_agent=config.allow_agent))
             return
         ack(f"running `grapharc {text}`…")
         respond(handle_text(text, config))

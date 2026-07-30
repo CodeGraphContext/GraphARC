@@ -69,9 +69,12 @@ round that executed. Every model failure contained, every decision recorded.
 
 Two refusals from the same session, both correct:
 
-- `@grapharc agent "do something"` → *not a command this bot runs*. `agent`
-  executes tools on the host on behalf of anyone in the workspace, so it is
-  excluded at the gate, not hidden.
+- `@grapharc agent "do something"` → refused, naming the two switches that
+  would allow it. `agent` executes tools on the host on behalf of anyone in
+  the workspace, so it sits behind a double opt-in
+  (`GRAPHARC_SLACK_ALLOW_AGENT=1` *and* `GRAPHARC_SLACK_ALLOW_MODEL=1`) —
+  see the agent section of [07-slack.md](07-slack.md) for what the gate
+  still enforces once it is on.
 - `plan "make a new file for the docs" --model …` → **ran; the answer was
   negative**. The planner may only propose node kinds from its registry —
   the incident-response demo set — and none of them can create a file. The

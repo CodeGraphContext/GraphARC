@@ -22,10 +22,10 @@ an afterthought. The defaults:
 
 | Reachable from Slack | Refused from Slack |
 |---|---|
-| `demo`, `run`, `plan`, `models`, `replay`, `diff`, `trace`, `metrics`, `viz` | `agent` (arbitrary tool execution on the host), `serve` |
+| `demo`, `run`, `plan`, `models`, `replay`, `diff`, `trace`, `metrics`, `viz` | `serve` |
 | Paths that resolve inside the bot's working directory | Any path that escapes it (`trace ../../.env` is refused before a process spawns) |
 | The budget, policy and trace flags each command already has | `--registry` (imports an arbitrary module), `--config`, `--json`, `--no-color` |
-| — | `--model` / `--reviewer-model`, unless the operator opts in |
+| `agent`, only behind the double opt-in below | `--model` / `--reviewer-model`, unless the operator opts in |
 
 With `--model` off, every reachable command runs the scripted, spend-free
 path. The default answer to "can someone in Slack cost me money?" is **no**;
@@ -106,12 +106,41 @@ Configuration is environment-only, read once at startup:
 | `GRAPHARC_SLACK_WORKDIR` | the bot's cwd | the directory every path must resolve inside |
 | `GRAPHARC_SLACK_TIMEOUT` | `120` | seconds one command may run before it is killed |
 | `GRAPHARC_SLACK_ALLOW_MODEL` | off | `1` admits `--model`/`--reviewer-model` |
+| `GRAPHARC_SLACK_ALLOW_AGENT` | off | `1` admits `agent` — only together with `ALLOW_MODEL` |
 | `GRAPHARC_SLACK_COMMAND` | `/grapharc` | the slash command to answer to |
 
 The bot reads tokens from the process environment only. The `.env`
 upward-directory search that the model gateway performs is deliberately not
 used here: a bot that a whole workspace can drive must not discover
 credentials in a file the operator did not point it at.
+
+## The `agent` opt-in
+
+`agent` is the command with file tools, which is exactly why it is off by
+default: it acts on the host on behalf of anyone in the workspace. Turning it
+on takes **two** switches — `GRAPHARC_SLACK_ALLOW_AGENT=1` because it acts,
+and `GRAPHARC_SLACK_ALLOW_MODEL=1` because it cannot run spend-free. The
+startup line reports `agent on` only when both hold. Then:
+
+```
+@grapharc agent "read every markdown file and list the broken links" --max-turns 6
+```
+
+What the gate does to every Slack-launched agent, non-negotiably:
+
+- the executor stays `sandbox` — `--executor` is not admitted, so `local`
+  (no confinement) is unreachable;
+- `--system-prompt` is not admitted;
+- the workspace defaults to `<workdir>/agent` rather than the CLI's fresh
+  temp dir, so the run's `trace.jsonl` and outputs stay where `trace` /
+  `metrics` / `viz` can read them back; `--workspace` may pick another
+  directory, confined to the workdir like every other path;
+- unless `--max-seconds` is given, it defaults to ten seconds under the
+  bot's timeout, so the run ends with the CLI's graceful interrupt-and-report
+  rather than the bot's kill.
+
+`--allow` / `--deny` tool globs pass through and are repeatable; deny beats
+allow, as in the CLI.
 
 ## The honest caveats
 
