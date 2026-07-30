@@ -7,6 +7,9 @@ is enough. A workspace member types `/grapharc metrics t.jsonl r1` (or
 mentions the bot in a channel); the bot runs the command on the host and posts
 the output back in the thread.
 
+Setup lives here; what a real session looks like, exchange by exchange, is
+[08-slack-walkthrough.md](08-slack-walkthrough.md).
+
 Nothing in this page is byte-compared by the test suite — Slack is on the
 other end of every interesting command. What *is* tested, in
 `tests/test_slack_gateway.py`, is everything short of Slack itself: the gate
