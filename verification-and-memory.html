@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verification &amp; memory — GraphARC</title>
+<meta name="description" content="Deterministic citation anchoring, fail-closed review, claims with provenance.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📚</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="side" aria-label="Documentation contents">
+  <a class="brand" href="index.html"><b>GraphARC<span class="amp"> docs</span></b><span>a governed agent runtime on LangGraph</span></a>
+  <ul>
+<li class="nav-chapter"><a href="index.html">Overview</a>
+</li>
+<li class="nav-chapter"><a href="getting-started.html">Getting started</a>
+</li>
+<li class="nav-chapter"><a href="models.html">Models</a>
+</li>
+<li class="nav-chapter"><a href="agents-and-tools.html">Agents & tools</a>
+</li>
+<li class="nav-chapter"><a class="active" href="verification-and-memory.html">Verification & memory</a>
+<ul><li><a href="#how-do-i-reject-a-fabricated-citation-without-paying-for-a-m">How do I reject a fabricated citation without paying for a model call?</a></li><li><a href="#how-do-i-keep-a-line-wrapped-source-from-causing-a-false-rej">How do I keep a line-wrapped source from causing a false reject?</a></li><li><a href="#how-do-i-catch-a-quote-lifted-out-of-a-negated-sentence">How do I catch a quote lifted out of a negated sentence?</a></li><li><a href="#what-happens-when-the-reviewer-replies-with-something-that-i">What happens when the reviewer replies with something that isn&#x27;t a verdict?</a></li><li><a href="#how-do-i-tell-whether-my-verifier-is-actually-any-good">How do I tell whether my verifier is actually any good?</a></li><li><a href="#how-do-i-make-sure-the-reviewer-is-genuinely-a-different-mod">How do I make sure the reviewer is genuinely a different model?</a></li><li><a href="#how-do-i-wire-verification-into-a-graph">How do I wire verification into a graph?</a></li><li><a href="#how-do-i-record-a-fact-so-i-can-audit-where-it-came-from">How do I record a fact so I can audit where it came from?</a></li><li><a href="#how-do-i-correct-a-fact-without-losing-what-we-used-to-belie">How do I correct a fact without losing what we used to believe?</a></li><li><a href="#how-do-i-keep-memory-across-processes">How do I keep memory across processes?</a></li><li><a href="#can-i-query-the-claim-graph-in-cypher">Can I query the claim graph in Cypher?</a></li><li><a href="#how-do-i-find-the-claims-relevant-to-a-question">How do I find the claims relevant to a question?</a></li><li><a href="#what-if-the-query-is-misspelled-or-there-is-no-query-at-all">What if the query is misspelled, or there is no query at all?</a></li><li><a href="#why-did-my-reused-index-stop-finding-new-claims">Why did my reused index stop finding new claims?</a></li><li><a href="#how-do-i-fit-memory-into-a-prompt-without-blowing-the-contex">How do I fit memory into a prompt without blowing the context window?</a></li><li><a href="#how-do-i-keep-the-already-tried-that-section-from-growing-fo">How do I keep the &quot;already tried that&quot; section from growing forever?</a></li><li><a href="#how-do-i-notice-that-memory-contradicts-itself">How do I notice that memory contradicts itself?</a></li><li><a href="#how-do-i-record-the-files-an-agent-produced">How do I record the files an agent produced?</a></li><li><a href="#how-do-i-put-claims-and-artifacts-in-one-file">How do I put claims and artifacts in one file?</a></li><li><a href="#putting-it-together">Putting it together</a></li></ul>
+</li>
+<li class="nav-chapter"><a href="governance.html">Governance</a>
+</li>
+<li class="nav-chapter"><a href="serving-and-ops.html">Serving & operations</a>
+</li>
+<li class="nav-chapter"><a href="roadmap.html">Roadmap</a>
+</li>
+<li class="nav-chapter"><a href="contributing.html">Contributing</a>
+</li>
+  </ul>
+</nav>
+<main>
+<header class="page-head">
+  <h1>Verification &amp; memory</h1>
+  <p class="sub">Deterministic citation anchoring, fail-closed review, claims with provenance.</p>
+</header>
+<h2 id="how-do-i-reject-a-fabricated-citation-without-paying-for-a-m"><a class="anchor" href="#how-do-i-reject-a-fabricated-citation-without-paying-for-a-m">How do I reject a fabricated citation without paying for a model call?</a></h2>
+<p><code>verify_claim</code> checks that the citation literally exists in the source <em>before</em> it prompts the reviewer, so a quote the model invented never reaches the reviewer at all. The recipe is <code>reviewer.call_count == 0</code>: the reviewer was scripted to rubber-stamp anything and never got the chance. <code>model_accepted</code> is <code>None</code>, not <code>False</code>, and the distinction is load-bearing — <code>None</code> means never consulted, <code>False</code> means consulted and unconvinced — which tells you which rejections in a batch were free. The anchor also refuses citations under <code>MIN_CITATION_CHARS</code> (12) before doing anything else, since <code>&quot;the&quot;</code> appears in every document and anchors nothing.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.runtime.verify <span class="tok-k">import</span> verify_claim
+<span class="tok-k">from</span> grapharc.testing <span class="tok-k">import</span> ScriptedChatModel
+
+SOURCE = <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>&quot;GraphARC wraps LangGraph <span class="tok-k">with</span> typed state contracts.
+Budgets put hard ceilings on iterations, tokens, <span class="tok-k">and</span> wall-clock time.
+<span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>&quot;
+
+<span <span class="tok-k">class</span>="tok-c"># A reviewer that would approve anything — the point <span class="tok-k">is</span> that it <span class="tok-k">is</span> never asked.</span>
+reviewer = ScriptedChatModel(responses=[&<span <span class="tok-k">class</span>="tok-c">#x27;{<span <span class="tok-k">class</span>="tok-s">&quot;supported&quot;</span>: true, <span <span class="tok-k">class</span>="tok-s">&quot;reason&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;looks right&quot;</span>}&#x27;])</span>
+
+verdict = verify_claim(
+    reviewer,
+    text=<span <span class="tok-k">class</span>="tok-s">&quot;GraphARC was benchmarked at 10x faster than raw LangGraph&quot;</span>,
+    citation=<span <span class="tok-k">class</span>="tok-s">&quot;benchmarked at 10x faster&quot;</span>,
+    source_text=SOURCE,
+)
+
+print(<span <span class="tok-k">class</span>="tok-s">&quot;accepted:      &quot;</span>, verdict.accepted)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;anchor_ok:     &quot;</span>, verdict.anchor_ok)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;model_accepted:&quot;</span>, verdict.model_accepted)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;reason:        &quot;</span>, verdict.reason)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;reviewer calls:&quot;</span>, reviewer.call_count)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">accepted:       False
+anchor_ok:      False
+model_accepted: None
+reason:         citation does not exist in the source (deterministic anchor)
+reviewer calls: 0</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Citations shorter than <code>MIN_CITATION_CHARS</code> (12) are refused outright, before any other check.</aside>
+<h2 id="how-do-i-keep-a-line-wrapped-source-from-causing-a-false-rej"><a class="anchor" href="#how-do-i-keep-a-line-wrapped-source-from-causing-a-false-rej">How do I keep a line-wrapped source from causing a false reject?</a></h2>
+<p>Real sources have newlines mid-sentence; a model quoting one perfectly still writes a space where the file has a <code>\n</code>, and exact matching would reject correct work. The anchor collapses whitespace — and nothing else: the citation is split on whitespace and rejoined as a regex with <code>\s+</code> between tokens (<code>_find_span</code>). Every non-space character must still match exactly, so the latitude is bounded to the one artifact that actually causes false rejects. A paraphrase is not &quot;close enough&quot; — it is a different string, and the anchor&#x27;s job is existence, not similarity.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">quotes = [
+    <span <span class="tok-k">class</span>="tok-s">&quot;Every node declares which state fields it may write&quot;</span>,   <span <span class="tok-k">class</span>="tok-c"># newline -&gt; space</span>
+    <span <span class="tok-k">class</span>="tok-s">&quot;Every node  declares   which state fields&quot;</span>,              <span <span class="tok-k">class</span>="tok-c"># extra spaces</span>
+    <span <span class="tok-k">class</span>="tok-s">&quot;Each node declares which state fields it may write&quot;</span>,     <span <span class="tok-k">class</span>="tok-c"># paraphrase</span>
+    <span <span class="tok-k">class</span>="tok-s">&quot;Every node declares which state field it may write&quot;</span>,     <span <span class="tok-k">class</span>="tok-c"># one letter off</span>
+]
+
+<span class="tok-k">for</span> quote <span class="tok-k">in</span> quotes:
+    v = verify_claim(
+        reviewer, text=<span <span class="tok-k">class</span>="tok-s">&quot;Nodes declare their writes&quot;</span>, citation=quote, source_text=SOURCE
+    )
+    print(f&quot;{v.anchor_ok!s:&lt;5}  {quote!r}&quot;)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">True   &#x27;Every node declares which state fields it may write&#x27;
+True   &#x27;Every node  declares   which state fields&#x27;
+False  &#x27;Each node declares which state fields it may write&#x27;
+False  &#x27;Every node declares which state field it may write&#x27;
+verbatim in source: False
+reviewer calls:     2</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Anchor-failed quotes never reach the model — 4 quotes, 2 reviewer calls.</aside>
+<h2 id="how-do-i-catch-a-quote-lifted-out-of-a-negated-sentence"><a class="anchor" href="#how-do-i-catch-a-quote-lifted-out-of-a-negated-sentence">How do I catch a quote lifted out of a negated sentence?</a></h2>
+<p>The anchor proves a quote exists, not that it means what the claim says — <code>&quot;benchmarked at 10x faster&quot;</code> really does appear in <code>&quot;was never benchmarked at 10x faster&quot;</code>. So the reviewer is shown a mechanically extracted window of <code>CONTEXT_WINDOW_CHARS</code> (240) either side of the match, sliced straight out of <code>source_text</code>. Two properties fall out: it is <em>mechanical</em>, so no part of the author&#x27;s conversation can leak in and the reviewer cannot be persuaded by the reasoning that produced the claim; and it is <em>bounded</em>, so verifying against a 400 KB document costs a fixed-size prompt. The reviewer&#x27;s entire context is one <code>HumanMessage</code> — no system prompt, no history.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">anchor_ok: True | accepted: False
+reason:    the sentence negates the quote
+--- the one message the reviewer received ---
+You are verifying a single claim against its cited evidence. Judge ONLY whether the evidence supports the claim. The surrounding source context is included: if it negates, reverses, or otherwise contradicts what the quote alone implies, the claim is NOT supported.
+Claim: GraphARC was benchmarked at 10x faster than raw LangGraph
+Evidence (verbatim from source): benchmarked at 10x faster than raw LangGraph
+Surrounding source context: GraphARC was never benchmarked at 10x faster than raw LangGraph; no such measurement exists.
+Reply with JSON: {&quot;supported&quot;: true|false, &quot;reason&quot;: &quot;...&quot;}</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The same 240 characters is the sharp edge — a negation 300 characters away is outside the window and the reviewer will not see it. This catches quote-mining within a sentence or paragraph, not a document-scale reversal.</aside>
+<h2 id="what-happens-when-the-reviewer-replies-with-something-that-i"><a class="anchor" href="#what-happens-when-the-reviewer-replies-with-something-that-i">What happens when the reviewer replies with something that isn&#x27;t a verdict?</a></h2>
+<p>Every ambiguity resolves toward rejection — which matters because <code>bool(&quot;false&quot;)</code> is <code>True</code> in Python, so a model quoting its boolean would otherwise be an accept. Only a real JSON <code>true</code> accepts: <code>1</code> does not, <code>&quot;true&quot;</code> does not, and an unparseable reply fails closed. The implementation uses <code>isinstance(raw_supported, bool)</code> rather than a truthiness test. The cost is real — a model that reliably answers <code>&quot;supported&quot;: &quot;yes&quot;</code> has every claim rejected — and that is the deliberate trade: a systematic false-reject is visible in the stats, a systematic false-accept is not.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">for</span> reply <span class="tok-k">in</span> [&<span <span class="tok-k">class</span>="tok-c">#x27;sounds right to me!<span <span class="tok-k">class</span>="tok-s">&#x27;, &#x27;</span>{<span <span class="tok-k">class</span>="tok-s">&quot;supported&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;false&quot;</span>}<span <span class="tok-k">class</span>="tok-s">&#x27;, &#x27;</span>{<span <span class="tok-k">class</span>="tok-s">&quot;supported&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;true&quot;</span>}&#x27;,</span>
+              &<span <span class="tok-k">class</span>="tok-c">#x27;{<span <span class="tok-k">class</span>="tok-s">&quot;supported&quot;</span>: 1}<span <span class="tok-k">class</span>="tok-s">&#x27;, &#x27;</span>{<span <span class="tok-k">class</span>="tok-s">&quot;verdict&quot;</span>: true}<span <span class="tok-k">class</span>="tok-s">&#x27;, &#x27;</span>{<span <span class="tok-k">class</span>="tok-s">&quot;supported&quot;</span>: true}&#x27;]:</span>
+    reviewer = ScriptedChatModel(responses=[reply])
+    v = verify_claim(reviewer, text=<span <span class="tok-k">class</span>="tok-s">&quot;Budgets bound work&quot;</span>,
+                     citation=CITATION, source_text=SOURCE)
+    print(f&quot;{v.accepted!s:&lt;5} {reply!r:&lt;26} {v.reason <span class="tok-k">or</span> &<span <span class="tok-k">class</span>="tok-c">#x27;(reviewer gave no reason)&#x27;}&quot;)</span></pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">False &#x27;sounds right to me!&#x27;      reviewer reply unparseable — failing closed
+False &#x27;{&quot;supported&quot;: &quot;false&quot;}&#x27;   reviewer &#x27;supported&#x27; was not a JSON boolean — failing closed
+False &#x27;{&quot;supported&quot;: &quot;true&quot;}&#x27;    reviewer &#x27;supported&#x27; was not a JSON boolean — failing closed
+False &#x27;{&quot;supported&quot;: 1}&#x27;         reviewer &#x27;supported&#x27; was not a JSON boolean — failing closed
+False &#x27;{&quot;verdict&quot;: true}&#x27;        reviewer reply unparseable — failing closed
+True  &#x27;{&quot;supported&quot;: true}&#x27;      (reviewer gave no reason)</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A model that answers <code>&quot;supported&quot;: &quot;yes&quot;</code> will have every single claim rejected.</aside>
+<h2 id="how-do-i-tell-whether-my-verifier-is-actually-any-good"><a class="anchor" href="#how-do-i-tell-whether-my-verifier-is-actually-any-good">How do I tell whether my verifier is actually any good?</a></h2>
+<p>A verifier that rejects everything has zero false accepts and zero value; <code>evaluate_verdicts</code> scores against known ground truth and keeps the two error types apart. <code>VerifierStats</code> is four counters (<code>true_accepts</code>, <code>true_rejects</code>, <code>false_accepts</code>, <code>false_rejects</code>), not a score, because the two error types have different costs and different owners: a false accept ships a wrong claim, a false reject burns a retry loop and eventually makes people turn verification off. Track a single &quot;accuracy&quot; number and a good verifier and a rejects-all verifier look similar; track four cells and <code>true_accepts == 0</code> with a non-empty positive class is the tell.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">good = ScriptedChatModel(responses=[
+    &<span <span class="tok-k">class</span>="tok-c">#x27;{<span <span class="tok-k">class</span>="tok-s">&quot;supported&quot;</span>: true,  <span <span class="tok-k">class</span>="tok-s">&quot;reason&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;the source says exactly this&quot;</span>}&#x27;,</span>
+    &<span <span class="tok-k">class</span>="tok-c">#x27;{<span <span class="tok-k">class</span>="tok-s">&quot;supported&quot;</span>: false, <span <span class="tok-k">class</span>="tok-s">&quot;reason&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;ceilings bound work, they do <span class="tok-k">not</span> speed it up&quot;</span>}&#x27;,</span>
+])
+paranoid = ScriptedChatModel(responses=[&<span <span class="tok-k">class</span>="tok-c">#x27;{<span <span class="tok-k">class</span>="tok-s">&quot;supported&quot;</span>: false, <span <span class="tok-k">class</span>="tok-s">&quot;reason&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;no&quot;</span>}&#x27;],</span>
+                             on_exhausted=<span <span class="tok-k">class</span>="tok-s">&quot;repeat&quot;</span>)
+
+print(<span <span class="tok-k">class</span>="tok-s">&quot;good verifier: &quot;</span>, run(good).model_dump())
+print(<span <span class="tok-k">class</span>="tok-s">&quot;rejects-all:   &quot;</span>, run(paranoid).model_dump())</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">good verifier:  {&#x27;true_accepts&#x27;: 1, &#x27;true_rejects&#x27;: 2, &#x27;false_accepts&#x27;: 0, &#x27;false_rejects&#x27;: 0}
+rejects-all:    {&#x27;true_accepts&#x27;: 0, &#x27;true_rejects&#x27;: 2, &#x27;false_accepts&#x27;: 0, &#x27;false_rejects&#x27;: 1}</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>evaluate_verdicts</code> indexes <code>ground_truth</code> by <code>claim_text</code> and raises <code>KeyError</code> for an unknown claim — deliberate, but the dict must cover every claim you pass.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Two claims with identical text collapse into one ground-truth key.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The fabricated claim never reaches either reviewer, so the paranoid one needs <code>on_exhausted=&quot;repeat&quot;</code> (3 asks vs. 2).</aside>
+<h2 id="how-do-i-make-sure-the-reviewer-is-genuinely-a-different-mod"><a class="anchor" href="#how-do-i-make-sure-the-reviewer-is-genuinely-a-different-mod">How do I make sure the reviewer is genuinely a different model?</a></h2>
+<p>There are two enforcement points and they are not equally strong. <code>build_stage5</code> catches only <code>author is reviewer</code> — two separate instances of the same weights sail through. The stronger check is <code>different_providers</code>, which compares the <em>vendor</em> each gateway spec reaches (the model author when the id names one, <code>anthropic/…</code> vs <code>openai/…</code>; the backend&#x27;s own vendor otherwise), so two Anthropic models on OpenRouter come back <code>False</code>, as does a Claude-CLI author paired with an Anthropic model over OpenRouter. Correlated agreement follows training lineage, not model names, and not which API you reached the model through. The CLI warns on a shared vendor rather than making you write the check.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.examples.stage5_verifier <span class="tok-k">import</span> build_stage5
+<span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> different_providers
+<span class="tok-k">from</span> grapharc.testing <span class="tok-k">import</span> ScriptedChatModel
+
+model = ScriptedChatModel(responses=[<span <span class="tok-k">class</span>="tok-s">&quot;x&quot;</span>])
+<span class="tok-k">try</span>:
+    build_stage5(model, model)
+<span class="tok-k">except</span> ValueError <span class="tok-k">as</span> exc:
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;refused:&quot;</span>, exc)
+
+pairs = [
+    (<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-haiku-4.5&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-sonnet-4.5&quot;</span>),
+    (<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-haiku-4.5&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;openrouter/openai/gpt-4o-mini&quot;</span>),
+    (<span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;openrouter/openai/gpt-4o-mini&quot;</span>),
+]
+<span class="tok-k">for</span> a, b <span class="tok-k">in</span> pairs:
+    print(f&quot;different_providers({a!r}, {b!r}) -&gt; {different_providers(a, b)}&quot;)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">grapharc demo stage5 --model openrouter/anthropic/claude-haiku-4.5 \
+                    --reviewer-model openrouter/openai/gpt-4o-mini</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>build_stage5</code> is an identity check only — two instances of the same model are accepted; check specs yourself or let the CLI do it.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The real-backend snippet was not executed; it needs an OpenRouter key or Claude subscription and would spend money or quota.</aside>
+<h2 id="how-do-i-wire-verification-into-a-graph"><a class="anchor" href="#how-do-i-wire-verification-into-a-graph">How do I wire verification into a graph?</a></h2>
+<p><code>build_stage5</code> is a working three-node graph — draft, verify, report — and reading <code>grapharc/examples/stage5_verifier.py</code> is the fastest way to see how <code>verify_claim</code> sits inside a node. Invoked with a scripted author emitting three claims, it returns <code>accepted</code>, <code>rejected</code>, and the <code>verdicts</code> list; three claims cost only two reviewer calls because the fabricated citation dies at the anchor. The <code>Verdict</code> list is kept in state, so a downstream node can route on <em>why</em> something was rejected rather than only on the boolean.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">result = build_stage5(author, reviewer).invoke({<span <span class="tok-k">class</span>="tok-s">&quot;source_text&quot;</span>: DEMO_SOURCE})
+
+print(<span <span class="tok-k">class</span>="tok-s">&quot;accepted:&quot;</span>, result[<span <span class="tok-k">class</span>="tok-s">&quot;accepted&quot;</span>])
+print(<span <span class="tok-k">class</span>="tok-s">&quot;rejected:&quot;</span>, result[<span <span class="tok-k">class</span>="tok-s">&quot;rejected&quot;</span>])
+print(<span <span class="tok-k">class</span>="tok-s">&quot;author calls:&quot;</span>, author.call_count, <span <span class="tok-k">class</span>="tok-s">&quot;| reviewer calls:&quot;</span>, reviewer.call_count)
+<span class="tok-k">for</span> v <span class="tok-k">in</span> result[<span <span class="tok-k">class</span>="tok-s">&quot;verdicts&quot;</span>]:
+    print(f&quot;  anchor_ok={v.anchor_ok!s:&lt;5} model_accepted={v.model_accepted!s:&lt;5} {v.claim_text}&quot;)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">accepted: [&#x27;GraphARC enforces typed state contracts&#x27;]
+rejected: [&#x27;GraphARC is 10x faster&#x27;, &#x27;Budgets make graphs run faster&#x27;]
+author calls: 1 | reviewer calls: 2
+  anchor_ok=True  model_accepted=True  GraphARC enforces typed state contracts
+  anchor_ok=False model_accepted=None  GraphARC is 10x faster
+  anchor_ok=True  model_accepted=False Budgets make graphs run faster</pre></figure>
+<h2 id="how-do-i-record-a-fact-so-i-can-audit-where-it-came-from"><a class="anchor" href="#how-do-i-record-a-fact-so-i-can-audit-where-it-came-from">How do I record a fact so I can audit where it came from?</a></h2>
+<p>A <code>Claim</code> is a subject-predicate-object triple plus provenance; <code>source</code> is required, and <code>run_id</code>/<code>confidence</code> are optional but worth filling in. Lookups go through <code>_normalize</code>: NFKC, casefold, then every non-word character collapsed to a single space — so case and trailing punctuation do not split an entity, but punctuation <em>inside</em> a name does (<code>&quot;GraphARC&quot;</code> → <code>grapharc</code>, <code>&quot;Graph-ARC&quot;</code> → <code>graph arc</code>, different entities). Normalization is Unicode-aware rather than ASCII-only precisely so <code>東京</code> and <code>北京</code> do not both collapse to the empty key. <code>observed_at</code> comes from a strictly increasing clock at microsecond resolution so no two claims a process writes can tie — not cosmetic, since ties in a <code>reverse=True</code> sort are not reversed by Python&#x27;s stable sort, which once made the two backends return dead ends in opposite orders from identical input.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.memory <span class="tok-k">import</span> Claim, MemoryStore
+
+store = MemoryStore()
+claim = store.add(
+    Claim(
+        subject=<span <span class="tok-k">class</span>="tok-s">&quot;GraphARC&quot;</span>,
+        predicate=<span <span class="tok-k">class</span>="tok-s">&quot;depends on&quot;</span>,
+        object=<span <span class="tok-k">class</span>="tok-s">&quot;LangGraph&quot;</span>,
+        source=<span <span class="tok-k">class</span>="tok-s">&quot;README.md<span <span class="tok-k">class</span>="tok-c">#L3&quot;</span>,       # required: where it came <span class="tok-k">from</span></span>
+        run_id=<span <span class="tok-k">class</span>="tok-s">&quot;run-12&quot;</span>,             <span <span class="tok-k">class</span>="tok-c"># optional: which run learned it</span>
+        confidence=0.9,
+    )
+)
+
+<span class="tok-k">for</span> lookup <span class="tok-k">in</span> (<span <span class="tok-k">class</span>="tok-s">&quot;GraphARC&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;  grapharc  &quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;GRAPHARC!&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;Graph-ARC&quot;</span>):
+    print(f&quot;current({lookup!r:&lt;14}) -&gt; {[c.object <span class="tok-k">for</span> c <span class="tok-k">in</span> store.current(lookup)]}&quot;)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">id:          bf12abda3985
+observed_at: 2026-07-28T04:27:25.893671+00:00
+is_current:  True
+key:         (&#x27;grapharc&#x27;, &#x27;depends on&#x27;)
+current(&#x27;GraphARC&#x27;    ) -&gt; [&#x27;LangGraph&#x27;]
+current(&#x27;  grapharc  &#x27;) -&gt; [&#x27;LangGraph&#x27;]
+current(&#x27;GRAPHARC!&#x27;   ) -&gt; [&#x27;LangGraph&#x27;]
+current(&#x27;Graph-ARC&#x27;   ) -&gt; []</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Internal punctuation splits entities — <code>Graph-ARC</code> is not <code>GraphARC</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Claim ids and <code>observed_at</code> are generated, so yours differ; everything else reproduces.</aside>
+<h2 id="how-do-i-correct-a-fact-without-losing-what-we-used-to-belie"><a class="anchor" href="#how-do-i-correct-a-fact-without-losing-what-we-used-to-belie">How do I correct a fact without losing what we used to believe?</a></h2>
+<p><code>supersede</code> never deletes: the old claim stays, marked, pointing at its replacement — the &quot;run #51 sees that run #37 replaced run #12&#x27;s fact&quot; story end to end. <code>current</code> returns one claim, <code>history(subject, predicate)</code> returns the whole chain oldest-first with each link&#x27;s own source and run, and <code>dead_ends(subject)</code> returns exactly what was retracted and by what. Three preconditions live in one shared <code>validate_supersede</code> that both backends call: already-superseded and self-supersede raise <code>ValueError</code>, an unknown id raises <code>KeyError</code>. Self-supersede raises because when each backend implemented it separately, <code>MemoryStore</code> and <code>SQLiteMemoryStore</code> disagreed and both ended up with a claim whose <code>superseded_by</code> pointed at itself — invisible to <code>current</code>, self-referential in <code>dead_ends</code>.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">store.add(fact(<span <span class="tok-k">class</span>="tok-s">&quot;v1&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;30s&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;config/prod.yaml@2026-05&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;run-12&quot;</span>))
+store.supersede(<span <span class="tok-k">class</span>="tok-s">&quot;v1&quot;</span>, fact(<span <span class="tok-k">class</span>="tok-s">&quot;v2&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;10s&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;config/prod.yaml@2026-06&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;run-37&quot;</span>))
+store.supersede(<span <span class="tok-k">class</span>="tok-s">&quot;v2&quot;</span>, fact(<span <span class="tok-k">class</span>="tok-s">&quot;v3&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;15s&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;incident-4412 postmortem&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;run-51&quot;</span>))
+
+print(<span <span class="tok-k">class</span>="tok-s">&quot;current: &quot;</span>, [(c.id, c.object) <span class="tok-k">for</span> c <span class="tok-k">in</span> store.current(<span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>)])
+print(<span <span class="tok-k">class</span>="tok-s">&quot;dead ends:&quot;</span>, [(c.id, c.object, &quot;-&gt;&quot;, c.superseded_by)
+                     <span class="tok-k">for</span> c <span class="tok-k">in</span> store.dead_ends(<span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>)])
+<span class="tok-k">for</span> c <span class="tok-k">in</span> store.history(<span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;times out after&quot;</span>):
+    print(f&quot;  {c.id} {c.object:&lt;4} source={c.source:&lt;26} run={c.run_id} &quot;
+          f<span <span class="tok-k">class</span>="tok-s">&quot;superseded_by={c.superseded_by}&quot;</span>)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">current:  [(&#x27;v3&#x27;, &#x27;15s&#x27;)]
+dead ends: [(&#x27;v1&#x27;, &#x27;30s&#x27;, &#x27;-&gt;&#x27;, &#x27;v2&#x27;), (&#x27;v2&#x27;, &#x27;10s&#x27;, &#x27;-&gt;&#x27;, &#x27;v3&#x27;)]
+already superseded: ValueError: claim &#x27;v1&#x27; was already superseded by &#x27;v2&#x27;
+self-supersede: ValueError: claim &#x27;v3&#x27; cannot supersede itself — a correction is a new claim with its own id, so the old one survives to be pointed at
+unknown claim: KeyError: &quot;unknown claim &#x27;nope&#x27;&quot;</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>history</code> takes a predicate and <code>dead_ends</code> does not — <code>history</code> answers &quot;what did we believe about this attribute over time&quot;, <code>dead_ends</code> answers &quot;what has this subject been wrong about&quot;.</aside>
+<h2 id="how-do-i-keep-memory-across-processes"><a class="anchor" href="#how-do-i-keep-memory-across-processes">How do I keep memory across processes?</a></h2>
+<p><code>MemoryStore</code> is a dict and dies with the interpreter; <code>SQLiteMemoryStore</code> implements the same <code>ClaimStore</code> protocol against a file, so swapping is a one-line change and the difference only shows up across a process boundary — which is how to test it (writer process, reader process that supersedes, then a third parent process reading both). The store opens in autocommit and wraps <code>supersede</code> in <code>BEGIN IMMEDIATE</code>, so its read-then-write cannot interleave with another process&#x27;s — a deferred transaction takes the write lock at first write, letting two processes both read a claim as live and both supersede it. It runs <code>synchronous = FULL</code> under WAL, because losing the last few commits on a host failure would defeat the one thing this backend is for.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">WRITER = <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>&quot;
+<span class="tok-k">import</span> os, sys
+<span class="tok-k">from</span> grapharc.memory <span class="tok-k">import</span> Claim, SQLiteMemoryStore
+
+<span class="tok-k">with</span> SQLiteMemoryStore(sys.argv[1]) <span class="tok-k">as</span> store:
+    store.add(Claim(id=<span <span class="tok-k">class</span>="tok-s">&quot;v1&quot;</span>, subject=<span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>, predicate=<span <span class="tok-k">class</span>="tok-s">&quot;times out after&quot;</span>,
+                    object=<span <span class="tok-k">class</span>="tok-s">&quot;30s&quot;</span>, source=<span <span class="tok-k">class</span>="tok-s">&quot;config/prod.yaml&quot;</span>, run_id=<span <span class="tok-k">class</span>="tok-s">&quot;run-12&quot;</span>))
+    print(f<span <span class="tok-k">class</span>="tok-s">&quot;writer pid={os.getpid()}: wrote v1&quot;</span>)
+<span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>&quot;</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">writer pid=478023: wrote v1
+reader pid=478024: found v1 = &#x27;30s&#x27; from config/prod.yaml (run run-12)
+reader pid=478024: superseded v1 -&gt; v2
+parent: [(&#x27;v2&#x27;, &#x27;10s&#x27;)]
+parent dead ends: [(&#x27;v1&#x27;, &#x27;30s&#x27;)]
+both satisfy ClaimStore: True True</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>isinstance(x, ClaimStore)</code> is a <code>runtime_checkable</code> <code>Protocol</code> — it checks method names only; the shared conformance suite in <code>tests/</code> is what enforces the invariants.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>SQLiteMemoryStore</code> holds an open connection — use it as a context manager or call <code>close()</code>, or leak a file handle per store.</aside>
+<h2 id="can-i-query-the-claim-graph-in-cypher"><a class="anchor" href="#can-i-query-the-claim-graph-in-cypher">Can I query the claim graph in Cypher?</a></h2>
+<p><code>LadybugMemoryStore</code> is the third backend, implementing the same <code>ClaimStore</code> protocol against LadybugDB — an embedded property-graph database with Cypher, forked from Kuzu after Apple acquired and closed it; embedded means the same deal SQLite offers, a path on disk with no server. The difference is what gets stored: the other two keep claims as rows and rebuild the graph in Python (<code>ClaimIndex</code> scans the whole corpus every time you construct one), while this backend stores the edges — <code>superseded_by</code> is a <code>SUPERSEDED_BY</code> edge rather than a column, and each claim&#x27;s subject and object are <code>Entity</code> nodes. So a correction chain is a path you can walk, and the escape hatch from the seven-method protocol is a query rather than a scan. Install with <code>pip install &#x27;grapharc[ladybug]&#x27;</code>.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span <span class="tok-k">class</span>="tok-c"># Not executed by the docs test — needs the `ladybug` extra, which CI does <span class="tok-k">not</span> install.</span>
+<span class="tok-k">from</span> grapharc.memory <span class="tok-k">import</span> Claim, LadybugMemoryStore
+
+<span class="tok-k">with</span> LadybugMemoryStore(<span <span class="tok-k">class</span>="tok-s">&quot;memory.lbdb&quot;</span>) <span class="tok-k">as</span> store:
+    old = store.add(Claim(subject=<span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>, predicate=<span <span class="tok-k">class</span>="tok-s">&quot;times out after&quot;</span>,
+                          object=<span <span class="tok-k">class</span>="tok-s">&quot;30s&quot;</span>, source=<span <span class="tok-k">class</span>="tok-s">&quot;config/prod.yaml&quot;</span>, run_id=<span <span class="tok-k">class</span>="tok-s">&quot;run-12&quot;</span>))
+    store.supersede(old.id, Claim(subject=<span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>, predicate=<span <span class="tok-k">class</span>="tok-s">&quot;times out after&quot;</span>,
+                                  object=<span <span class="tok-k">class</span>="tok-s">&quot;5s&quot;</span>, source=<span <span class="tok-k">class</span>="tok-s">&quot;incident-114&quot;</span>, run_id=<span <span class="tok-k">class</span>="tok-s">&quot;run-37&quot;</span>))
+
+    <span class="tok-k">for</span> was, now, source <span class="tok-k">in</span> store.cypher(
+        &quot;MATCH (old:Claim)-[:SUPERSEDED_BY]-&gt;(new:Claim) &quot;
+        <span <span class="tok-k">class</span>="tok-s">&quot;RETURN old.object, new.object, new.source&quot;</span>
+    ):
+        print(f&quot;{was} -&gt; {now} ({source})&quot;)
+
+    store.cypher(
+        &quot;MATCH (:Claim {subject: $s})-[:MENTIONS]-&gt;(e:Entity)&lt;-[:ABOUT]-(next:Claim) &quot;
+        <span <span class="tok-k">class</span>="tok-s">&quot;RETURN next.subject, next.predicate, next.object&quot;</span>,
+        {<span <span class="tok-k">class</span>="tok-s">&quot;s&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>},
+    )</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The distribution is <code>real-ladybug</code>, not <code>ladybug</code> — that PyPI name belongs to Ladybug Tools, an unrelated building-science package; the store checks what it imported and says so rather than failing later with <code>AttributeError</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> LadybugDB takes an <em>exclusive lock</em>: one writer or several read-only openers, never overlapping — a second process fails outright even with <code>read_only=True</code> rather than waiting. Sequential hand-off works; concurrent multi-process writing does not. Use SQLite (WAL, <code>busy_timeout</code>) if two agent processes must write at once. <code>tests/test_ladybug_store.py</code> asserts this failure so the claim gets corrected rather than going stale.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Pass values as query parameters, never format them in — string interpolation is the graph-database spelling of SQL injection.</aside>
+<h2 id="how-do-i-find-the-claims-relevant-to-a-question"><a class="anchor" href="#how-do-i-find-the-claims-relevant-to-a-question">How do I find the claims relevant to a question?</a></h2>
+<p><code>search</code> ranks by relevance and returns <em>why</em> each claim was returned; two ways in — name entities you already know are relevant, or pass free text. Scores land in two bands that cannot overlap: naming an entity is worth a flat <code>1.0</code> because the caller <em>knows</em> the subject matters, and the text channels contribute at most <code>0.9</code>, so a named subject always outranks a claim found only by its words. A hop multiplies the parent&#x27;s score by <code>0.45</code>, so a neighbour lands below the claim it came from and reads as supporting evidence rather than the answer; <code>hops</code>, <code>via</code> and <code>channel</code> are on every <code>ScoredClaim</code> so a node can show its work rather than presenting a second-hand fact as a direct hit. Incoming edges are followed too, which is how <code>billing-service depends on auth-service</code> shows up — the &quot;who calls me&quot; answer.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">print(&quot;--- entities=[&<span <span class="tok-k">class</span>="tok-c">#x27;auth-service&#x27;] ---&quot;)</span>
+<span class="tok-k">for</span> hit <span class="tok-k">in</span> search(store, entities=[<span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>]):
+    c = hit.claim
+    print(f&quot;{hit.score:.3f} hop={hit.hops} via={hit.via!s:&lt;5} {hit.channel:&lt;8} &quot;
+          f<span <span class="tok-k">class</span>="tok-s">&quot;{c.id} {c.subject} {c.predicate} {c.object}&quot;</span>)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">--- entities=[&#x27;auth-service&#x27;] ---
+1.000 hop=0 via=None  entity   a2 auth-service owned by platform team
+1.000 hop=0 via=None  entity   a1 auth-service depends on redis
+0.450 hop=1 via=a2    graph    p1 platform team on call rotation PagerDuty schedule P7
+0.450 hop=1 via=a2    graph    b1 billing-service depends on auth-service
+0.450 hop=1 via=a1    graph    r2 redis has known issue connection leak under TLS
+0.450 hop=1 via=a1    graph    r1 redis runs version 7.2.4
+--- query=&#x27;connection leak&#x27; (no entity named) ---
+0.900 hop=0 via=None  lexical  r2 redis has known issue connection leak under TLS
+0.405 hop=1 via=r2    graph    a1 auth-service depends on redis</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Defaults are one hop, 20 claims — two hops on a dense graph is already a lot of drift.</aside>
+<h2 id="what-if-the-query-is-misspelled-or-there-is-no-query-at-all"><a class="anchor" href="#what-if-the-query-is-misspelled-or-there-is-no-query-at-all">What if the query is misspelled, or there is no query at all?</a></h2>
+<p>Three behaviours to know before you debug an empty result list. No query and no entity returns nothing, not the whole store — there is nothing to be relevant to, and handing a node an arbitrary slice of memory labelled &quot;context&quot; is worse than handing it none. <code>HashingEmbedder</code> is a spelling channel, not a semantic one: hashed word tokens plus character n-grams, so <code>authservice</code> finds <code>auth-service</code> where BM25 scores a flat zero, while <code>redsi</code> still finds nothing because two transposed characters in a five-letter word leave too little n-gram overlap to clear <code>MIN_SIMILARITY</code> (0.15); it will never relate &quot;car&quot; to &quot;automobile&quot; — for meaning, inject a real embedder through the <code>Embedder</code> protocol and lower <code>lexical_weight</code> from its 0.6 default. <code>known_entities</code> returns normalized keys (hence <code>auth service</code>), so use it to decide what to look up, not to render.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span <span class="tok-k">class</span>="tok-c"># Build the index once, query it many times. Otherwise every search rebuilds it.</span>
+index = ClaimIndex.from_store(store)
+<span class="tok-k">for</span> query <span class="tok-k">in</span> (<span <span class="tok-k">class</span>="tok-s">&quot;connection leak&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;who depends on auth-service&quot;</span>):
+    print(f&quot;{query!r:&lt;32} -&gt; {[h.claim.id <span class="tok-k">for</span> h <span class="tok-k">in</span> search(store, query=query, index=index)]}&quot;)
+
+print(&quot;search(store) <span class="tok-k">with</span> neither     -&gt;&quot;, search(store))
+print(&quot;&<span <span class="tok-k">class</span>="tok-c">#x27;authservice&#x27; + HashingEmbedder-&gt;&quot;,</span>
+      [h.claim.id <span class="tok-k">for</span> h <span class="tok-k">in</span> search(store, query=<span <span class="tok-k">class</span>="tok-s">&quot;authservice&quot;</span>, embedder=HashingEmbedder())])
+print(<span <span class="tok-k">class</span>="tok-s">&quot;known entities:&quot;</span>, sorted(known_entities(store)))</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">&#x27;connection leak&#x27;                -&gt; [&#x27;r2&#x27;, &#x27;a1&#x27;]
+&#x27;who depends on auth-service&#x27;    -&gt; [&#x27;a1&#x27;, &#x27;b1&#x27;, &#x27;r2&#x27;]
+search(store) with neither     -&gt; []
+&#x27;authservice&#x27; lexical only     -&gt; []
+&#x27;authservice&#x27; + HashingEmbedder-&gt; [&#x27;a1&#x27;, &#x27;b1&#x27;, &#x27;r2&#x27;]
+&#x27;redsi&#x27; + HashingEmbedder      -&gt; []
+known entities: [&#x27;auth service&#x27;, &#x27;billing service&#x27;, &#x27;redis&#x27;]</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>search</code> builds a <code>ClaimIndex</code> over the whole store — O(claims) per call; pass <code>index=</code> to pay once.</aside>
+<h2 id="why-did-my-reused-index-stop-finding-new-claims"><a class="anchor" href="#why-did-my-reused-index-stop-finding-new-claims">Why did my reused index stop finding new claims?</a></h2>
+<p>Because an index is a snapshot and it does not notice writes — a claim added after <code>ClaimIndex.from_store</code> is simply absent from results. This fails silently: no exception, just a fact quietly missing from a node&#x27;s context. There is deliberately no <code>ClaimIndex.add</code>, because term statistics change with every write and an index a few claims stale does not error, it ranks wrongly. Rebuild after writing, or drop <code>index=</code> and eat the O(claims) rebuild.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">store.add(Claim(id=<span <span class="tok-k">class</span>="tok-s">&quot;a&quot;</span>, subject=<span <span class="tok-k">class</span>="tok-s">&quot;redis&quot;</span>, predicate=<span <span class="tok-k">class</span>="tok-s">&quot;runs version&quot;</span>, object=<span <span class="tok-k">class</span>="tok-s">&quot;7.2&quot;</span>, source=<span <span class="tok-k">class</span>="tok-s">&quot;tf&quot;</span>))
+index = ClaimIndex.from_store(store)
+
+store.add(Claim(id=<span <span class="tok-k">class</span>="tok-s">&quot;b&quot;</span>, subject=<span <span class="tok-k">class</span>="tok-s">&quot;redis&quot;</span>, predicate=<span <span class="tok-k">class</span>="tok-s">&quot;has issue&quot;</span>, object=<span <span class="tok-k">class</span>="tok-s">&quot;leak&quot;</span>, source=<span <span class="tok-k">class</span>="tok-s">&quot;i-1&quot;</span>))
+
+print(<span <span class="tok-k">class</span>="tok-s">&quot;stale index:&quot;</span>, [h.claim.id <span class="tok-k">for</span> h <span class="tok-k">in</span> search(store, entities=[<span <span class="tok-k">class</span>="tok-s">&quot;redis&quot;</span>], index=index)])
+print(<span <span class="tok-k">class</span>="tok-s">&quot;rebuilt:    &quot;</span>, [h.claim.id <span class="tok-k">for</span> h <span class="tok-k">in</span>
+                       search(store, entities=[<span <span class="tok-k">class</span>="tok-s">&quot;redis&quot;</span>], index=ClaimIndex.from_store(store))])</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">stale index: [&#x27;a&#x27;]
+rebuilt:     [&#x27;b&#x27;, &#x27;a&#x27;]</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A stale index fails silently — no exception, only a missing fact.</aside>
+<h2 id="how-do-i-fit-memory-into-a-prompt-without-blowing-the-contex"><a class="anchor" href="#how-do-i-fit-memory-into-a-prompt-without-blowing-the-contex">How do I fit memory into a prompt without blowing the context window?</a></h2>
+<p><code>render_context</code> produces the brief a node actually puts in its prompt: &quot;Known facts (with provenance)&quot;, &quot;Contradictions — same subject and predicate, different values&quot;, and &quot;Superseded — do not re-derive these&quot;, three sections in priority order with provenance on every line. The <code>(related via auth-service)</code> tag marks a hop-1 fact so the node can tell a direct answer from a neighbour. <code>_fit</code> drops whole entries from the tail and never truncates mid-line — half a claim with half its provenance is worse than no claim — and a section whose header fits but whose first entry does not is dropped entirely, so a header never appears over nothing; the omission note is the one line never dropped, because a brief that silently omits facts is worse than a short one.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">print(render_context(store, entities=[<span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>]))
+print(<span <span class="tok-k">class</span>="tok-s">&quot;=== same brief, max_tokens=90 ===&quot;</span>)
+print(render_context(store, entities=[<span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>], max_tokens=90))</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">Known facts (with provenance):
+- auth-service deployed to eu-central-1 [source: terraform@2026, observed: 2026-07-28T04:29:22.317681+00:00]
+- auth-service times out after 10s [source: helm/values.yaml, observed: ...]
+- auth-service depends on redis [source: arch.md, observed: ...]
+- redis runs version 7.2.4 [source: infra/redis.tf, observed: ...] (related via auth-service)
+
+Contradictions — same subject and predicate, different values:
+- auth-service times out after: &#x27;30s&#x27; (t1, config/prod.yaml) | &#x27;10s&#x27; (t2, helm/values.yaml)
+
+Superseded — do not re-derive these:
+- auth-service deployed to eu-west-1 (superseded by m2)
+- auth-service listens on port 8080 (superseded by p2)
+
+=== same brief, max_tokens=90 ===
+Known facts (with provenance):
+- auth-service deployed to eu-central-1 [source: terraform@2026, observed: ...]
+- auth-service listens on port 8443 [source: ingress.yaml, observed: ...]
+(+7 lines omitted to fit a 90-token budget)</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>max_tokens</code> bounds an <em>estimate</em> (four characters per token; no tokenizer ships with the library) — ids, hyphenated values and ISO timestamps split into more tokens than their length implies, so a brief that fits the estimate can still overrun a real tokenizer. Pass <code>count_tokens=</code> when the budget must be exact.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A <code>max_tokens</code> below the 24-token note reserve is overshot by the note alone — the only case where output exceeds the budget, and the right trade.</aside>
+<h2 id="how-do-i-keep-the-already-tried-that-section-from-growing-fo"><a class="anchor" href="#how-do-i-keep-the-already-tried-that-section-from-growing-fo">How do I keep the &quot;already tried that&quot; section from growing forever?</a></h2>
+<p>Every correction adds a dead end about the same subject, so on a long-lived project the superseded section grows without bound; it is capped by count (<code>max_dead_ends</code>) and says what it dropped. <code>retrieve_dead_ends</code> returns <code>(kept, omitted)</code> and orders newest correction first, because the oldest dead ends are least likely to be the one a node is about to walk into — and since the cap discards the tail, that ordering decides which corrections the node sees at all. The sort key is three fields (correction time, then observation time, then id) so it is a total order and both backends render the same section from the same claims; ties used to be left to <code>list.sort</code>&#x27;s stability, which preserves rather than reverses input order, so <code>reverse=True</code> quietly handed back tied groups oldest-first. <code>retrieve_dead_ends</code> also takes <code>query=</code>, re-ranking by relevance first and correction time second, scored against the dead ends alone rather than the whole corpus.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">kept, omitted = retrieve_dead_ends(store, entities=[<span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>], max_dead_ends=2)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;shown:&quot;</span>, [(k.id, k.object) <span class="tok-k">for</span> k <span class="tok-k">in</span> kept], <span <span class="tok-k">class</span>="tok-s">&quot;omitted:&quot;</span>, omitted)
+print(render_context(store, entities=[<span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>], max_dead_ends=2))</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">shown: [(&#x27;v4&#x27;, &#x27;15s&#x27;), (&#x27;v3&#x27;, &#x27;20s&#x27;)] omitted: 2
+
+Known facts (with provenance):
+- auth-service times out after 10s [source: incident-4412, observed: 2026-07-28T04:29:33.999234+00:00]
+
+Superseded — do not re-derive these:
+- auth-service times out after 15s (superseded by v5)
+- auth-service times out after 20s (superseded by v4)
+- (+2 older corrections omitted)</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The default is 10 (<code>DEFAULT_MAX_DEAD_ENDS</code>), deliberately smaller than the 20 for facts — a dead end is a hint, not the answer.</aside>
+<h2 id="how-do-i-notice-that-memory-contradicts-itself"><a class="anchor" href="#how-do-i-notice-that-memory-contradicts-itself">How do I notice that memory contradicts itself?</a></h2>
+<p><code>supersede</code> needs you to already know the id of the claim being replaced, but an agent has a fact in hand and no idea what the store already believes — <code>add_and_detect</code> closes that gap, storing the incoming claim regardless and returning the conflicts it found, each with <code>.describe()</code>. Detection and resolution are separate calls on purpose: the test is structural — same normalized <code>(subject, predicate)</code>, different normalized object — so a genuinely multi-valued predicate like <code>depends on</code> reads as disagreement, and auto-superseding would delete the second half of a multi-valued fact inside the one subsystem whose promise is that facts are never destroyed. So it reports, and a caller with a basis for a decision calls <code>supersede_conflicting</code>.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">stored, conflicts = add_and_detect(store, incoming)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;stored anyway:&quot;</span>, stored.id)
+<span class="tok-k">for</span> conflict <span class="tok-k">in</span> conflicts:
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;conflict:&quot;</span>, conflict.describe())
+
+<span <span class="tok-k">class</span>="tok-c"># Resolution <span class="tok-k">is</span> a separate, deliberate call.</span>
+supersede_conflicting(store, conflicts[0])
+
+<span class="tok-k">for</span> group <span class="tok-k">in</span> unresolved_contradictions(store):
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;flagged:&quot;</span>, group.subject, group.predicate,
+          [claim.object <span class="tok-k">for</span> claim <span class="tok-k">in</span> group.claims])</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">stored anyway: t2
+conflict: auth-service times out after: &#x27;10s&#x27; (from incident-4412) contradicts &#x27;30s&#x27; (from config/prod.yaml, claim t1)
+after resolution, current: [(&#x27;t2&#x27;, &#x27;10s&#x27;)]
+dead ends: [(&#x27;t1&#x27;, &#x27;30s&#x27;)]
+flagged: billing depends on [&#x27;postgres&#x27;, &#x27;redis&#x27;]</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Detection does not relate &quot;is fast&quot; to &quot;is slow&quot; (different predicates), and does not see <code>&quot;LangGraph&quot;</code> and <code>&quot;the LangGraph library&quot;</code> as the same object (<code>_normalize</code> compares strings, not meanings).</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>unresolved_contradictions(store)</code> with no <code>entities</code> scans the whole corpus — a maintenance report, not something to call inside a loop; <code>render_context</code> runs a cheaper version scoped to the facts it is already showing.</aside>
+<h2 id="how-do-i-record-the-files-an-agent-produced"><a class="anchor" href="#how-do-i-record-the-files-an-agent-produced">How do I record the files an agent produced?</a></h2>
+<p>Claims answer &quot;what is true&quot;; artifacts answer &quot;what was produced&quot; — same rules, append-only with provenance mandatory. <code>put</code> on the same name records a new version (with <code>parents=</code> and <code>claim_ids=</code> links) rather than replacing, and v1&#x27;s bytes stay readable; <code>versions</code>, <code>latest</code>, <code>read_text</code>, <code>media_type</code> and <code>sha256</code> round it out, and a <code>source=&quot;&quot;</code> raises <code>ValueError</code>. <code>name</code> is metadata and is never used to build a path, so a traversal-looking name is stored under the hash of its content like everything else. Names are matched <em>exactly</em>, unlike a claim&#x27;s subject — <code>Report.md</code> is not <code>report.md</code>, because a filename is not an entity and entity resolution on filenames would merge two real files. Content addressing means two artifacts with identical bytes share one blob while keeping their own rows and provenance: the same report produced by two runs is two events.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">v1 = store.put(<span <span class="tok-k">class</span>="tok-s">&quot;report.md&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;<span <span class="tok-k">class</span>="tok-c"># Findings\nauth-service times out after 30s\n&quot;</span>,</span>
+               source=<span <span class="tok-k">class</span>="tok-s">&quot;node:summarize&quot;</span>, run_id=<span <span class="tok-k">class</span>="tok-s">&quot;run-12&quot;</span>, node=<span <span class="tok-k">class</span>="tok-s">&quot;summarize&quot;</span>)
+v2 = store.put(<span <span class="tok-k">class</span>="tok-s">&quot;report.md&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;<span <span class="tok-k">class</span>="tok-c"># Findings\nauth-service times out after 10s\n&quot;</span>,</span>
+               source=<span <span class="tok-k">class</span>="tok-s">&quot;node:summarize&quot;</span>, run_id=<span <span class="tok-k">class</span>="tok-s">&quot;run-37&quot;</span>, node=<span <span class="tok-k">class</span>="tok-s">&quot;summarize&quot;</span>,
+               parents=[v1.id], claim_ids=[<span <span class="tok-k">class</span>="tok-s">&quot;t2&quot;</span>])
+
+traversal = store.put(<span <span class="tok-k">class</span>="tok-s">&quot;../../etc/passwd&quot;</span>, b<span <span class="tok-k">class</span>="tok-s">&quot;<span class="tok-k">not</span> a path&quot;</span>, source=<span <span class="tok-k">class</span>="tok-s">&quot;node:evil&quot;</span>)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;name <span class="tok-k">is</span> metadata:&quot;</span>, traversal.name, <span <span class="tok-k">class</span>="tok-s">&quot;| stored under:&quot;</span>, traversal.blob_key)
+print(render_artifacts(store))</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">versions: [(&#x27;07ecc720d4b1&#x27;, &#x27;run-12&#x27;), (&#x27;decc2c843fc3&#x27;, &#x27;run-37&#x27;)]
+media_type: text/plain; charset=utf-8 | sha256: 00f97cfbcd1181fe | parents: (&#x27;07ecc720d4b1&#x27;,)
+Report.md is a different name: []
+no provenance: artifact &#x27;notes.txt&#x27; needs a source — an artifact with no provenance cannot be attributed after the fact
+name is metadata: ../../etc/passwd | stored under: (&#x27;2c&#x27;, &#x27;2c2cc34cd0084471e6f45f217a6d1716ae9e7178722ed56585f95a6bfc51e1e6&#x27;)
+
+Artifacts (id · name · provenance):
+- fb86dfa2e567 ../../etc/passwd (application/octet-stream, 10 bytes) [source: node:evil]
+- decc2c843fc3 report.md (text/plain; charset=utf-8, 44 bytes) [source: node:summarize, run: run-37, node: summarize]</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>render_artifacts</code> lists metadata only — never content — so a run that produced four hundred files cannot spend a context window listing them.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Artifact ids are random; sha256 values are content-addressed and reproduce.</aside>
+<h2 id="how-do-i-put-claims-and-artifacts-in-one-file"><a class="anchor" href="#how-do-i-put-claims-and-artifacts-in-one-file">How do I put claims and artifacts in one file?</a></h2>
+<p>Point <code>SQLiteArtifactStore</code> at the same path as <code>SQLiteMemoryStore</code> — two connections to one SQLite database is normal, both take the write lock and wait out contention (<code>journal_mode: wal</code>). <code>claim_ids</code> on the artifact is the edge between the two halves: this report was produced from that claim, by id, so nothing can drift out of sync, and a later process reopening the file finds both halves. Metadata is a SQLite row and content is a file under <code>&lt;db&gt;.blobs/&lt;first two hex&gt;/&lt;sha256&gt;</code>, so the database stays small enough to query while a 200 MB core dump is still storable. The blob is written and fsynced <em>before</em> the row is inserted: crash between the two and you have an unreferenced blob (garbage), never a row pointing at content that does not exist (a lie).</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">with</span> tempfile.TemporaryDirectory() <span class="tok-k">as</span> tmp:
+    db = Path(tmp) / <span <span class="tok-k">class</span>="tok-s">&quot;memory.sqlite&quot;</span>
+    <span class="tok-k">with</span> SQLiteMemoryStore(db) <span class="tok-k">as</span> claims, SQLiteArtifactStore(db) <span class="tok-k">as</span> artifacts:
+        claim = claims.add(Claim(subject=<span <span class="tok-k">class</span>="tok-s">&quot;auth-service&quot;</span>, predicate=<span <span class="tok-k">class</span>="tok-s">&quot;times out after&quot;</span>,
+                                 object=<span <span class="tok-k">class</span>="tok-s">&quot;10s&quot;</span>, source=<span <span class="tok-k">class</span>="tok-s">&quot;incident-4412&quot;</span>, run_id=<span <span class="tok-k">class</span>="tok-s">&quot;run-37&quot;</span>))
+        art = artifacts.put(<span <span class="tok-k">class</span>="tok-s">&quot;report.md&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;auth-service times out after 10s\n&quot;</span>,
+                            source=<span <span class="tok-k">class</span>="tok-s">&quot;node:summarize&quot;</span>, run_id=<span <span class="tok-k">class</span>="tok-s">&quot;run-37&quot;</span>,
+                            claim_ids=[claim.id])
+        print(<span <span class="tok-k">class</span>="tok-s">&quot;blob:&quot;</span>, artifacts.blob_path(art).relative_to(tmp))
+        print(<span <span class="tok-k">class</span>="tok-s">&quot;journal_mode:&quot;</span>, claims.journal_mode)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">claim: c25bee060492 | artifact: 2a8b76fc4ad0 | links to: (&#x27;c25bee060492&#x27;,)
+blob: memory.sqlite.blobs/52/52bb15f4df1a5a838214381ba412ef6988ba5ccbbd52afd5b9bdb8db552131a3
+journal_mode: wal
+reopened claims:    [&#x27;10s&#x27;]
+reopened artifacts: [&#x27;report.md&#x27;]
+content: auth-service times out after 10s
+files: [&#x27;memory.sqlite&#x27;, &#x27;memory.sqlite.blobs&#x27;]</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The database file and its <code>.blobs</code> directory are one unit — copy the <code>.sqlite</code> alone and <code>read()</code> raises <code>FileNotFoundError</code> naming the missing path; loud, but still a footgun when moving a store between machines.</aside>
+<h2 id="putting-it-together"><a class="anchor" href="#putting-it-together">Putting it together</a></h2>
+<p>The pattern the two subsystems are meant to be used in, in four steps: recall before working (<code>render_context(store, entities=[...])</code> into the node&#x27;s prompt, so the run starts from what is known and its dead ends); verify before writing (<code>verify_claim</code> each extracted fact against its source, the anchor making fabricated citations free to reject); write with provenance (<code>Claim(..., source=..., run_id=ctx.run_id)</code>, plus <code>add_and_detect</code> if something may already be believed); and correct, do not overwrite (<code>supersede</code>, so the next run sees the correction instead of re-deriving the old answer). <code>grapharc/examples/stage5_verifier.py</code> and <code>grapharc/examples/stage6_memory.py</code> are the smallest complete graphs doing exactly this.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">grapharc demo stage5
+grapharc demo stage6</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Both demos execute on scripted models for free.</aside>
+<footer class="pager-row">
+<a class="pager prev" href="agents-and-tools.html">&larr; Agents & tools</a><span class="pager-spacer"></span><a class="pager next" href="governance.html">Governance &rarr;</a>
+</footer>
+<footer class="colophon">
+  Generated from the repository's README and cookbook (docs/cookbook/01–06) ·
+  <a href="https://github.com/CodeGraphContext/GraphARC">CodeGraphContext/GraphARC</a> · MIT license
+</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var links = document.querySelectorAll('.nav-chapter ul a');
+  var byId = {};
+  links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+  var current = null;
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        var a = byId[e.target.id];
+        if (a) {
+          if (current) current.classList.remove('active');
+          a.classList.add('active');
+          current = a;
+        }
+      }
+    });
+  }, { rootMargin: '0px 0px -70% 0px' });
+  document.querySelectorAll('main h2[id]').forEach(function (h) { obs.observe(h); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agents &amp; tools — GraphARC</title>
+<meta name="description" content="The seven core tools, the permission harness, sandboxing, and the agent loop.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📚</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="side" aria-label="Documentation contents">
+  <a class="brand" href="index.html"><b>GraphARC<span class="amp"> docs</span></b><span>a governed agent runtime on LangGraph</span></a>
+  <ul>
+<li class="nav-chapter"><a href="index.html">Overview</a>
+</li>
+<li class="nav-chapter"><a href="getting-started.html">Getting started</a>
+</li>
+<li class="nav-chapter"><a href="models.html">Models</a>
+</li>
+<li class="nav-chapter"><a class="active" href="agents-and-tools.html">Agents & tools</a>
+<ul><li><a href="#how-do-i-give-an-agent-a-set-of-file-tools">How do I give an agent a set of file tools?</a></li><li><a href="#how-do-i-stop-a-tool-reading-outside-its-workspace">How do I stop a tool reading outside its workspace?</a></li><li><a href="#how-do-i-add-a-tool-of-my-own">How do I add a tool of my own?</a></li><li><a href="#how-do-i-run-the-agent-loop-without-calling-a-real-model">How do I run the agent loop without calling a real model?</a></li><li><a href="#how-do-i-find-out-why-the-loop-stopped">How do I find out why the loop stopped?</a></li><li><a href="#how-do-i-decide-which-tool-an-agent-may-call">How do I decide which tool an agent may call?</a></li><li><a href="#how-do-i-make-sure-a-denied-tool-is-never-even-offered-to-th">How do I make sure a denied tool is never even offered to the model?</a></li><li><a href="#how-do-i-put-a-human-in-front-of-a-tool">How do I put a human in front of a tool?</a></li><li><a href="#how-do-i-block-or-rewrite-a-call-deterministically">How do I block or rewrite a call deterministically?</a></li><li><a href="#what-does-the-default-executor-actually-confine">What does the default executor actually confine?</a></li><li><a href="#what-does-the-sandbox-not-confine">What does the sandbox not confine?</a></li><li><a href="#why-do-my-tools-say-outside-its-workspace-when-the-path-is-r">Why do my tools say &quot;outside its workspace&quot; when the path is right?</a></li><li><a href="#why-does-run-command-fail-under-the-default-executor">Why does run_command fail under the default executor?</a></li><li><a href="#how-do-i-get-a-real-boundary">How do I get a real boundary?</a></li><li><a href="#how-do-i-put-an-agent-inside-a-graph">How do I put an agent inside a graph?</a></li><li><a href="#how-do-i-see-all-of-this-working-end-to-end">How do I see all of this working end to end?</a></li><li><a href="#how-do-i-run-an-agent-from-the-shell">How do I run an agent from the shell?</a></li></ul>
+</li>
+<li class="nav-chapter"><a href="verification-and-memory.html">Verification & memory</a>
+</li>
+<li class="nav-chapter"><a href="governance.html">Governance</a>
+</li>
+<li class="nav-chapter"><a href="serving-and-ops.html">Serving & operations</a>
+</li>
+<li class="nav-chapter"><a href="roadmap.html">Roadmap</a>
+</li>
+<li class="nav-chapter"><a href="contributing.html">Contributing</a>
+</li>
+  </ul>
+</nav>
+<main>
+<header class="page-head">
+  <h1>Agents &amp; tools</h1>
+  <p class="sub">The seven core tools, the permission harness, sandboxing, and the agent loop.</p>
+</header>
+<h2 id="how-do-i-give-an-agent-a-set-of-file-tools"><a class="anchor" href="#how-do-i-give-an-agent-a-set-of-file-tools">How do I give an agent a set of file tools?</a></h2>
+<p><code>grapharc.tools</code> ships seven tools: <code>read_file</code>, <code>write_file</code>, <code>edit_file</code>, <code>list_dir</code>, <code>glob</code>, <code>grep</code>, <code>run_command</code>. <code>register_core_tools</code> puts them in a <code>ToolRegistry</code> bound to one workspace directory, which must already exist. Registering a tool and <em>authorising</em> it are two separate decisions in two different objects: <code>include</code>/<code>exclude</code> is the coarse one (a tool never registered can never be called, however the policy is edited later) and the <code>PermissionPolicy</code> is the fine one. Excluding <code>run_command</code> from a toolset with no business shelling out is a stronger statement than denying it, because there is nothing left to deny. <code>visible_tools()</code> returns sorted order while <code>CORE_TOOL_NAMES</code> is build order; <code>core_tools()</code> always returns <code>CORE_TOOL_NAMES</code> order so two callers requesting the same set get byte-identical schema lists.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">registry = ToolRegistry()
+register_core_tools(registry, workspace, exclude=[<span <span class="tok-k">class</span>="tok-s">&quot;run_command&quot;</span>])
+
+policy = PermissionPolicy(rules=[PermissionRule(action=Decision.ALLOW, pattern=<span <span class="tok-k">class</span>="tok-s">&quot;*&quot;</span>)])
+harness = Harness(registry, policy, executor=LocalExecutor(), workspace=str(workspace))
+
+print([spec.name <span class="tok-k">for</span> spec <span class="tok-k">in</span> harness.visible_tools()])
+print(harness.call(<span <span class="tok-k">class</span>="tok-s">&quot;read_file&quot;</span>, {<span <span class="tok-k">class</span>="tok-s">&quot;path&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;calc.py&quot;</span>}))</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">(&#x27;read_file&#x27;, &#x27;write_file&#x27;, &#x27;edit_file&#x27;, &#x27;list_dir&#x27;, &#x27;glob&#x27;, &#x27;grep&#x27;, &#x27;run_command&#x27;)
+[&#x27;edit_file&#x27;, &#x27;glob&#x27;, &#x27;grep&#x27;, &#x27;list_dir&#x27;, &#x27;read_file&#x27;, &#x27;write_file&#x27;]
+def add(a, b):
+    return a - b</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A typo in <code>exclude</code> raises rather than being silently ignored — <code>exclude=[&quot;run_comand&quot;]</code> would otherwise leave the shell tool registered and callable while you believe it is off.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>exclude=&quot;run_command&quot;</code> (a bare string, which iterates as characters) is refused with a message telling you to wrap it in a list.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Schema list ordering matters — this list goes into a model prompt, where ordering changes cache keys.</aside>
+<h2 id="how-do-i-stop-a-tool-reading-outside-its-workspace"><a class="anchor" href="#how-do-i-stop-a-tool-reading-outside-its-workspace">How do I stop a tool reading outside its workspace?</a></h2>
+<p>You do not have to: every core tool routes every path argument through <code>Workspace.resolve</code> before doing anything else. Absolute paths, <code>..</code> segments and symlinks are not three special cases with three rules — the path is resolved first and then judged by one rule: the thing the OS would actually open has to be inside the root. That is why <code>subdir/../calc.py</code> is fine, while a blocklist that refuses it on spelling and lets a symlink walk past is the shape of every path-traversal CVE. Containment is compared component-wise, so a sibling directory named <code>&lt;workspace&gt;-evil</code> is outside, not inside.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> attempt(path: str) -&gt; <span class="tok-k">None</span>:
+    <span class="tok-k">try</span>:
+        print(f&quot;{path!r:&lt;20} -&gt; {read_file(path)!r}&quot;)
+    <span class="tok-k">except</span> WorkspaceEscape <span class="tok-k">as</span> exc:
+        print(f&quot;{path!r:&lt;20} -&gt; {str(exc).replace(str(workspace), &<span <span class="tok-k">class</span>="tok-c">#x27;&lt;ws&gt;&#x27;)}&quot;)</span>
+
+attempt(<span <span class="tok-k">class</span>="tok-s">&quot;calc.py&quot;</span>)
+attempt(<span <span class="tok-k">class</span>="tok-s">&quot;subdir/../calc.py&quot;</span>)  <span <span class="tok-k">class</span>="tok-c"># `..` <span class="tok-k">is</span> legal — only where it lands <span class="tok-k">is</span> judged</span>
+attempt(<span <span class="tok-k">class</span>="tok-s">&quot;../../etc/passwd&quot;</span>)
+attempt(<span <span class="tok-k">class</span>="tok-s">&quot;/etc/passwd&quot;</span>)
+attempt(<span <span class="tok-k">class</span>="tok-s">&quot;innocent.txt&quot;</span>)  <span <span class="tok-k">class</span>="tok-c"># a symlink pointing out of the workspace</span></pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">&#x27;calc.py&#x27;            -&gt; &#x27;def add(a, b):\n    return a - b\n&#x27;
+&#x27;subdir/../calc.py&#x27;  -&gt; &#x27;def add(a, b):\n    return a - b\n&#x27;
+&#x27;innocent.txt&#x27;       -&gt; path &#x27;innocent.txt&#x27; resolves to /etc/passwd, which is outside the workspace &lt;ws&gt;. Core tools only reach paths inside the workspace; use a path relative to its root.</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>Resolution and use are not atomic.</strong> A symlink swapped between <code>resolve</code> and the open is a race this does not close; reads/writes pass <code>O_NOFOLLOW</code> on the final component, narrowing the window to the parent directories and no further.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>The refusal names the resolved path</strong>, so a model can infer where its workspace sits on the host — deliberate (an unactionable refusal just gets retried) but a disclosure. Successful results are rendered workspace-relative.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong><code>run_command</code> is not confined by any of this.</strong> Its <code>cwd</code> is workspace-resolved and its environment is an allowlist; past that it is an ordinary child process with your privileges.</aside>
+<h2 id="how-do-i-add-a-tool-of-my-own"><a class="anchor" href="#how-do-i-add-a-tool-of-my-own">How do I add a tool of my own?</a></h2>
+<p>A <code>ToolSpec</code> is a name, a description, a callable, and two flags; the schema the model sees is derived from the callable&#x27;s signature, so annotate it. <code>ToolSpec</code> carries no parameter schema of its own — annotations become JSON types, defaulted parameters drop out of <code>required</code>, and a <code>**kwargs</code> tool is declared open with <code>additionalProperties</code>. Anything unannotated or unrecognised becomes <code>&quot;string&quot;</code> rather than being dropped, because a parameter the model cannot see is a parameter it cannot fill. The description is the only thing telling the model <em>when</em> to reach for the tool and is not decoration — compare the core <code>run_command</code> description, which spends several sentences on <code>argv</code> being a list, there being no shell, and <code>grep</code> being cheaper for reading files.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> find_owner(service: str, region: str = <span <span class="tok-k">class</span>="tok-s">&quot;us-east-1&quot;</span>, page: int = 1) -&gt; str:
+    <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span><span <span class="tok-k">class</span>="tok-s">&quot;Look up the on-call owner <span class="tok-k">for</span> a service.&quot;</span><span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+    <span class="tok-k">return</span> f<span <span class="tok-k">class</span>="tok-s">&quot;{service}@{region} p{page}&quot;</span>
+
+
+spec = ToolSpec(
+    name=<span <span class="tok-k">class</span>="tok-s">&quot;find_owner&quot;</span>,
+    description=find_owner.__doc__ <span class="tok-k">or</span> <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>,
+    fn=find_owner,
+    needs_network=<span class="tok-k">True</span>,      <span <span class="tok-k">class</span>="tok-c"># the sandbox blocks sockets unless a tool declares this</span>
+    timeout_seconds=10.0,    <span <span class="tok-k">class</span>="tok-c"># a hang past this kills the tool&#x27;s whole process group</span>
+)
+print(json.dumps(tool_schema(spec), indent=2))</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>needs_network=True</code> grants the tool the <em>whole</em> network under both executors — there is no per-host filtering.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>timeout_seconds</code> is wall clock; under <code>SandboxedExecutor</code> an overrun SIGKILLs the whole process group, and under <code>ContainerExecutor</code> the clock starts at process launch so container startup is charged against it.</aside>
+<h2 id="how-do-i-run-the-agent-loop-without-calling-a-real-model"><a class="anchor" href="#how-do-i-run-the-agent-loop-without-calling-a-real-model">How do I run the agent loop without calling a real model?</a></h2>
+<p><code>grapharc.testing.ScriptedChatModel</code> scripts <strong>text only</strong>, and <code>BaseChatModel</code> leaves <code>bind_tools</code> unimplemented, so it cannot drive a tool loop; the two missing pieces are ~15 lines, saved as <code>cookbook_model.py</code> next to the other snippets. <code>ToolScriptedModel</code> adds <code>bind_tools</code> (which returns <code>self</code> so the loop keeps talking to the same script) and a <code>_generate</code> that attaches <code>tool_call_script[i]</code> to scripted response <code>i</code>, where an empty entry is a plain text turn — that is how the loop learns the task is done. With that, an <code>AgentNode</code> is a model, a harness and a loop: <code>observe state -&gt; model (visible tools bound) -&gt; tool request -&gt; harness.call: permission -&gt; approval -&gt; hooks -&gt; executor -&gt; result (or denial, or violation) back to the model -&gt; repeat until a recorded StopReason</code>. <strong>Nothing routes around the harness</strong>: the node never touches <code>ToolSpec.fn</code>. <strong>A refusal is data, not an exception</strong> — denied tools, sandbox violations and crashing tools all come back as tool results and <code>run()</code> does not raise; only <code>BudgetExceeded</code>, the run&#x27;s hard ceiling, is re-raised.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">class</span> ToolScriptedModel(ScriptedChatModel):
+    tool_call_script: list[list[dict[str, Any]]] = Field(default_factory=list)
+    bound: list[list[dict[str, Any]]] = Field(default_factory=list)
+
+    <span class="tok-k">def</span> bind_tools(self, tools, **kwargs):
+        self.bound.append(list(tools))
+        <span class="tok-k">return</span> self  <span <span class="tok-k">class</span>="tok-c"># the loop must keep talking to this object&#x27;s script</span>
+
+    <span class="tok-k">def</span> _generate(self, messages, stop=<span class="tok-k">None</span>, run_manager=<span class="tok-k">None</span>, **kwargs):
+        index = min(self._cursor, max(len(self.responses) - 1, 0))
+        result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        calls = self.tool_call_script[index] <span class="tok-k">if</span> index &lt; len(self.tool_call_script) <span class="tok-k">else</span> <span class="tok-k">None</span>
+        <span class="tok-k">if</span> <span class="tok-k">not</span> calls:
+            <span class="tok-k">return</span> result
+        base = result.generations[0].message
+        <span class="tok-k">return</span> ChatResult(generations=[ChatGeneration(message=AIMessage(
+            content=base.content,
+            usage_metadata=base.usage_metadata,
+            tool_calls=[{<span <span class="tok-k">class</span>="tok-s">&quot;type&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;tool_call&quot;</span>, **call} <span class="tok-k">for</span> call <span class="tok-k">in</span> calls],
+        ))])</pre></div>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">model = ToolScriptedModel(
+    responses=[<span <span class="tok-k">class</span>="tok-s">&quot;let me look&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;fixing it&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;add() now adds.&quot;</span>],
+    tool_call_script=[
+        [{<span <span class="tok-k">class</span>="tok-s">&quot;name&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;read_file&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;args&quot;</span>: {<span <span class="tok-k">class</span>="tok-s">&quot;path&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;calc.py&quot;</span>}, <span <span class="tok-k">class</span>="tok-s">&quot;id&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;1&quot;</span>}],
+        [{<span <span class="tok-k">class</span>="tok-s">&quot;name&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;edit_file&quot;</span>,
+          <span <span class="tok-k">class</span>="tok-s">&quot;args&quot;</span>: {<span <span class="tok-k">class</span>="tok-s">&quot;path&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;calc.py&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;old_string&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;a - b&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;new_string&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;a + b&quot;</span>},
+          <span <span class="tok-k">class</span>="tok-s">&quot;id&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;2&quot;</span>}],
+        [],  <span <span class="tok-k">class</span>="tok-c"># no tool call: the loop reads this turn <span class="tok-k">as</span> the answer</span>
+    ],
+)
+agent = AgentNode(model, harness, max_iterations=6)
+result = agent.run(<span <span class="tok-k">class</span>="tok-s">&quot;calc.add subtracts. Fix it.&quot;</span>)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Tool arguments come from a model, so their <em>shape</em> is as untrusted as their values — <code>&quot;args&quot;: [&quot;a&quot;, &quot;b&quot;]</code> returns <code>TOOL_ERROR: tool arguments must be a JSON object, got list</code> as a readable result, not an exception out of <code>run()</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> When a model emits unparseable JSON arguments, langchain puts the call in <code>invalid_tool_calls</code> and leaves <code>tool_calls</code> <strong>empty</strong> — a loop reading only <code>tool_calls</code> ends <code>target_met</code> with no answer. <code>AgentNode</code> reads both and returns the parse error as that call&#x27;s result; the turn still counts against the loop&#x27;s limits.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>AgentNode.run()</code> with no <code>RunContext</code> builds a fresh unbounded one — pass a real <code>ctx</code> to get budgets and traces.</aside>
+<h2 id="how-do-i-find-out-why-the-loop-stopped"><a class="anchor" href="#how-do-i-find-out-why-the-loop-stopped">How do I find out why the loop stopped?</a></h2>
+<p><code>AgentResult.termination_reason</code> is always set — the loop cannot fall out of the bottom — and <code>note</code> says why <em>this</em> reason and not just which. <code>StopReason</code> members are <code>target_met</code>, <code>max_iterations</code>, <code>no_progress</code>, <code>budget_exhausted</code>, <code>human_stopped</code>, <code>error</code>. <strong>Only <code>target_met</code> fills <code>output</code></strong>: a run stopped mid-work puts the model&#x27;s last words in <code>partial_output</code>, so a downstream node reading <code>answer</code> without <code>termination_reason</code> is never handed a plausible-looking non-answer. <strong>Progress is measured in observations, not requests</strong> — re-sending byte-identical arguments is how you poll a job or re-run a suite after an edit, so a repeat that returns something <em>new</em> counts as progress and only a repeat returning the same result counts as a stall. <code>max_stalled_turns</code> defaults to 2 and <code>max_iterations</code> to 8.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span <span class="tok-k">class</span>="tok-c"># 1. The model keeps re-reading the same file <span class="tok-k">and</span> learning nothing new.</span>
+stalled = build(max_iterations=10).run(<span <span class="tok-k">class</span>="tok-s">&quot;read it forever&quot;</span>)
+<span <span class="tok-k">class</span>="tok-c"># 2. The turn cap, <span class="tok-k">with</span> the stall guard raised out of the way.</span>
+capped = build(max_iterations=3, max_stalled_turns=99).run(<span <span class="tok-k">class</span>="tok-s">&quot;read it forever&quot;</span>)
+<span <span class="tok-k">class</span>="tok-c"># 3. The meter&#x27;s ceiling, checked before every turn.</span>
+ctx = RunContext(run_id=<span <span class="tok-k">class</span>="tok-s">&quot;demo&quot;</span>, graph=<span <span class="tok-k">class</span>="tok-s">&quot;cookbook&quot;</span>, meter=BudgetMeter(Budget(max_tokens=200)))
+broke = build(max_iterations=99, max_stalled_turns=99).run(<span <span class="tok-k">class</span>="tok-s">&quot;read it forever&quot;</span>, ctx)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">no_progress | 2 consecutive turns produced no new tool result
+  answer: &#x27;&#x27;  partial: &#x27;still working&#x27;
+max_iterations | iteration cap reached (3/3)
+budget_exhausted | max_tokens reached (335/200)</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The loop&#x27;s own turn cap and the meter&#x27;s ceiling are different mechanisms; setting both to similar values makes an ordinary turn-limited stop report as <code>budget_exhausted</code>. The <code>grapharc agent</code> CLI deliberately leaves iterations to the loop and gives the meter only tokens and wall clock.</aside>
+<h2 id="how-do-i-decide-which-tool-an-agent-may-call"><a class="anchor" href="#how-do-i-decide-which-tool-an-agent-may-call">How do I decide which tool an agent may call?</a></h2>
+<p>A <code>PermissionPolicy</code> is a list of rules over <code>fnmatch</code> patterns, evaluated <strong>by tier</strong> — every <code>deny</code> rule, then every <code>ask</code>, then every <code>allow</code> — not in the order you wrote them. Three consequences: rule order in the list is irrelevant (you can append a deny to an existing policy and it takes effect over everything already there); the default is <code>deny</code>, so a tool nobody thought about does not run; and you cannot punch a hole in a deny. Patterns match the <strong>tool name</strong> only, never its arguments.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">show(<span <span class="tok-k">class</span>="tok-s">&quot;a broad deny beats a narrow allow — there <span class="tok-k">is</span> no exception list:&quot;</span>,
+     PermissionPolicy(rules=[
+         PermissionRule(action=Decision.DENY, pattern=<span <span class="tok-k">class</span>="tok-s">&quot;*_file&quot;</span>),
+         PermissionRule(action=Decision.ALLOW, pattern=<span <span class="tok-k">class</span>="tok-s">&quot;read_file&quot;</span>),
+     ]), names)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">a broad deny beats a narrow allow — there is no exception list:
+   read_file        deny
+   write_file       deny
+   run_command      deny
+   deploy_to_prod   deny
+
+default when nothing matches: deny</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>DENY &quot;*_file&quot;</code> plus <code>ALLOW &quot;read_file&quot;</code> denies <code>read_file</code> too — if you want an exception, do not write the broad deny; enumerate what you allow.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>DENY &quot;run_command&quot;</code> stops the shell tool entirely; it cannot express &quot;deny <code>rm</code> but allow <code>ls</code>&quot; — that distinction belongs in a pre-hook.</aside>
+<h2 id="how-do-i-make-sure-a-denied-tool-is-never-even-offered-to-th"><a class="anchor" href="#how-do-i-make-sure-a-denied-tool-is-never-even-offered-to-th">How do I make sure a denied tool is never even offered to the model?</a></h2>
+<p>You do not have to do anything: <code>Harness.visible_tools()</code> filters by policy and <code>AgentNode</code> binds exactly that set, so a denied tool&#x27;s schema is never described to the model — and if it asks anyway, the call is still refused. Two enforcement points, and you need both: filtering schemas is the cheap one (no tokens spent describing tools it may not use), and re-checking inside <code>Harness.call</code> is the one that actually holds, because schemas are advisory, a model can hallucinate a tool name, and a second caller may reach the harness without going through <code>visible_tools()</code>. <code>refused_by</code> is a recorded field — <code>&quot;policy&quot;</code> for a permission denial, <code>&quot;sandbox&quot;</code> for a sandbox violation — so an audit is a lookup, not a string match. A denial is not a failure of the run; the run in the snippet still ends <code>target_met</code>, because killing the run on a denial would teach every caller to widen their policy until nothing is denied.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">registry = ToolRegistry()
+register_core_tools(registry, workspace)  <span <span class="tok-k">class</span>="tok-c"># all seven are registered</span>
+policy = PermissionPolicy(rules=[
+    PermissionRule(action=Decision.DENY, pattern=<span <span class="tok-k">class</span>="tok-s">&quot;run_command&quot;</span>),
+    PermissionRule(action=Decision.DENY, pattern=<span <span class="tok-k">class</span>="tok-s">&quot;write_file&quot;</span>),
+    PermissionRule(action=Decision.ALLOW, pattern=<span <span class="tok-k">class</span>="tok-s">&quot;*&quot;</span>),
+])
+harness = Harness(registry, policy, executor=LocalExecutor(), workspace=str(workspace))
+print(<span <span class="tok-k">class</span>="tok-s">&quot;offered   :&quot;</span>, [s[<span <span class="tok-k">class</span>="tok-s">&quot;function&quot;</span>][<span <span class="tok-k">class</span>="tok-s">&quot;name&quot;</span>] <span class="tok-k">for</span> s <span class="tok-k">in</span> tool_schemas(harness)])</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">registered: [&#x27;read_file&#x27;, &#x27;write_file&#x27;, &#x27;edit_file&#x27;, &#x27;list_dir&#x27;, &#x27;glob&#x27;, &#x27;grep&#x27;, &#x27;run_command&#x27;]
+offered   : [&#x27;edit_file&#x27;, &#x27;glob&#x27;, &#x27;grep&#x27;, &#x27;list_dir&#x27;, &#x27;read_file&#x27;]
+direct    : PermissionDenied: tool &#x27;write_file&#x27; denied by policy
+
+stopped   : target_met
+  denied   refused_by=policy   PERMISSION_DENIED: tool &#x27;write_file&#x27; denied by policy</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A sandbox violation is reported to the model as an <em>error</em> so the run can continue, so it has <code>status=ERROR</code> and never appears in <code>result.denied</code> — auditing &quot;was this run refused anything?&quot; via <code>denied</code> alone reads clean for a run the sandbox blocked end to end. Use <code>result.refused</code>, which covers both gates.</aside>
+<h2 id="how-do-i-put-a-human-in-front-of-a-tool"><a class="anchor" href="#how-do-i-put-a-human-in-front-of-a-tool">How do I put a human in front of a tool?</a></h2>
+<p>Mark the tool <code>ASK</code> and give the harness an <code>approval</code> callback that receives the tool name and arguments and returns a bool. <code>ASK</code> with no <code>approval=</code> is <code>DENY</code> — there is no &quot;proceed unless someone objects&quot; mode, and an absent channel means no approval. Unlike the policy, the callback <strong>does</strong> see the arguments, so argument-level rules live here: a size cap, a path allowlist, a check that the diff does not touch <code>main</code>. The refusal is a <code>PermissionDenied</code>, which <code>AgentNode</code> turns into an ordinary <code>PERMISSION_DENIED</code> tool result, so the model can revise and try again.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> approve_small_writes(tool: str, args: dict[str, Any]) -&gt; bool:
+    <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span><span <span class="tok-k">class</span>="tok-s">&quot;The gate. Return <span class="tok-k">True</span> to let the call through, <span class="tok-k">False</span> to refuse it.&quot;</span><span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+    asked.append((tool, args))
+    <span class="tok-k">return</span> len(args.get(<span <span class="tok-k">class</span>="tok-s">&quot;content&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>)) &lt; 100
+
+gated = Harness(registry, policy, executor=LocalExecutor(),
+                workspace=str(workspace), approval=approve_small_writes)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">approved  : overwrote calc.py (3 bytes)
+refused   : tool &#x27;write_file&#x27; requires approval and none was granted
+no channel: tool &#x27;write_file&#x27; requires approval and none was granted
+allowed   : &#x27;ok\n&#x27;
+asked     : 2 times total</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>ALLOW</code> never reaches the gate.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> This gate is <strong>synchronous</strong> — it blocks inside <code>Harness.call</code>, so it suits a terminal prompt or in-process policy function, not a ten-minute Slack round trip. For approvals that outlive the process, the session runtime holds the <em>node</em> before it executes and records an <code>ApprovalRequest</code> in the session store (<code>grapharc.session.approval</code>), so a rejection costs nothing to honour.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The CLI&#x27;s gate (<code>grapharc agent --ask &#x27;write_*&#x27;</code>) refuses when <code>--json</code> is set or stdin is not a tty, because a prompt written into a pipe either hangs the run or reads the next line of piped data as consent.</aside>
+<h2 id="how-do-i-block-or-rewrite-a-call-deterministically"><a class="anchor" href="#how-do-i-block-or-rewrite-a-call-deterministically">How do I block or rewrite a call deterministically?</a></h2>
+<p>Pre-hooks run after the permission check and before the executor; they can deny a call or rewrite its arguments, and post-hooks transform the result. Hooks are code: they fire every time, whatever the model was told in a system prompt, which is the difference between a rule and a request. A pre-hook is where argument-level policy belongs, since the permission layer only ever sees a tool name. Returning <code>None</code> from a pre-hook means &quot;no opinion&quot;.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> no_secrets(tool: str, args: dict[str, Any]) -&gt; HookDecision | <span class="tok-k">None</span>:
+    <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>&quot;Deny any read of a dotfile. Returning <span class="tok-k">None</span> means &<span <span class="tok-k">class</span>="tok-c">#x27;no opinion&#x27;.<span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>&quot;</span>
+    <span class="tok-k">if</span> tool == <span <span class="tok-k">class</span>="tok-s">&quot;read_file&quot;</span> <span class="tok-k">and</span> Path(args.get(<span <span class="tok-k">class</span>="tok-s">&quot;path&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>)).name.startswith(<span <span class="tok-k">class</span>="tok-s">&quot;.&quot;</span>):
+        <span class="tok-k">return</span> HookDecision(action=HookAction.DENY, reason=<span <span class="tok-k">class</span>="tok-s">&quot;dotfiles are off limits&quot;</span>)
+    <span class="tok-k">return</span> <span class="tok-k">None</span>
+
+
+<span class="tok-k">def</span> bound_reads(tool: str, args: dict[str, Any]) -&gt; HookDecision | <span class="tok-k">None</span>:
+    <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span><span <span class="tok-k">class</span>="tok-s">&quot;Rewrite, rather than refuse: cap every read at 50 lines.&quot;</span><span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+    <span class="tok-k">if</span> tool == <span <span class="tok-k">class</span>="tok-s">&quot;read_file&quot;</span> <span class="tok-k">and</span> <span class="tok-k">not</span> args.get(<span <span class="tok-k">class</span>="tok-s">&quot;limit&quot;</span>):
+        <span class="tok-k">return</span> HookDecision(action=HookAction.REWRITE, args={**args, <span <span class="tok-k">class</span>="tok-s">&quot;limit&quot;</span>: 50})
+    <span class="tok-k">return</span> <span class="tok-k">None</span>
+
+
+<span class="tok-k">def</span> redact(tool: str, args: dict[str, Any], result: Any) -&gt; Any:
+    <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span><span <span class="tok-k">class</span>="tok-s">&quot;A post-hook sees the result <span class="tok-k">and</span> may transform it.&quot;</span><span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+    <span class="tok-k">return</span> result.replace(<span <span class="tok-k">class</span>="tok-s">&quot;sk-real-key&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;sk-***&quot;</span>) <span class="tok-k">if</span> isinstance(result, str) <span class="tok-k">else</span> result</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">denied  : tool &#x27;read_file&#x27; blocked by hook: dotfiles are off limits
+rewritten: &#x27;def add(a, b):\n    return a - b\n\n[lines 1-2 of 2]&#x27;
+redacted : &#x27;1 match(es) in . (2 file(s) searched)\n.env:1: OPENROUTER_API_KEY=sk-***&#x27;</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>The first non-<code>None</code> pre-hook decision wins and stops the chain</strong> — including a <code>REWRITE</code>, so <code>bound_reads</code> never runs on a call <code>no_secrets</code> rewrote. A <code>REWRITE</code> with <code>args=None</code> is a no-op that still stops the chain.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>Post-hooks are different: all of them run, in order, each fed the previous one&#x27;s output.</strong></aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A hook is exactly as broad as the predicate you wrote — <code>no_secrets</code> denies <code>read_file</code> on <code>.env</code> while <code>grep</code> walks straight into it and prints the key. If the rule is &quot;this file is off limits&quot;, enforce it against every tool that can read a file, or by not registering those tools.</aside>
+<h2 id="what-does-the-default-executor-actually-confine"><a class="anchor" href="#what-does-the-default-executor-actually-confine">What does the default executor actually confine?</a></h2>
+<p>If you do not pass <code>executor=</code>, <code>Harness</code> builds a <code>SandboxedExecutor</code> over <code>workspace=</code>: it forks a child per call, scrubs its environment, and installs a CPython audit hook. There are <strong>two grants, deliberately different sizes</strong> — reads reach the workspace <em>and</em> the interpreter&#x27;s runtime paths (stdlib, site-packages, <code>/usr/lib</code>) because a tool has to be able to import; mutations reach the workspace and nothing else. That split exists because a writable site-packages lets a tool drop a <code>.pth</code> file, which executes arbitrary Python on every later start of that interpreter — an escape in another process, outliving the run. The rest follows from one rule: <strong>anything that leaves this interpreter leaves the hook</strong> — subprocesses are refused (including <code>_posixsubprocess.fork_exec</code>, not just <code>Popen</code>), as are <code>ctypes</code>, sqlite extension loading, and importing a compiled extension from outside the runtime paths. Network is off unless the <code>ToolSpec</code> declared <code>needs_network</code>, and then it is the whole network.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">harness = Harness(
+    registry,
+    PermissionPolicy(rules=[PermissionRule(action=Decision.ALLOW, pattern=<span <span class="tok-k">class</span>="tok-s">&quot;*&quot;</span>)]),
+    workspace=str(workspace),  <span <span class="tok-k">class</span>="tok-c"># no executor= -&gt; SandboxedExecutor over this workspace</span>
+)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">write_here         ok       &#x27;scratch&#x27;
+read_stdlib        ok       &#x27;json&#x27;
+read_etc           REFUSED  tool &#x27;read_etc&#x27; touched &#x27;/etc/passwd&#x27; outside its workspace (open)
+write_sitepackages REFUSED  tool &#x27;write_sitepackages&#x27; tried to modify &#x27;&lt;site-packages&gt;/evil.pth&#x27; outside its workspace (open)
+shell_out          REFUSED  tool &#x27;shell_out&#x27; tried to spawn a process (subprocess.Popen)
+phone_home         REFUSED  tool &#x27;phone_home&#x27; attempted network access (socket.getaddrinfo) without declaring needs_network
+go_native          REFUSED  tool &#x27;go_native&#x27; tried to reach native code through ctypes (ctypes.dlsym)</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The cwd is the workspace and <code>TMPDIR</code>/<code>TEMP</code>/<code>TMP</code> point at it, so <code>tempfile</code> works without tripping the path check.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>open</code> is classified per call from the mode in its own audit arguments; <code>sqlite3.connect</code> is treated as a mutation because it opens read/write in C, and a <code>file:</code>-prefixed sqlite name is refused outright because sqlite re-decodes that name itself, so <code>realpath</code> would be vetting a fiction.</aside>
+<h2 id="what-does-the-sandbox-not-confine"><a class="anchor" href="#what-does-the-sandbox-not-confine">What does the sandbox not confine?</a></h2>
+<p>This matters more than the previous recipe: <code>SandboxedExecutor</code> is an in-process audit-hook confinement, <strong>not a kernel boundary</strong>, and the holes are known, documented and still open. Metadata reads are not confined (CPython raises no audit event for <code>os.stat</code>, so size, mtime and existence anywhere on the host stay readable); raw file descriptors are not (<code>os.read</code>/<code>os.write</code>/<code>os.dup</code>/<code>mmap</code> carry no path, and <code>fork</code> hands the child every descriptor the parent had); the forked heap is not (<code>os.environ</code> is scrubbed to an allowlist, but a secret a parent module already holds in a global stays reachable through <code>sys.modules</code>). The practical reading: a strong guard against a <em>confused</em> tool and a decent one against a careless model — against a tool you would not run on your laptop, it is not a boundary. Use a container.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">run(<span <span class="tok-k">class</span>="tok-s">&quot;open()&quot;</span>, <span class="tok-k">lambda</span>: outside.read_text())        <span <span class="tok-k">class</span>="tok-c"># confined: content reads are checked</span>
+run(<span <span class="tok-k">class</span>="tok-s">&quot;os.stat&quot;</span>, <span class="tok-k">lambda</span>: os.stat(outside).st_size)  <span <span class="tok-k">class</span>="tok-c"># <span class="tok-k">not</span> confined: no audit event exists</span>
+run(<span <span class="tok-k">class</span>="tok-s">&quot;raw fd&quot;</span>, <span class="tok-k">lambda</span>: os.read(leaked_fd, 64))     <span <span class="tok-k">class</span>="tok-c"># <span class="tok-k">not</span> confined: an fd carries no path</span>
+run(<span <span class="tok-k">class</span>="tok-s">&quot;global&quot;</span>, <span class="tok-k">lambda</span>: API_KEY)                    <span <span class="tok-k">class</span>="tok-c"># <span class="tok-k">not</span> confined: fork copies the heap</span>
+run(<span <span class="tok-k">class</span>="tok-s">&quot;environ&quot;</span>, <span class="tok-k">lambda</span>: os.environ.get(<span <span class="tok-k">class</span>="tok-s">&quot;MY_API_KEY&quot;</span>))  <span <span class="tok-k">class</span>="tok-c"># confined: the env <span class="tok-k">is</span> scrubbed</span></pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">open()         REFUSED  tool &#x27;open()&#x27; touched &#x27;&lt;tmp&gt;/outside.txt&#x27; outside its workspace (open)
+os.stat        17
+raw fd         b&#x27;a secret on disk\n&#x27;
+global         &#x27;sk-a-secret-this-module-already-holds&#x27;
+environ        None</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Inherited descriptors cannot simply be closed — the child cannot tell <code>multiprocessing</code>&#x27;s own sentinel pipe from an inherited one, and closing that breaks the timeout-kill path. <code>os.readlink</code> <em>is</em> guarded so <code>/proc/self/fd/N</code> cannot enumerate them, which costs an attacker the enumeration step, not the guess.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The <code>os.readlink</code> guard is a function wrapper, not an audit hook, so unlike everything else it is in principle removable from inside (the original is reachable through the wrapper&#x27;s closure); an audit hook cannot be unregistered.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Fixing the forked-heap leak would need a non-<code>fork</code> start method, which would require every tool function to be picklable.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Compiled modules shipped with the interpreter and its site-packages are trusted by necessity — importing any of them executes native code the hook never sees.</aside>
+<h2 id="why-do-my-tools-say-outside-its-workspace-when-the-path-is-r"><a class="anchor" href="#why-do-my-tools-say-outside-its-workspace-when-the-path-is-r">Why do my tools say &quot;outside its workspace&quot; when the path is right?</a></h2>
+<p>Because <code>Harness(registry, policy)</code> without <code>workspace=</code> builds a <code>SandboxedExecutor</code> over a <strong>fresh temp directory</strong>, which is not the directory your tools were built for — two confinements, two roots, and the sandbox wins. The tools confine paths and the executor confines paths independently and on purpose: <code>LocalExecutor</code> confines nothing, and <code>run_command</code> leaves the interpreter the audit hook lives in, so neither layer can be the only one. The cost is that you have to point both at the same directory — pass the same path to <code>register_core_tools</code> and to <code>Harness(..., workspace=...)</code>, or pass an executor you built yourself.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">harness = Harness(  <span <span class="tok-k">class</span>="tok-c"># note the missing workspace= argument</span>
+    registry,
+    PermissionPolicy(rules=[PermissionRule(action=Decision.ALLOW, pattern=<span <span class="tok-k">class</span>="tok-s">&quot;*&quot;</span>)]),
+)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;same directory?  :&quot;</span>, harness.executor.workspace == str(workspace))</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">same directory?  : False
+result           : tool &#x27;read_file&#x27; touched &#x27;&lt;tools-ws&gt;/calc.py&#x27; outside its workspace (open)</pre></figure>
+<h2 id="why-does-run-command-fail-under-the-default-executor"><a class="anchor" href="#why-does-run-command-fail-under-the-default-executor">Why does run_command fail under the default executor?</a></h2>
+<p>Because the audit hook refuses to spawn a process and <code>run_command</code> spawns one — a design decision, not a bug, with no flag to turn it off. Note <em>which</em> refusal you get: not the spawn, but the <code>/dev/null</code> open that <code>stdin=DEVNULL</code> performs a moment earlier — same outcome, one audit event sooner. So <code>run_command</code> needs <code>LocalExecutor</code> (no confinement at all) or <code>ContainerExecutor</code> (a real one); under <code>LocalExecutor</code> the child is an ordinary process with your privileges reaching the whole filesystem, and what limits it is the permission policy deciding whether it may run at all. What <code>run_command</code> does give you is discipline around the call: <code>argv</code> is a list and <code>shell=False</code>, always; a pipeline is spelled <code>[&quot;bash&quot;, &quot;-lc&quot;, &quot;...&quot;]</code>, explicit and visible in the tool-call record; the deadline kills the whole process group; and the environment is an allowlist so your provider key is not handed to whatever was run.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">try</span>:  <span <span class="tok-k">class</span>="tok-c"># the default executor — SandboxedExecutor — refuses every subprocess</span>
+    harness_with(<span class="tok-k">None</span>).call(<span <span class="tok-k">class</span>="tok-s">&quot;run_command&quot;</span>, {<span <span class="tok-k">class</span>="tok-s">&quot;argv&quot;</span>: [<span <span class="tok-k">class</span>="tok-s">&quot;echo&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;hi&quot;</span>]})
+<span class="tok-k">except</span> SandboxViolation <span class="tok-k">as</span> exc:
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;sandbox:&quot;</span>, exc)
+
+print(<span <span class="tok-k">class</span>="tok-s">&quot;local  :&quot;</span>, harness_with(LocalExecutor()).call(<span <span class="tok-k">class</span>="tok-s">&quot;run_command&quot;</span>, {<span <span class="tok-k">class</span>="tok-s">&quot;argv&quot;</span>: [<span <span class="tok-k">class</span>="tok-s">&quot;ls&quot;</span>]}))</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">sandbox: tool &#x27;run_command&#x27; tried to modify &#x27;/dev/null&#x27; outside its workspace (open); the runtime paths are readable but never writable — code left in them runs in later interpreters, where no hook is watching
+local  : exit code 0 after 0.00s
+stdout:
+calc.py</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A single command string is refused rather than split — splitting reintroduces quoting rules you never asked for, and <code>shell=True</code> makes every model-supplied substring an injection site.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Registering <code>run_command</code> is a decision of a different size from registering <code>read_file</code>.</aside>
+<h2 id="how-do-i-get-a-real-boundary"><a class="anchor" href="#how-do-i-get-a-real-boundary">How do I get a real boundary?</a></h2>
+<p><code>ContainerExecutor</code> runs each call in a fresh throwaway container, so the confinement is the kernel&#x27;s — namespaces, cgroups, dropped capabilities — rather than CPython&#x27;s, behind the same <code>run(spec, args)</code> interface so callers never branch on which executor they hold. The constraint you hit in the first five minutes: a container is a different filesystem and interpreter, so <code>spec.fn</code> cannot cross; what crosses is an import path <code>module:qualname</code> derived from <code>spec.fn</code>, resolved by importing that module <strong>inside the container</strong>, which means the tool&#x27;s code must already be installed in the image. So it is <strong>not a drop-in replacement for <code>SandboxedExecutor</code> on the core toolset</strong> — either the derived path resolves in your image or you name it yourself with <code>entrypoints={&quot;my_tool&quot;: &quot;mypkg.tools:my_tool&quot;}</code>. What the container gets: one bind mount (the workspace, read-write, at <code>/workspace</code>, also the cwd), <code>--network none</code> unless the tool declared <code>needs_network</code>, all capabilities dropped, <code>no-new-privileges</code>, a non-root uid, a read-only rootfs, and memory and pid limits — plus the <em>image&#x27;s</em> filesystem, which is why the image is part of the security decision.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">executor = ContainerExecutor(str(workspace), image=<span <span class="tok-k">class</span>="tok-s">&quot;python:3.12-slim&quot;</span>)
+version = ToolSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;version&quot;</span>, description=<span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>, fn=platform.python_version)
+listing = ToolSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;listing&quot;</span>, description=<span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>, fn=os.listdir)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;entrypoints      :&quot;</span>, executor.entrypoint_for(version), executor.entrypoint_for(listing))
+print(<span <span class="tok-k">class</span>="tok-s">&quot;python <span class="tok-k">in</span> image  :&quot;</span>, executor.run(version, {}))
+print(<span <span class="tok-k">class</span>="tok-s">&quot;workspace inside :&quot;</span>, executor.run(listing, {<span <span class="tok-k">class</span>="tok-s">&quot;path&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;/workspace&quot;</span>}))
+print(&quot;host -&gt; container:<span <span class="tok-k">class</span>="tok-s">&quot;, executor.container_path(workspace / &quot;</span>calc.py&quot;))</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">runtime reachable: True
+entrypoints      : platform:python_version posix:listdir
+python here      : 3.14.6
+python in image  : 3.12.13
+workspace inside : [&#x27;calc.py&#x27;]
+host -&gt; container: /workspace/calc.py
+local function   : tool &#x27;my_tool&#x27; is defined in &#x27;__main__&#x27;, which names a different file inside the container than it does here</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Refused before a container even starts: lambdas and nested functions (<code>&lt;lambda&gt;</code>, <code>&lt;locals&gt;</code> in the qualname), <code>functools.partial</code> and callable objects (no <code>__qualname__</code>), bound methods (<code>self</code> cannot cross), and anything in <code>__main__</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Names that cannot be checked without importing are deliberately left to the container — importing a module on the host to validate a name would execute its top-level code unsandboxed, the very failure this class prevents.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Everything crosses as JSON only: objects, file handles and generators are refused rather than mangled; a tuple comes back as a list and non-string dict keys arrive as strings; paths in <code>args</code> must be <em>container</em> paths (<code>container_path()</code> translates). Anything the tool prints is discarded — fd 1 points at stderr before the tool gets control, so a print cannot forge a result.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Stated limits: the container runtime is trusted (Docker&#x27;s daemon runs as root; an escape defeats this), the image&#x27;s contents are not verified, the read-only rootfs does not cover the read-write workspace and no disk quota is imposed, and <code>--user</code> differs between docker and rootless podman — under rootless podman pass <code>extra_run_args=(&quot;--userns=keep-id&quot;,)</code> or set <code>user=</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> If no runtime is found, <code>run()</code> refuses rather than falling back to running the tool locally — a silent downgrade from &quot;contained&quot; to &quot;not contained&quot; is the bug this class prevents.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> This snippet needs a working <code>docker</code> or <code>podman</code> and the <code>python:3.12-slim</code> image (<code>requires=docker</code>).</aside>
+<h2 id="how-do-i-put-an-agent-inside-a-graph"><a class="anchor" href="#how-do-i-put-an-agent-inside-a-graph">How do I put an agent inside a graph?</a></h2>
+<p><code>AgentNode</code> is callable as a node, and <code>agent.writes</code> reports exactly the state fields it writes, so the graph&#x27;s write-permission check stays declarative. The state field names are configurable (<code>task_field</code>, <code>output_field</code>, <code>reason_field</code>, <code>record_field</code>) and <code>writes</code> is derived from whichever you chose, so the two cannot drift apart; for a prompt richer than one state field pass <code>prompt_fn=lambda state: ...</code>, and <code>observe()</code> raises <code>AgentConfigError</code> if it finds neither. An agent turn is metered like any other node: one iteration charged per model call against the <code>RunContext</code>&#x27;s meter, and the message is named when tokens are charged so the runtime&#x27;s usage callback recognises a re-report rather than double-counting. Set <code>record_field</code> to land the whole <code>AgentResult</code> — every tool call, every refusal — in state.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">agent = AgentNode(model, harness)  <span <span class="tok-k">class</span>="tok-c"># reads state.task; writes answer + termination_reason</span>
+print(<span <span class="tok-k">class</span>="tok-s">&quot;agent.writes:&quot;</span>, sorted(agent.writes))
+
+
+<span class="tok-k">def</span> judge(state: State) -&gt; dict:
+    <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span><span <span class="tok-k">class</span>="tok-s">&quot;A downstream node reads the reason, <span class="tok-k">not</span> just the answer.&quot;</span><span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+    <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;verdict&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;reviewed&quot;</span> <span class="tok-k">if</span> state.termination_reason == <span <span class="tok-k">class</span>="tok-s">&quot;target_met&quot;</span> <span class="tok-k">else</span> <span <span class="tok-k">class</span>="tok-s">&quot;incomplete&quot;</span>}
+
+
+g = GraphARC(State, name=<span <span class="tok-k">class</span>="tok-s">&quot;review&quot;</span>)
+g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;agent&quot;</span>, agent, writes=agent.writes)
+g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;judge&quot;</span>, judge, writes={<span <span class="tok-k">class</span>="tok-s">&quot;verdict&quot;</span>})
+g.add_edge(START, <span <span class="tok-k">class</span>="tok-s">&quot;agent&quot;</span>)
+g.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;agent&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;judge&quot;</span>)
+g.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;judge&quot;</span>, END)
+
+out = g.compile().invoke({<span <span class="tok-k">class</span>="tok-s">&quot;task&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;what <span class="tok-k">is</span> wrong <span class="tok-k">with</span> calc.py?&quot;</span>})</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">agent.writes: [&#x27;answer&#x27;, &#x27;termination_reason&#x27;]
+answer      : add() subtracts where it should add.
+reason      : target_met
+verdict     : reviewed</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Traces get sub-node phases of their own — <code>&quot;model&quot;</code> per model call, <code>&quot;tool&quot;</code> per tool call, <code>&quot;stop&quot;</code> for the termination — not <code>&quot;start&quot;</code>/<code>&quot;end&quot;</code>, because <code>observe.metrics</code> counts node executions and run tokens from <code>&quot;end&quot;</code> events and reusing that phase inside a node would double-count what the node wrapper already reported.</aside>
+<h2 id="how-do-i-see-all-of-this-working-end-to-end"><a class="anchor" href="#how-do-i-see-all-of-this-working-end-to-end">How do I see all of this working end to end?</a></h2>
+<p><code>grapharc/examples/agent_fixit.py</code> is the worked example: a project whose <code>add()</code> subtracts, a test suite that catches it, and an agent that must find the bug, fix it, and prove the fix by running the tests. <code>delete_file</code> is registered and denied, so the shortest path to a green suite is closed off in code. The point of the whole example is the last line of output: the agent said the suite was green, and <code>run_pytest</code> runs <em>afterwards, outside the loop</em> and says so independently — an agent&#x27;s claim about its own work is not evidence. <code>build_harness</code> uses <code>LocalExecutor</code> and says why in its docstring: <code>run_tests</code> shells out to pytest, which <code>SandboxedExecutor</code> refuses by design, so the example leans on the permission layer instead.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">workspace = make_workspace()          <span <span class="tok-k">class</span>="tok-c"># calc.py <span class="tok-k">with</span> `a - b`, <span class="tok-k">and</span> a test that wants `a + b`</span>
+harness = build_harness(workspace)    <span <span class="tok-k">class</span>="tok-c"># read/write/run_tests, <span class="tok-k">and</span> a denied delete_file</span>
+result = AgentNode(model, harness, system_prompt=SYSTEM_PROMPT, max_iterations=12).run(TASK)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;independent test run:&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;PASS&quot;</span> <span class="tok-k">if</span> run_pytest(workspace).returncode == 0 <span class="tok-k">else</span> <span <span class="tok-k">class</span>="tok-s">&quot;FAIL&quot;</span>)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">export OPENROUTER_API_KEY=sk-or-...
+uv run python -m grapharc.examples.agent_fixit --model openrouter/anthropic/claude-haiku-4.5</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The real-model invocation costs money and is <strong>not run here</strong> (<code>norun=&quot;needs an OpenRouter API key&quot;</code>).</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A task needing both real isolation and a subprocess wants <code>ContainerExecutor</code>.</aside>
+<h2 id="how-do-i-run-an-agent-from-the-shell"><a class="anchor" href="#how-do-i-run-an-agent-from-the-shell">How do I run an agent from the shell?</a></h2>
+<p><code>grapharc agent</code> takes the task from you, the tools from <code>grapharc.tools</code>, and the permissions from flags: <code>--allow</code>, <code>--deny</code> and <code>--ask</code> are repeatable globs; <code>--executor</code> picks <code>sandbox</code> (default) or <code>local</code>; <code>--max-turns</code>, <code>--max-tokens</code> and <code>--max-seconds</code> bound the run; <code>--json</code> prints one document instead of prose. The <code>mock/</code> backend resolves to <code>ScriptedChatModel</code>, which has no <code>bind_tools</code>, making it a way to see the wiring without spending anything — tools are loaded, the policy applied, and the command then refuses to pretend a text-only model can drive a tool loop. The JSON payload answers the three questions a run is graded on: what it was allowed to do (<code>policy</code>, <code>tools_visible</code>), what it did (<code>tool_calls</code>), and why it stopped (<code>termination_reason</code>, <code>note</code> — or <code>error</code>). A trace lands at <code>&lt;workspace&gt;/trace.jsonl</code> either way; <code>grapharc trace</code>, <code>grapharc metrics</code> and <code>grapharc viz</code> read it.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">grapharc agent --model mock/none --workspace /tmp/grapharc-cookbook-ws --run-id demo \
+  --deny &#x27;run_command&#x27; --deny &#x27;write_file&#x27; --ask &#x27;edit_file&#x27; --json &quot;list the files&quot;</pre></figure>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">{
+  &quot;ok&quot;: false,
+  &quot;command&quot;: &quot;agent&quot;,
+  &quot;error&quot;: &quot;model ScriptedChatModel does not implement bind_tools, so it cannot drive a tool loop (5 tools are visible to it); use a tool-calling backend such as openrouter/*, openai/* or ollama/*&quot;,
+  &quot;executor&quot;: &quot;sandbox&quot;,
+  &quot;tools_from&quot;: &quot;grapharc.tools.register_core_tools&quot;,
+  &quot;policy&quot;: {&quot;allow&quot;: [&quot;*&quot;], &quot;ask&quot;: [&quot;edit_file&quot;], &quot;deny&quot;: [&quot;run_command&quot;, &quot;write_file&quot;]},
+  &quot;tools_visible&quot;: [&quot;edit_file&quot;, &quot;glob&quot;, &quot;grep&quot;, &quot;list_dir&quot;, &quot;read_file&quot;]
+}</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Exit codes are part of the interface: this command exits <strong>2</strong> (could not run at all); only <code>termination_reason == &quot;target_met&quot;</code> exits 0, and every other termination (turn cap, stall, exhausted budget) exits 1, so a script does not have to parse prose to learn the task was unfinished.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The real-key variant (same command with a tool-calling model) is <strong>not run here</strong> — it costs money.</aside>
+<footer class="pager-row">
+<a class="pager prev" href="models.html">&larr; Models</a><span class="pager-spacer"></span><a class="pager next" href="verification-and-memory.html">Verification & memory &rarr;</a>
+</footer>
+<footer class="colophon">
+  Generated from the repository's README and cookbook (docs/cookbook/01–06) ·
+  <a href="https://github.com/CodeGraphContext/GraphARC">CodeGraphContext/GraphARC</a> · MIT license
+</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var links = document.querySelectorAll('.nav-chapter ul a');
+  var byId = {};
+  links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+  var current = null;
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        var a = byId[e.target.id];
+        if (a) {
+          if (current) current.classList.remove('active');
+          a.classList.add('active');
+          current = a;
+        }
+      }
+    });
+  }, { rootMargin: '0px 0px -70% 0px' });
+  document.querySelectorAll('main h2[id]').forEach(function (h) { obs.observe(h); });
+})();
+</script>
+</body>
+</html>

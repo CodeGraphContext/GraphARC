@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contributing — GraphARC</title>
+<meta name="description" content="Tests, the live-marker rule, PR conventions, and the honesty rule for docs.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📚</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="side" aria-label="Documentation contents">
+  <a class="brand" href="index.html"><b>GraphARC<span class="amp"> docs</span></b><span>a governed agent runtime on LangGraph</span></a>
+  <ul>
+<li class="nav-chapter"><a href="index.html">Overview</a>
+</li>
+<li class="nav-chapter"><a href="getting-started.html">Getting started</a>
+</li>
+<li class="nav-chapter"><a href="models.html">Models</a>
+</li>
+<li class="nav-chapter"><a href="agents-and-tools.html">Agents & tools</a>
+</li>
+<li class="nav-chapter"><a href="verification-and-memory.html">Verification & memory</a>
+</li>
+<li class="nav-chapter"><a href="governance.html">Governance</a>
+</li>
+<li class="nav-chapter"><a href="serving-and-ops.html">Serving & operations</a>
+</li>
+<li class="nav-chapter"><a href="roadmap.html">Roadmap</a>
+</li>
+<li class="nav-chapter"><a class="active" href="contributing.html">Contributing</a>
+<ul><li><a href="#intro">Intro</a></li><li><a href="#setup">Setup</a></li><li><a href="#running-the-tests">Running the tests</a></li><li><a href="#the-live-marker-rule">The live-marker rule</a></li><li><a href="#writing-a-change-pr-conventions">Writing a change (PR conventions</a></li><li><a href="#the-honesty-rule-for-documentation">The honesty rule for documentation</a></li><li><a href="#packaging-changes">Packaging changes</a></li><li><a href="#releasing">Releasing</a></li></ul>
+</li>
+  </ul>
+</nav>
+<main>
+<header class="page-head">
+  <h1>Contributing</h1>
+  <p class="sub">Tests, the live-marker rule, PR conventions, and the honesty rule for docs.</p>
+</header>
+<h2 id="intro"><a class="anchor" href="#intro">Intro</a></h2>
+<p>The file covers the three things easiest to get wrong in this repo: how to run the tests, the rule that keeps live tests from spending your money, and the standard the project holds documentation to.</p>
+<h2 id="setup"><a class="anchor" href="#setup">Setup</a></h2>
+<p>The toolchain is uv. <code>uv.lock</code> is committed, so everyone resolves to the same versions. <code>--all-extras</code> matters, because several tests skip themselves when an optional dependency is missing — syncing only the dev group silently shrinks the suite instead of failing.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">git clone https://github.com/CodeGraphContext/GraphARC
+cd GraphARC
+uv sync --all-extras --group dev</pre></figure>
+<h2 id="running-the-tests"><a class="anchor" href="#running-the-tests">Running the tests</a></h2>
+<p>Standard pytest invocations for the whole suite, a single file, a pattern, or first-failure. Lint and autofix with ruff. Both are what CI runs (<code>.github/workflows/ci.yml</code>), across Python 3.12, 3.13 and 3.14.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">uv run pytest                       # the whole suite
+uv run pytest tests/test_server.py  # one file
+uv run pytest -k retrieval          # one pattern
+uv run pytest -x -q                 # stop at the first failure</pre></figure>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">uv run ruff check . --fix</pre></figure>
+<h2 id="the-live-marker-rule"><a class="anchor" href="#the-live-marker-rule">The live-marker rule</a></h2>
+<p><strong>A test marked <code>live</code> calls a real model backend and spends real money.</strong> Never run <code>pytest -m live</code> casually, never in CI, and never because a failing test looked like it might pass against a real model. The mechanics, so you can tell when they are broken: <code>addopts</code> in <code>pyproject.toml</code> carries <code>-m &#x27;not live&#x27;</code> and must stay there; <code>addopts</code> also carries <code>--strict-markers</code>, which is part of the same guarantee rather than a style preference, since without it a misspelled <code>@pytest.mark.lvie</code> is only a warning and the test calls the API on a plain <code>pytest</code>; every marker must be registered in the <code>markers</code> table before use, and <code>tests/test_packaging.py</code> fails if the tree uses one that is not; <code>required_plugins</code> names <code>pytest-asyncio</code> and <code>pytest-timeout</code>, because registering their markers locally would make a missing plugin silent with no timeout enforced; and CI has a <code>live-marker-guard</code> job comparing the default selection against the <code>-m live</code> selection, failing if anything is in both.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">pytest            # &#x27;not live&#x27; — every paid test is deselected
+pytest -m live    # opt in, deliberately, with your own key</pre></figure>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">@pytest.mark.live
+<span class="tok-k">def</span> test_something_against_a_real_backend():
+    ...</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Mark a live test, keep it out of any fixture the default suite touches, and say in the test what it costs to run.</aside>
+<h2 id="writing-a-change-pr-conventions"><a class="anchor" href="#writing-a-change-pr-conventions">Writing a change (PR conventions</a></h2>
+<p><strong>One concern per PR</strong> — a fix and the refactor around it are two PRs. <strong>A bug fix comes with a test that fails without it</strong>: prove it by reverting the fix, watching the new test go red, and putting the fix back; a test that passes either way is documentation, not a regression guard. <strong>Never weaken an existing test to make a change pass</strong> — if an assertion is genuinely wrong, say so in the PR and explain why in the same breath as changing it. <strong>Keep <code>ruff check .</code> clean</strong>; line length is 100. <strong>Note behaviour changes in the commit message</strong> when you change behaviour, the public API, or what ships.</p>
+<h2 id="the-honesty-rule-for-documentation"><a class="anchor" href="#the-honesty-rule-for-documentation">The honesty rule for documentation</a></h2>
+<p>Enforced hardest, because this repo has broken it before and the ROADMAP still carries a <code>!</code> legend entry for claims that shipped while being false. <strong>A docstring, a README line, or a comment must not claim a guarantee the code does not provide</strong> — not &quot;aspirationally&quot;, not &quot;once the TODO lands&quot;, not because the happy path happens to hold. Concretely: if a function is confined, sandboxed, budgeted, atomic, ordered or durable <strong>only under conditions</strong>, name the conditions in the docstring (<code>render_context</code> documents the single case where it overshoots <code>max_tokens</code>; <code>LocalExecutor</code> is named for what it does not do). If something is defense in depth rather than a boundary, say which (<code>SandboxedExecutor</code> is an audit-hook sandbox, not a kernel boundary, and its docstring says so). If a name oversells the thing — the way an exact-string match was once labelled &quot;GraphRAG&quot; — rename it or write down precisely what it does (<code>HashingEmbedder</code>&#x27;s docstring states it is lexical, not semantic). If an extra, config key or parameter exists but nothing implements it yet, say that where a reader will hit it — the optional-dependency table in <code>pyproject.toml</code> states, per extra, whether anything under <code>grapharc/</code> imports it today. When you fix something, fix the prose in the same commit: a stale docstring that used to be true is exactly as harmful as one that was never true.</p>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The failure mode to avoid is confident prose over a guarantee the code does not provide. A missing feature is fine; a feature documented as working that is not will cost somebody a debugging session, or will be trusted with something it cannot hold.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> If you cannot close a gap, write the gap down — <code>ROADMAP.md</code> has a <em>Known gaps</em> section for exactly that.</aside>
+<h2 id="packaging-changes"><a class="anchor" href="#packaging-changes">Packaging changes</a></h2>
+<p><code>pyproject.toml</code> is the authority for what ships. <code>[tool.hatch.build.targets.sdist].include</code> is an allowlist, so a new top-level file that should ship has to be added there; <code>MANIFEST.in</code> mirrors that list for readers and tools, hatchling never reads it, and <code>tests/test_packaging.py</code> fails if the two drift. <code>[tool.hatch.build].ignore-vcs</code> is on deliberately, because with hatchling&#x27;s default a <code>.gitignore</code> entry doubles as a build exclusion — verified to drop the whole <code>grapharc/tools</code> subpackage out of the wheel with no error and a successful build; junk you want kept out belongs in <code>[tool.hatch.build].exclude</code>. After a packaging change, build and install into a throwaway environment rather than trusting the build&#x27;s exit code. CI does the same on every PR, for both the wheel and the sdist.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">uv build
+uv venv /tmp/check &amp;&amp; uv pip install --python /tmp/check/bin/python &quot;$(echo dist/*.whl)[all]&quot;
+cd /tmp &amp;&amp; /tmp/check/bin/python -c &quot;import grapharc, pkgutil, importlib
+[importlib.import_module(m.name) for m in pkgutil.walk_packages(grapharc.__path__, &#x27;grapharc.&#x27;)]&quot;
+/tmp/check/bin/grapharc --version</pre></figure>
+<h2 id="releasing"><a class="anchor" href="#releasing">Releasing</a></h2>
+<p>Tag-driven. <code>.github/workflows/release.yml</code> refuses a tag that disagrees with the version in <code>pyproject.toml</code>, builds, verifies the artifacts in clean environments, and publishes through PyPI Trusted Publishing. There is no API token in this repository or in its secrets. Steps: bump <code>version</code> in <code>pyproject.toml</code> <strong>and</strong> <code>__version__</code> in <code>grapharc/__init__.py</code> (CI fails if the two disagree); tag the release, with the commit log as the record of what changed; tag <code>vX.Y.Z</code> and push it.</p>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The three numbered steps are partly redundant — step 2 and step 3 both describe tagging.</aside>
+<p>Source files read in full: <code>/home/shashank/Desktop/GraphARC/README.md</code>, <code>/home/shashank/Desktop/GraphARC/ROADMAP.md</code>, <code>/home/shashank/Desktop/GraphARC/CONTRIBUTING.md</code>. Referenced but not read: <code>/home/shashank/Desktop/GraphARC/docs/diagrams/</code> (architecture.png, 03-agent-node.png, grapharc-architecture.drawio, architecture.py), <code>/home/shashank/Desktop/GraphARC/docs/cookbook/</code>, <code>/home/shashank/Desktop/GraphARC/grapharc/examples/plan_incident.py</code>, <code>/home/shashank/Desktop/GraphARC/grapharc/policy/example.toml</code>, <code>/home/shashank/Desktop/GraphARC/grapharc/stdlib.py</code>.</p>
+<footer class="pager-row">
+<a class="pager prev" href="roadmap.html">&larr; Roadmap</a><span class="pager-spacer"></span>
+</footer>
+<footer class="colophon">
+  Generated from the repository's README and cookbook (docs/cookbook/01–06) ·
+  <a href="https://github.com/CodeGraphContext/GraphARC">CodeGraphContext/GraphARC</a> · MIT license
+</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var links = document.querySelectorAll('.nav-chapter ul a');
+  var byId = {};
+  links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+  var current = null;
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        var a = byId[e.target.id];
+        if (a) {
+          if (current) current.classList.remove('active');
+          a.classList.add('active');
+          current = a;
+        }
+      }
+    });
+  }, { rootMargin: '0px 0px -70% 0px' });
+  document.querySelectorAll('main h2[id]').forEach(function (h) { obs.observe(h); });
+})();
+</script>
+</body>
+</html>

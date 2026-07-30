@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Governance — GraphARC</title>
+<meta name="description" content="Propose, admit, materialise: the admission gate, policy documents, the governed loop.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📚</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="side" aria-label="Documentation contents">
+  <a class="brand" href="index.html"><b>GraphARC<span class="amp"> docs</span></b><span>a governed agent runtime on LangGraph</span></a>
+  <ul>
+<li class="nav-chapter"><a href="index.html">Overview</a>
+</li>
+<li class="nav-chapter"><a href="getting-started.html">Getting started</a>
+</li>
+<li class="nav-chapter"><a href="models.html">Models</a>
+</li>
+<li class="nav-chapter"><a href="agents-and-tools.html">Agents & tools</a>
+</li>
+<li class="nav-chapter"><a href="verification-and-memory.html">Verification & memory</a>
+</li>
+<li class="nav-chapter"><a class="active" href="governance.html">Governance</a>
+<ul><li><a href="#how-do-i-let-a-planner-invent-a-subgraph-without-letting-it-">How do I let a planner invent a subgraph without letting it run one?</a></li><li><a href="#how-do-i-prove-nothing-runs-during-a-check">How do I prove nothing runs during a check?</a></li><li><a href="#how-do-i-stop-a-planner-proposing-a-node-i-never-registered">How do I stop a planner proposing a node I never registered?</a></li><li><a href="#how-do-i-forbid-a-transition">How do I forbid a transition?</a></li><li><a href="#how-do-i-refuse-a-plan-that-cannot-afford-itself">How do I refuse a plan that cannot afford itself?</a></li><li><a href="#how-do-i-stop-planners-planning-planners-forever">How do I stop planners planning planners forever?</a></li><li><a href="#how-do-i-allow-or-refuse-a-loop">How do I allow (or refuse) a loop?</a></li><li><a href="#how-do-i-make-sure-renaming-a-node-cannot-evade-a-denial">How do I make sure renaming a node cannot evade a denial?</a></li><li><a href="#what-does-admission-not-check">What does admission not check?</a></li><li><a href="#how-do-i-attach-a-proposal-to-nodes-that-are-already-running">How do I attach a proposal to nodes that are already running?</a></li><li><a href="#how-do-i-require-a-human-before-an-edge-is-wired">How do I require a human before an edge is wired?</a></li><li><a href="#how-do-i-get-a-rejection-into-the-audit-trail">How do I get a rejection into the audit trail?</a></li><li><a href="#how-do-i-feed-a-rejection-back-for-replanning">How do I feed a rejection back for replanning?</a></li><li><a href="#how-do-i-run-what-was-admitted-and-only-what-was-admitted">How do I run what was admitted — and only what was admitted?</a></li><li><a href="#how-do-i-stop-a-node-body-routing-somewhere-it-was-not-admit">How do I stop a node body routing somewhere it was not admitted to?</a></li><li><a href="#how-do-i-drive-the-whole-cycle-to-a-recorded-stop">How do I drive the whole cycle to a recorded stop?</a></li><li><a href="#how-do-i-write-the-policy-down-instead-of-coding-it">How do I write the policy down instead of coding it?</a></li><li><a href="#how-do-i-scope-policy-to-a-tenant-and-cap-its-spend">How do I scope policy to a tenant and cap its spend?</a></li><li><a href="#how-do-i-route-an-approval-to-the-right-role">How do I route an approval to the right role?</a></li><li><a href="#how-do-i-answer-what-was-it-allowed-to-do-after-the-fact">How do I answer &quot;what was it allowed to do?&quot; after the fact?</a></li><li><a href="#how-do-i-make-my-toml-document-govern-admission">How do I make my TOML document govern admission?</a></li><li><a href="#what-this-section-does-not-give-you">What this section does not give you</a></li></ul>
+</li>
+<li class="nav-chapter"><a href="serving-and-ops.html">Serving & operations</a>
+</li>
+<li class="nav-chapter"><a href="roadmap.html">Roadmap</a>
+</li>
+<li class="nav-chapter"><a href="contributing.html">Contributing</a>
+</li>
+  </ul>
+</nav>
+<main>
+<header class="page-head">
+  <h1>Governance</h1>
+  <p class="sub">Propose, admit, materialise: the admission gate, policy documents, the governed loop.</p>
+</header>
+<h2 id="how-do-i-let-a-planner-invent-a-subgraph-without-letting-it-"><a class="anchor" href="#how-do-i-let-a-planner-invent-a-subgraph-without-letting-it-">How do I let a planner invent a subgraph without letting it run one?</a></h2>
+<p>Three objects do the work: a <code>NodeRegistry</code> of node <em>kinds</em> an operator allows to exist, an <code>EdgePolicy</code> over transitions, and an <code>AdmissionChecker</code> that combines them. A proposal names registry keys; it never carries a node body, so there is nothing in it to run even if something wanted to. <code>EdgePolicy</code>&#x27;s default is <code>deny</code>, so an empty policy admits nothing — the allow-all rule is what you write when you have not decided yet, and it is deliberately something you have to type. All five checks (<code>registry</code>, <code>policy</code>, <code>budget</code>, <code>depth</code>, <code>acyclicity</code>) run on every proposal rather than short-circuiting, because a planner replanning from feedback should get the whole list, not one complaint at a time.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span <span class="tok-k">class</span>="tok-c"># What the operator allows to exist. Absence <span class="tok-k">is</span> refusal; there <span class="tok-k">is</span> no wildcard.</span>
+registry = NodeRegistry(
+    [
+        NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>, description=<span <span class="tok-k">class</span>="tok-s">&quot;read a URL&quot;</span>),
+        NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;summarise&quot;</span>, description=<span <span class="tok-k">class</span>="tok-s">&quot;condense text&quot;</span>),
+    ]
+)
+
+<span <span class="tok-k">class</span>="tok-c"># What the operator allows to be wired. Unmatched <span class="tok-k">is</span> deny, so say something.</span>
+policy = EdgePolicy(rules=(EdgeRule(action=<span <span class="tok-k">class</span>="tok-s">&quot;allow&quot;</span>),))
+
+gate = AdmissionChecker(registry=registry, edge_policy=policy)
+
+<span <span class="tok-k">class</span>="tok-c"># What a planner wants. Nodes here carry a registry *key*, never a body.</span>
+proposal = Subgraph(
+    nodes=(ProposedNode(name=<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>), ProposedNode(name=<span <span class="tok-k">class</span>="tok-s">&quot;summarise&quot;</span>)),
+    edges=(
+        ProposedEdge(source=START, target=<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>),
+        ProposedEdge(source=<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>, target=<span <span class="tok-k">class</span>="tok-s">&quot;summarise&quot;</span>),
+        ProposedEdge(source=<span <span class="tok-k">class</span>="tok-s">&quot;summarise&quot;</span>, target=END),
+    ),
+    rationale=<span <span class="tok-k">class</span>="tok-s">&quot;read the page, then condense it&quot;</span>,
+)
+
+result = gate.check(proposal)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">status:      admitted
+admitted:    True
+checks run:  [&#x27;registry&#x27;, &#x27;policy&#x27;, &#x27;budget&#x27;, &#x27;depth&#x27;, &#x27;acyclicity&#x27;]
+worst case:  tokens=0 iterations=2 seconds=0.0</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> An empty <code>Subgraph()</code> is legal and is admitted — a planner needs a way to say &quot;no further work&quot; that is not an exception, and admitting nothing authorises nothing.</aside>
+<h2 id="how-do-i-prove-nothing-runs-during-a-check"><a class="anchor" href="#how-do-i-prove-nothing-runs-during-a-check">How do I prove nothing runs during a check?</a></h2>
+<p>Give every registered kind a factory that raises, then admit a proposal that uses it — the factory is still uncalled afterwards. <code>NodeSpec.factory</code> exists only so a later materialising step has somewhere to get the node body from; being in the registry is a licence to be <em>proposed</em>, not an invitation to run. <code>admit</code> is <code>check</code> that fails closed, raising <code>AdmissionRejected</code> for callers whose next line is <code>raise</code>. The only side effect a check has is the trace line it writes.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> never_call(*args, **kwargs):
+    <span class="tok-k">raise</span> AssertionError(<span <span class="tok-k">class</span>="tok-s">&quot;admission executed a node factory&quot;</span>)
+
+
+registry = NodeRegistry([NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>, factory=never_call)])
+gate = AdmissionChecker(
+    registry=registry, edge_policy=EdgePolicy(rules=(EdgeRule(action=<span <span class="tok-k">class</span>="tok-s">&quot;allow&quot;</span>),))
+)
+
+result = gate.check(Subgraph(nodes=(ProposedNode(name=<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>),)))
+print(<span <span class="tok-k">class</span>="tok-s">&quot;admitted:&quot;</span>, result.admitted)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;factory still uncalled:&quot;</span>, registry.get(<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>).factory <span class="tok-k">is</span> never_call)
+
+<span <span class="tok-k">class</span>="tok-c"># `admit` <span class="tok-k">is</span> `check` that fails closed, <span class="tok-k">for</span> callers whose next line <span class="tok-k">is</span> `<span class="tok-k">raise</span>`.</span>
+<span class="tok-k">try</span>:
+    gate.admit(Subgraph(nodes=(ProposedNode(name=<span <span class="tok-k">class</span>="tok-s">&quot;shell&quot;</span>),)))
+<span class="tok-k">except</span> AdmissionRejected <span class="tok-k">as</span> exc:
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;raised:&quot;</span>, exc.result.status.value, exc.result.rejections[0].code)</pre></div>
+<h2 id="how-do-i-stop-a-planner-proposing-a-node-i-never-registered"><a class="anchor" href="#how-do-i-stop-a-planner-proposing-a-node-i-never-registered">How do I stop a planner proposing a node I never registered?</a></h2>
+<p>Nothing to do: an unregistered <code>kind</code> is the REGISTRY check&#x27;s job, and the registry has no wildcard. Every rejection carries a <code>check</code>, a stable machine-readable <code>code</code>, a <code>subject</code>, a <code>detail</code> and a <code>remedy</code> — match on <code>code</code>, since <code>detail</code> is prose and may be reworded. <code>kind</code> defaults to <code>name</code> for the one-off case; fill in <code>kind</code> explicitly whenever the instance name differs, which is the whole point of a fan-out (<code>worker_a</code>, <code>worker_b</code>, <code>worker_c</code> all of kind <code>edit_worker</code> means the registry only has to allow one thing).</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">status: rejected
+failed: [&#x27;registry&#x27;]
+[registry/unregistered_node] shell: kind &#x27;shell&#x27; is not in the node registry allowed kinds: fetch, summarise</pre></figure>
+<h2 id="how-do-i-forbid-a-transition"><a class="anchor" href="#how-do-i-forbid-a-transition">How do I forbid a transition?</a></h2>
+<p><code>EdgeRule</code> is fnmatch over both endpoints, tiered deny → ask → allow. A broad deny beats a narrower allow, so there is no allowlist exception hiding inside a denial. <code>ProposedEdge</code> carries a <code>source</code>, a <code>target</code> and a <code>note</code>, and nothing else — there is deliberately no condition string, because a predicate authored by a model is model prose steering an edge. The <code>note</code> is never parsed or evaluated; it exists for the audit trail, and an edge is admitted or refused on its endpoints alone.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">policy = EdgePolicy(
+    rules=(
+        EdgeRule(action=<span <span class="tok-k">class</span>="tok-s">&quot;deny&quot;</span>, source=<span <span class="tok-k">class</span>="tok-s">&quot;*&quot;</span>, target=<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>),
+        EdgeRule(action=<span <span class="tok-k">class</span>="tok-s">&quot;allow&quot;</span>),
+    )
+)
+gate = AdmissionChecker(
+    registry=NodeRegistry([NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;build&quot;</span>), NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>)]),
+    edge_policy=policy,
+)</pre></div>
+<h2 id="how-do-i-refuse-a-plan-that-cannot-afford-itself"><a class="anchor" href="#how-do-i-refuse-a-plan-that-cannot-afford-itself">How do I refuse a plan that cannot afford itself?</a></h2>
+<p>Register the worst case per kind with <code>CostEstimate</code> and hand the checker the run&#x27;s live <code>BudgetMeter</code>; the check reads the meter, it never charges it. Costs come from the registry, never from the proposal — a <code>ProposedNode</code> has no field in which to claim it will be cheap. The comparison is against what is <em>left</em>, not the total, so the same proposal that was affordable at the start of a run is refused later in it, and the refusal happens before the first node exists rather than after the run notices it overspent.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span <span class="tok-k">class</span>="tok-c"># The registry declares the cost. A proposal cannot.</span>
+gate = AdmissionChecker(
+    registry=NodeRegistry(
+        [NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;research&quot;</span>, worst_case=CostEstimate(tokens=5_000, iterations=1))]
+    ),
+    edge_policy=EdgePolicy(rules=(EdgeRule(action=<span <span class="tok-k">class</span>="tok-s">&quot;allow&quot;</span>),)),
+)
+
+meter = BudgetMeter(Budget(max_tokens=20_000))
+meter.charge_tokens(16_000)  <span <span class="tok-k">class</span>="tok-c"># the run has already spent this much</span>
+
+result = gate.check(proposal, meter=meter)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">status:    rejected
+worst case 10000 tokens
+remaining  4000 tokens
+[budget/over_token_budget] tokens: worst case needs 10000 tokens but only 4000 remain propose fewer or cheaper nodes
+meter after the check: 16000 tokens charged</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A dimension the registry leaves at zero is unconstrained by that dimension&#x27;s check — <code>worst_case</code> defaulting to <code>CostEstimate(iterations=1)</code> means &quot;nobody said what this costs in tokens&quot;, not &quot;this is free&quot;.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Passing <code>remaining=</code> explicitly instead of <code>meter=</code> wins; with neither, every dimension is unlimited.</aside>
+<h2 id="how-do-i-stop-planners-planning-planners-forever"><a class="anchor" href="#how-do-i-stop-planners-planning-planners-forever">How do I stop planners planning planners forever?</a></h2>
+<p><code>AdmissionLimits.max_depth</code> bounds nesting and defaults to <code>1</code>, which means flat proposals only. <code>Subgraph.nesting_depth()</code> and <code>node_count()</code> report what a proposal declares, and a nested proposal is rejected with <code>depth/too_deep</code>. The same flat proposal arriving from a planner already one level in is refused when you pass <code>parent_depth=1</code>. <code>Subgraph.scopes()</code> walks nesting iteratively, not recursively, so a hostile depth exhausts the limit rather than the stack.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">nested = Subgraph(
+    nodes=(
+        ProposedNode(
+            name=<span <span class="tok-k">class</span>="tok-s">&quot;sub_planner&quot;</span>,
+            kind=<span <span class="tok-k">class</span>="tok-s">&quot;planner&quot;</span>,
+            subgraph=Subgraph(nodes=(ProposedNode(name=<span <span class="tok-k">class</span>="tok-s">&quot;inner&quot;</span>, kind=<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>),)),
+        ),
+    ),
+    proposal_id=<span <span class="tok-k">class</span>="tok-s">&quot;nested-demo&quot;</span>,
+)
+result = gate.check(nested)
+
+<span <span class="tok-k">class</span>="tok-c"># Same proposal, but arriving <span class="tok-k">from</span> a planner that <span class="tok-k">is</span> already one level <span class="tok-k">in</span>.</span>
+flat = Subgraph(nodes=(ProposedNode(name=<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>),), proposal_id=<span <span class="tok-k">class</span>="tok-s">&quot;flat-demo&quot;</span>)
+deep = gate.check(flat, parent_depth=1)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>parent_depth</code> is supplied by you — the checker cannot observe how deep the run actually is; a caller that always passes <code>0</code> has no recursion limit beyond the nesting visible inside a single proposal.</aside>
+<h2 id="how-do-i-allow-or-refuse-a-loop"><a class="anchor" href="#how-do-i-allow-or-refuse-a-loop">How do I allow (or refuse) a loop?</a></h2>
+<p>Cycles are earned: <code>require_acyclic</code> defaults to <code>True</code>, so a proposal that genuinely needs a loop must be admitted by a checker configured with <code>AdmissionLimits(require_acyclic=False)</code>. With acyclicity off, the ACYCLICITY check does not appear in <code>checks_run</code> at all — <code>checks_run</code> is what actually ran, not a fixed list.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">strict = AdmissionChecker(registry=registry, edge_policy=policy)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;default checker: &quot;</span>, strict.check(loop).status.value)
+
+permissive = AdmissionChecker(
+    registry=registry,
+    edge_policy=policy,
+    limits=AdmissionLimits(require_acyclic=<span class="tok-k">False</span>),
+)
+result = permissive.check(loop)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;checks run:      &quot;</span>, [c.value <span class="tok-k">for</span> c <span class="tok-k">in</span> result.checks_run])</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The cycle search only sees the topology a proposal declares — edges touching <code>START</code>/<code>END</code> sentinels or a node already live in the graph are ignored, so a cycle formed between a proposed node and an existing one is invisible to this check.</aside>
+<h2 id="how-do-i-make-sure-renaming-a-node-cannot-evade-a-denial"><a class="anchor" href="#how-do-i-make-sure-renaming-a-node-cannot-evade-a-denial">How do I make sure renaming a node cannot evade a denial?</a></h2>
+<p>The planner chooses the instance <code>name</code>; the operator registered the <code>kind</code>; every check that grants anything resolves against the kind. Renaming a denied kind to <code>helper</code> does not launder it, and conversely a node <em>named</em> <code>deploy</code> that is really a <code>build</code> is admitted, because the name borrows no permission either. The name is chosen by the untrusted side, so a rule matched against it would be a rule the governed thing controls — which is not a rule. Names survive as labels: they resolve which node an edge refers to and appear in rejections (<code>proposed as &#x27;helper&#x27;</code>) so an audit can find the specific edge.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">name=deploy  kind=deploy               rejected
+    policy/edge_denied: ... kind &#x27;build&#x27; (proposed as &#x27;build&#x27;) -&gt; kind &#x27;deploy&#x27; (proposed as &#x27;deploy&#x27;)
+name=helper  kind=deploy               rejected
+    policy/edge_denied: ... kind &#x27;build&#x27; (proposed as &#x27;build&#x27;) -&gt; kind &#x27;deploy&#x27; (proposed as &#x27;helper&#x27;)
+name=deploy  kind=build                admitted</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> An endpoint whose kind cannot be determined is refused rather than assumed safe — &quot;no rule matched&quot; must never be reachable by hiding what a node is.</aside>
+<h2 id="what-does-admission-not-check"><a class="anchor" href="#what-does-admission-not-check">What does admission not check?</a></h2>
+<p><strong>Arguments.</strong> <code>ProposedNode.args</code> are carried for a future materialiser and never inspected: <code>SELECT count(*) FROM users</code> and <code>DROP TABLE users</code> are both admitted, and no rule in this package can change that. Registering <code>run_sql</code> at all is a decision to trust whatever gates its arguments downstream — the tool plane&#x27;s permissions (<code>grapharc.harness.permissions</code>) are where that belongs. <code>Materializer</code> takes the same position and makes it opt-in: with the default <code>forward_args=False</code>, <code>NodeBuild.args</code> is empty whatever the proposal said. What fingerprints do give you is that the two proposals hash differently, so an audit can tell which was admitted; <code>Subgraph.fingerprint()</code> is a content hash — identity, not semantic equality.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">for</span> query <span class="tok-k">in</span> (<span <span class="tok-k">class</span>="tok-s">&quot;SELECT count(*) FROM users&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;DROP TABLE users&quot;</span>):
+    proposal = Subgraph(
+        nodes=(ProposedNode(name=<span <span class="tok-k">class</span>="tok-s">&quot;q&quot;</span>, kind=<span <span class="tok-k">class</span>="tok-s">&quot;run_sql&quot;</span>, args={<span <span class="tok-k">class</span>="tok-s">&quot;query&quot;</span>: query}),),
+        proposal_id=<span <span class="tok-k">class</span>="tok-s">&quot;args-demo&quot;</span>,
+    )
+    result = gate.check(proposal)
+    print(f&quot;{result.status.value:&lt;9} fingerprint={result.fingerprint}  query={query!r}&quot;)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>forward_args=True</code> hands the raw dict to your factory <strong>unchecked</strong> — a factory that pulls a callable out of it and runs it has re-opened the boundary the whole design exists to hold.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Reordering <code>args</code> keys changes the fingerprint, because the recorded decision was made about those bytes; <code>proposal_id</code> left alone is a fresh uuid per proposal.</aside>
+<h2 id="how-do-i-attach-a-proposal-to-nodes-that-are-already-running"><a class="anchor" href="#how-do-i-attach-a-proposal-to-nodes-that-are-already-running">How do I attach a proposal to nodes that are already running?</a></h2>
+<p>Pass <code>known_nodes</code> as a <code>{name: kind}</code> mapping, not a list of names — a name alone tells the checker nothing it can evaluate a rule against, so a by-name-only endpoint yields <code>policy/unresolved_endpoint_kind</code> and is refused rather than assumed permitted. These kinds come from you, not from a proposal, and need not be registered: the registry is the list of kinds a <em>planner</em> may propose, not of kinds that may already exist. A proposed node may not reuse a live node&#x27;s name — that is a separate <code>registry/name_collides_with_existing_node</code> rejection, because admitting it would rebind a node that is already running.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span <span class="tok-k">class</span>="tok-c"># By name only: the checker cannot tell what `live_step` <span class="tok-k">is</span>, so it refuses.</span>
+by_name = AdmissionChecker(
+    registry=registry, edge_policy=policy, known_nodes=[<span <span class="tok-k">class</span>="tok-s">&quot;live_step&quot;</span>]
+)
+print(by_name.check(proposal).rejections[0].render())
+
+<span <span class="tok-k">class</span>="tok-c"># With its kind declared, the rule can actually be evaluated.</span>
+declared = AdmissionChecker(
+    registry=registry, edge_policy=policy, known_nodes={<span <span class="tok-k">class</span>="tok-s">&quot;live_step&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>}
+)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>known_nodes</code> gets a proposal <em>admitted</em>, not <em>built</em> — <code>Materializer</code> assembles a standalone graph and refuses any endpoint that is not one of the proposal&#x27;s own nodes or a sentinel, live or not.</aside>
+<h2 id="how-do-i-require-a-human-before-an-edge-is-wired"><a class="anchor" href="#how-do-i-require-a-human-before-an-edge-is-wired">How do I require a human before an edge is wired?</a></h2>
+<p>An edge whose policy resolves to <code>ask</code> produces <code>AdmissionStatus.NEEDS_APPROVAL</code>, with <code>result.admitted</code> still <code>False</code> — a pending approval is a stop, not a slow yes. <code>NEEDS_APPROVAL</code> is reported only when <em>every</em> rejection is an approval request; one denial anywhere outranks the whole thing and the status is <code>REJECTED</code>.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">gate = AdmissionChecker(
+    registry=NodeRegistry([NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;patch&quot;</span>), NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>)]),
+    edge_policy=EdgePolicy(
+        rules=(EdgeRule(action=<span <span class="tok-k">class</span>="tok-s">&quot;ask&quot;</span>, target=<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>), EdgeRule(action=<span <span class="tok-k">class</span>="tok-s">&quot;allow&quot;</span>))
+    ),
+)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>AdmissionChecker</code> does not route the approval — the policy engine routes approvals for <em>tools</em> by role, but nothing carries an <code>edge_needs_approval</code> from the checker into that router; you write that hop.</aside>
+<h2 id="how-do-i-get-a-rejection-into-the-audit-trail"><a class="anchor" href="#how-do-i-get-a-rejection-into-the-audit-trail">How do I get a rejection into the audit trail?</a></h2>
+<p>Give the checker a <code>TraceRecorder</code> and every decision — admitted and rejected alike — is written as a <code>phase=&quot;admission&quot;</code> event carrying status, fingerprint, origin, node count, depth, <code>checks_run</code>, <code>failed_checks</code>, <code>worst_case</code> and an <code>error</code> of <code>check/code</code>. The phase is <code>&quot;admission&quot;</code> deliberately and not <code>&quot;end&quot;</code>: <code>grapharc.observe.metrics</code> counts node executions from <code>&quot;end&quot;</code> events, and reusing the phase would inflate every metric derived from the trace. Passing a <code>RunContext</code> as <code>ctx=</code> stamps the real <code>run_id</code>, <code>thread_id</code> and step number; without one the proposal&#x27;s own id stands in, so the decision is still findable.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">trace = TraceRecorder(Path(tempfile.mkdtemp()) / <span <span class="tok-k">class</span>="tok-s">&quot;trace.jsonl&quot;</span>)
+gate = AdmissionChecker(
+    registry=NodeRegistry([NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;build&quot;</span>), NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>)]),
+    edge_policy=EdgePolicy(
+        rules=(EdgeRule(action=<span <span class="tok-k">class</span>="tok-s">&quot;deny&quot;</span>, target=<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>), EdgeRule(action=<span <span class="tok-k">class</span>="tok-s">&quot;allow&quot;</span>))
+    ),
+    trace=trace,
+)
+result = gate.check(
+    Subgraph(
+        nodes=(ProposedNode(name=<span <span class="tok-k">class</span>="tok-s">&quot;build&quot;</span>), ProposedNode(name=<span <span class="tok-k">class</span>="tok-s">&quot;ship&quot;</span>, kind=<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>)),
+        edges=(ProposedEdge(source=<span <span class="tok-k">class</span>="tok-s">&quot;build&quot;</span>, target=<span <span class="tok-k">class</span>="tok-s">&quot;ship&quot;</span>),),
+        proposal_id=<span <span class="tok-k">class</span>="tok-s">&quot;p-0001&quot;</span>,
+        origin=<span <span class="tok-k">class</span>="tok-s">&quot;planner:release&quot;</span>,
+    )
+)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">{
+  &quot;run_id&quot;: &quot;p-0001&quot;, &quot;attempt&quot;: 1, &quot;graph&quot;: &quot;admission&quot;,
+  &quot;node&quot;: &quot;admission:p-0001&quot;, &quot;phase&quot;: &quot;admission&quot;, &quot;step&quot;: 0,
+  &quot;state_delta&quot;: {
+    &quot;status&quot;: &quot;rejected&quot;, &quot;fingerprint&quot;: &quot;ae82f551624a29fd&quot;,
+    &quot;origin&quot;: &quot;planner:release&quot;, &quot;nodes&quot;: 2, &quot;depth&quot;: 1,
+    &quot;checks_run&quot;: [&quot;registry&quot;, &quot;policy&quot;, &quot;budget&quot;, &quot;depth&quot;, &quot;acyclicity&quot;],
+    &quot;failed_checks&quot;: [&quot;policy&quot;],
+    &quot;worst_case&quot;: {&quot;tokens&quot;: 0, &quot;iterations&quot;: 2, &quot;seconds&quot;: 0.0}
+  },
+  &quot;error&quot;: &quot;policy/edge_denied&quot;
+}</pre></figure>
+<h2 id="how-do-i-feed-a-rejection-back-for-replanning"><a class="anchor" href="#how-do-i-feed-a-rejection-back-for-replanning">How do I feed a rejection back for replanning?</a></h2>
+<p><code>AdmissionResult.feedback()</code> renders the whole rejection as text a planner can be handed verbatim, and <code>PlannerNode.propose(task, feedback=...)</code> takes it — round 1 is rejected on policy, round 2 is admitted. <code>PlannerNode</code> cannot execute what it proposes, and that is structural rather than promised: the only callables it holds are the chat model and your own state reader, and <code>NodeSpec.factory</code> — the only place a node body ever appears — lives on the far side of the gate. The planner <em>re-stamps</em> provenance: whatever the model puts in <code>proposal_id</code> and <code>origin</code> is overwritten, because provenance the proposer wrote about itself is not provenance. A bad model reply is a <code>PlanningOutcome</code> carrying <code>error</code>, not an exception, which is what lets you retry it; only <code>BudgetExceeded</code> is allowed through.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">model = ScriptedChatModel(responses=[json.dumps(first), json.dumps(second)])
+planner = PlannerNode(model, name=<span <span class="tok-k">class</span>="tok-s">&quot;release&quot;</span>, catalog=registry.catalog())
+
+task = <span <span class="tok-k">class</span>="tok-s">&quot;fix the login bug <span class="tok-k">and</span> get it live&quot;</span>
+outcome = planner.propose(task)
+result = gate.check(outcome.proposal)
+
+<span class="tok-k">if</span> <span class="tok-k">not</span> result.admitted:
+    outcome = planner.propose(task, feedback=result.feedback())
+    result = gate.check(outcome.proposal)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>DEFAULT_PLANNER_SYSTEM_PROMPT</code> already tells the model that renaming a refused node is a wasted turn — that is a courtesy to save a round trip, not the enforcement; the gate is.</aside>
+<p>### With a real model</p>
+<p>Swap the scripted model for a real one via <code>get_model</code>; nothing else changes. This snippet was <strong>not executed</strong> — it needs a subscription or an API key, and nothing in the section calls a paid backend. <code>PlannerNode</code> prefers the backend&#x27;s structured-output path when it has one and falls back to tolerant JSON extraction from text otherwise; <code>outcome.structured</code> records which path produced the object, because the two have different failure modes and an audit should not have to guess.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> get_model
+<span class="tok-k">from</span> grapharc.planner <span class="tok-k">import</span> PlannerNode
+
+model = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>)  <span <span class="tok-k">class</span>="tok-c"># needs a Claude Code subscription</span>
+planner = PlannerNode(model, catalog=registry.catalog())</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The Claude CLI adapter has no tool calling, so it takes the text path.</aside>
+<h2 id="how-do-i-run-what-was-admitted-and-only-what-was-admitted"><a class="anchor" href="#how-do-i-run-what-was-admitted-and-only-what-was-admitted">How do I run what was admitted — and only what was admitted?</a></h2>
+<p><code>Materializer</code> is the only thing that turns a proposal into a graph, and it takes the <code>AdmissionResult</code> <strong>first</strong>, because that is the authorisation — there is no entry point that accepts a bare <code>Subgraph</code>. &quot;What ran is what was admitted&quot; is a checked equality: reusing a genuine approval alongside a proposal whose only difference is its <code>rationale</code> raises <code>NotAdmitted</code> on the fingerprint, even when both share a <code>proposal_id</code>. A body comes only from <code>NodeSpec.factory</code>, operator code registered before any planning happened; the factory is called once per proposed instance with a <code>NodeBuild</code> (<code>name</code>, <code>kind</code>, <code>note</code>, <code>proposal_id</code>, <code>fingerprint</code>, and <code>args</code> only if you opted in). The graph is assembled with the ordinary <code>GraphARC</code> builder, so declared writes, typed state, the budget meter, deep-copy isolation and trace events all still apply.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> step_factory(build):
+    <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span><span <span class="tok-k">class</span>="tok-s">&quot;Called once per proposed instance, <span class="tok-k">with</span> a NodeBuild describing it.&quot;</span><span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+
+    <span class="tok-k">def</span> body(state: State) -&gt; dict:
+        <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;notes&quot;</span>: [*state.notes, f<span <span class="tok-k">class</span>="tok-s">&quot;{build.name} ran (kind {build.kind})&quot;</span>]}
+
+    body.writes = {<span <span class="tok-k">class</span>="tok-s">&quot;notes&quot;</span>}
+    <span class="tok-k">return</span> body
+
+
+materializer = Materializer(registry=registry, state_schema=State)
+result = gate.check(proposal)
+graph = materializer.materialize(result, proposal)  <span <span class="tok-k">class</span>="tok-c"># the result first: it <span class="tok-k">is</span> the authority</span></pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">{&#x27;notes&#x27;: [&#x27;fetch ran (kind fetch)&#x27;, &#x27;summarise ran (kind summarise)&#x27;]}
+this AdmissionResult authorised proposal build-demo (fingerprint cba0d7416bec398d), not proposal build-demo (fingerprint f3083ceac3a28260); what runs must be what was admitted</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A kind nobody declared writes for may write nothing — the first field it touches raises <code>WritePermissionError</code>; a <code>writes={kind: fields}</code> table on the <code>Materializer</code> overrides <code>body.writes</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Five things it refuses rather than guesses at: a nested <code>ProposedNode.subgraph</code>, an edge endpoint that is not a node of this proposal, a proposal with no edge out of <code>START</code>, a node <code>START</code> cannot reach, and an empty proposal.</aside>
+<h2 id="how-do-i-stop-a-node-body-routing-somewhere-it-was-not-admit"><a class="anchor" href="#how-do-i-stop-a-node-body-routing-somewhere-it-was-not-admit">How do I stop a node body routing somewhere it was not admitted to?</a></h2>
+<p>Node bodies are operator code and may route dynamically with <code>Command(goto=...)</code>, but the materialiser confines each body to the destinations <em>the proposal declared an edge from that node to</em>, plus <code>END</code>; anything else raises <code>UnadmittedTransition</code>. <code>risky</code> is a node of the graph and does run in the legal case — reached the long way through <code>safe</code>; what is refused is <code>plan</code> skipping to it along an edge nobody admitted. So the admitted <strong>edge</strong> set bounds dynamic routing, not merely the admitted node set, and the exception is raised before the kernel resolves the destination, so the transition does not happen and that node&#x27;s writes never land.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> router_factory(build):
+    <span <span class="tok-k">class</span>="tok-c"># Operator code decides where this kind routes. `router_skip` jumps ahead.</span>
+    target = <span <span class="tok-k">class</span>="tok-s">&quot;risky&quot;</span> <span class="tok-k">if</span> build.kind == <span <span class="tok-k">class</span>="tok-s">&quot;router_skip&quot;</span> <span class="tok-k">else</span> <span <span class="tok-k">class</span>="tok-s">&quot;safe&quot;</span>
+
+    <span class="tok-k">def</span> body(state: State) -&gt; Command:
+        <span class="tok-k">return</span> Command(goto=target, update={<span <span class="tok-k">class</span>="tok-s">&quot;notes&quot;</span>: [*state.notes, f<span <span class="tok-k">class</span>="tok-s">&quot;routed to {target}&quot;</span>]})
+
+    body.writes = {<span <span class="tok-k">class</span>="tok-s">&quot;notes&quot;</span>}
+    <span class="tok-k">return</span> body</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">{&#x27;notes&#x27;: [&#x27;routed to safe&#x27;, &#x27;safe ran&#x27;, &#x27;risky ran&#x27;]}
+node &#x27;plan&#x27; routed to &#x27;risky&#x27;, which the admitted proposal declared no edge to. Admitted destinations for &#x27;plan&#x27;: safe, END. A body may route dynamically only along an edge the gate authorised</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> This covers a <code>Command</code> a body returns; it says nothing about what a body does inside itself — calling another graph, spawning a thread, shelling out belongs to <code>grapharc.harness</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Conditional routing has no representation in a proposal on purpose: <code>ProposedEdge</code> carries no predicate.</aside>
+<h2 id="how-do-i-drive-the-whole-cycle-to-a-recorded-stop"><a class="anchor" href="#how-do-i-drive-the-whole-cycle-to-a-recorded-stop">How do I drive the whole cycle to a recorded stop?</a></h2>
+<p><code>GovernedLoop</code> runs plan → admit → materialise → execute → observe → replan until something says stop, and the stop is always a reason. Work discovered mid-run does not bypass admission: round 7&#x27;s proposal goes through the same checker, registry and edge policy as round 1&#x27;s — no &quot;already approved&quot; path, no cached authorisation, and no way for an executing node to add topology, because a node&#x27;s only channel out is the state schema and the loop&#x27;s only source of topology is <code>planner.propose</code>. <code>LoopResult.stop</code> is always set, from the vocabulary <code>goal_met</code>, <code>no_further_work</code>, <code>max_rounds</code>, <code>budget_exhausted</code>, <code>no_progress</code>, <code>admission_refused</code>, <code>planning_failed</code>, <code>execution_failed</code>, <code>human_stopped</code>; <code>succeeded</code> is true only for <code>goal_met</code>. <code>Budget</code> bounds resources across the whole run (each round executes under a budget derived from what the shared meter has left, and planner tokens charge the same meter) while <code>LoopLimits</code> bounds the <em>loop</em> — <code>max_rounds</code> plus consecutive counters for rejections, unusable planner replies, execution failures and stalled rounds.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">model = ScriptedChatModel(responses=[plan(<span <span class="tok-k">class</span>="tok-s">&quot;triage&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>), plan(<span <span class="tok-k">class</span>="tok-s">&quot;triage&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;patch&quot;</span>)])
+loop = GovernedLoop(
+    planner=PlannerNode(model, name=<span <span class="tok-k">class</span>="tok-s">&quot;incident&quot;</span>, catalog=registry.catalog()),
+    checker=gate,
+    materializer=materializer,
+    goal_reached=<span class="tok-k">lambda</span> state: len(state.notes) &gt;= 2,
+)
+
+done = loop.run(<span <span class="tok-k">class</span>="tok-s">&quot;investigate the incident&quot;</span>)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;stop:  &quot;</span>, done.stop.value, <span <span class="tok-k">class</span>="tok-s">&quot;|&quot;</span>, done.detail)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;rejections:&quot;</span>, [r.code <span class="tok-k">for</span> r <span class="tok-k">in</span> done.rejections()])</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">stop:   goal_met | the goal check was satisfied
+rounds: 2
+  round 1: rejected  executed=False
+  round 2: admitted  executed=True
+rejections: [&#x27;edge_denied&#x27;]
+state:  notes=[&#x27;triage ran&#x27;, &#x27;patch ran&#x27;]</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>goal_reached</code> is your code — the loop has no opinion about &quot;done&quot; and will not ask a model, since that is exactly the question a run must not be able to talk itself into answering yes.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A <code>GovernedLoop</code> instance is not safe for concurrent <code>run()</code> calls, and <code>request_halt()</code> is permanent for the object that received it; a halt takes effect at a round boundary, never mid-node.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> With a <code>TraceRecorder</code> wired to loop, checker and materialiser, one file answers what it did (<code>start</code>/<code>end</code>), what it was allowed to do (<code>phase=&quot;admission&quot;</code> with fingerprints) and why it stopped (one <code>phase=&quot;stop&quot;</code>); rounds share a <code>run_id</code> and each executes on trace thread <code>&lt;run_id&gt;/r&lt;n&gt;</code>.</aside>
+<h2 id="how-do-i-write-the-policy-down-instead-of-coding-it"><a class="anchor" href="#how-do-i-write-the-policy-down-instead-of-coding-it">How do I write the policy down instead of coding it?</a></h2>
+<p><code>grapharc.policy</code> loads a TOML document over four resource kinds — <code>tool</code>, <code>node</code>, <code>edge</code>, <code>spend</code> — and answers decisions against it via <code>PolicyEngine.from_file</code>. Matching is <strong>tiered, not positional</strong>: every <code>deny</code> is tried before every <code>ask</code>, and every <code>ask</code> before every <code>allow</code>; within a tier the first match in document order wins and that rule&#x27;s <code>id</code> names the audit record, so you cannot write an exception <em>inside</em> a deny. <code>rule=None</code> is not a bug — it means the request matched no rule and the document <code>default</code> applied. TOML was chosen because <code>tomllib</code> is standard library from 3.11 and <code>[[rule]]</code> keeps rule order visible; <code>tomllib</code> cannot write, so policies are authored by hand and versioned in git.</p>
+<div class="codeblock"><div class="code-lang">toml</div><pre class="code-body">version = <span class="tok-s">&quot;2026-07-01&quot;</span>
+name = <span class="tok-s">&quot;cookbook&quot;</span>
+default = <span class="tok-s">&quot;deny&quot;</span>                  <span class="tok-c"># unmatched requests are refused</span>
+tenants = [<span class="tok-s">&quot;default&quot;</span>, <span class="tok-s">&quot;acme&quot;</span>]     <span class="tok-c"># a request naming anything else is denied</span>
+
+<span class="tok-k">[[rule]]</span>
+id = <span class="tok-s">&quot;no-deletes&quot;</span>
+resource = <span class="tok-s">&quot;tool&quot;</span>
+match = <span class="tok-s">&quot;delete_*&quot;</span>
+effect = <span class="tok-s">&quot;deny&quot;</span>
+reason = <span class="tok-s">&quot;destructive tools are never permitted, for anyone&quot;</span>
+
+<span class="tok-k">[[rule]]</span>
+id = <span class="tok-s">&quot;deploys-need-sre&quot;</span>
+resource = <span class="tok-s">&quot;tool&quot;</span>
+match = <span class="tok-s">&quot;deploy_*&quot;</span>
+effect = <span class="tok-s">&quot;ask&quot;</span>
+approver_role = <span class="tok-s">&quot;sre&quot;</span>             <span class="tok-c"># required on every `ask` rule</span>
+
+<span class="tok-k">[[rule]]</span>
+id = <span class="tok-s">&quot;nothing-routes-into-deploy&quot;</span>
+resource = <span class="tok-s">&quot;edge&quot;</span>
+match = &quot;*-&gt;deploy&quot;
+effect = <span class="tok-s">&quot;deny&quot;</span>
+
+<span class="tok-k">[[rule]]</span>
+id = <span class="tok-s">&quot;acme-period-cap&quot;</span>
+resource = <span class="tok-s">&quot;spend&quot;</span>
+effect = <span class="tok-s">&quot;deny&quot;</span>
+over_usd = 10.0
+basis = <span class="tok-s">&quot;cumulative&quot;</span>              <span class="tok-c"># committed spend + this request</span>
+tenant = <span class="tok-s">&quot;acme&quot;</span></pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">tool  read_config      default  allow  rule=reads-are-free
+tool  write_file       default  deny   rule=None
+tool  write_file       acme     allow  rule=acme-may-write
+edge  triage-&gt;deploy   default  deny   rule=nothing-routes-into-deploy
+spend *                default  ask    rule=over-a-dollar-asks-finance  ask:finance
+
+policy version: 2026-07-01  digest: b1d593faa1d41fcf
+audit records:  11</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>default = &quot;ask&quot;</code> is a load error — an unmatched request names no approver, so write an explicit catch-all <code>ask</code> rule with an <code>approver_role</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Typos fail loud at load as <code>PolicyError</code>: <code>ask</code> with no <code>approver_role</code>, <code>approver_role</code> on a non-<code>ask</code> rule, <code>over_usd</code> on a <code>tool</code> rule, duplicate rule id, an edge <code>match</code> without an arrow, or a rule scoped to an undeclared tenant.</aside>
+<h2 id="how-do-i-scope-policy-to-a-tenant-and-cap-its-spend"><a class="anchor" href="#how-do-i-scope-policy-to-a-tenant-and-cap-its-spend">How do I scope policy to a tenant and cap its spend?</a></h2>
+<p><code>tenants</code> in the document enumerates real tenants while a rule&#x27;s <code>tenant</code> field is an fnmatch pattern. A request naming an undeclared tenant is denied and <em>recorded</em> rather than raised, because a tenant name arrives with the request — i.e. from data. <code>check_spend</code> compares a <code>cumulative</code> rule&#x27;s threshold against <code>committed_usd(tenant) + amount</code>, and the decision&#x27;s <code>request</code> shows <code>amount_usd</code>, <code>committed_usd</code>, <code>basis</code> and <code>considered_usd</code>.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span <span class="tok-k">class</span>="tok-c"># A tenant the document does <span class="tok-k">not</span> declare <span class="tok-k">is</span> refused, <span class="tok-k">and</span> the refusal <span class="tok-k">is</span> recorded.</span>
+d = engine.check_tool(<span <span class="tok-k">class</span>="tok-s">&quot;read_config&quot;</span>, tenant=<span <span class="tok-k">class</span>="tok-s">&quot;stranger&quot;</span>)
+
+<span <span class="tok-k">class</span>="tok-c"># Cumulative spend: the cap moves only when spend <span class="tok-k">is</span> *recorded*.</span>
+print(<span <span class="tok-k">class</span>="tok-s">&quot;  $6 now:&quot;</span>, engine.check_spend(6.0, tenant=<span <span class="tok-k">class</span>="tok-s">&quot;acme&quot;</span>).effect.value)
+engine.record_spend(6.0, tenant=<span <span class="tok-k">class</span>="tok-s">&quot;acme&quot;</span>)
+again = engine.check_spend(6.0, tenant=<span <span class="tok-k">class</span>="tok-s">&quot;acme&quot;</span>)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;  considered:&quot;</span>, again.request)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Checking is not committing — the committed total only moves when you call <code>record_spend</code>, so a caller that checks and never records passes a cumulative cap forever.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The ledger is in-process and in-memory: it does not survive a restart and two processes do not share it.</aside>
+<h2 id="how-do-i-route-an-approval-to-the-right-role"><a class="anchor" href="#how-do-i-route-an-approval-to-the-right-role">How do I route an approval to the right role?</a></h2>
+<p>An <code>ask</code> rule names <code>approver_role</code>; <code>engine.approval_router({&quot;sre&quot;: sre})</code> reads it off the decision and hands the request to that role&#x27;s handler, recording an <code>approval</code> audit entry either way. Every path fails closed and every path is recorded: no handler for the role, a handler that raises (a broken approval channel is not consent), an <code>ask</code> decision carrying no role, and a <code>deny</code> — for which no handler is called at all. The router is callable as <code>(tool_name, args) -&gt; bool</code>, the shape <code>grapharc.harness.core.ApprovalCallback</code> expects, so it drops straight into a <code>Harness</code>; it is bound to one tenant, because that callback signature carries none.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> sre(request):
+    print(f<span <span class="tok-k">class</span>="tok-s">&quot;    [{request.approver_role}] {request.subject}: {request.reason}&quot;</span>)
+    <span class="tok-k">return</span> request.subject != <span <span class="tok-k">class</span>="tok-s">&quot;deploy_prod&quot;</span>  <span <span class="tok-k">class</span>="tok-c"># staging yes, production no</span>
+
+
+router = engine.approval_router({<span <span class="tok-k">class</span>="tok-s">&quot;sre&quot;</span>: sre})
+<span class="tok-k">for</span> tool <span class="tok-k">in</span> (<span <span class="tok-k">class</span>="tok-s">&quot;read_config&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;delete_bucket&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;deploy_staging&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;deploy_prod&quot;</span>):
+    print(f&quot;{tool:&lt;16} granted={router(tool, {})}&quot;)
+
+<span class="tok-k">for</span> record <span class="tok-k">in</span> engine.audit.entries(kind=<span <span class="tok-k">class</span>="tok-s">&quot;approval&quot;</span>):
+    print(f&quot;{record.subject:&lt;16} granted={record.granted!s:&lt;5} {record.reason}&quot;)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> An <code>ask</code> whose role has no handler fails closed rather than falling through (<code>no approval handler registered for role &#x27;sre&#x27;</code>).</aside>
+<p>### Compiling the document down to a <code>PermissionPolicy</code></p>
+<p>A <code>Harness</code> enforces tool permissions with <code>PermissionPolicy</code>, not with the engine; <code>permission_policy(tenant=...)</code> compiles one tenant&#x27;s tool rules into one, and <code>compiled.decide(tool)</code> returns allow/deny/ask. The honest part is the last line of output: the compiled object leaves <strong>zero</strong> audit records — it cannot carry the approver role, the rule id, or the audit record, so a <code>Harness</code> holding it will ASK without knowing who to ask and decide without leaving a policy record.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">engine = PolicyEngine.from_file(<span <span class="tok-k">class</span>="tok-s">&quot;policy.toml&quot;</span>)
+compiled = engine.permission_policy(tenant=<span <span class="tok-k">class</span>="tok-s">&quot;acme&quot;</span>)
+
+<span class="tok-k">for</span> tool <span class="tok-k">in</span> (<span <span class="tok-k">class</span>="tok-s">&quot;read_config&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;write_file&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;delete_bucket&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;deploy_prod&quot;</span>):
+    print(f&quot;{tool:&lt;14} {compiled.decide(tool).value}&quot;)
+
+print(<span <span class="tok-k">class</span>="tok-s">&quot;audit records left by the compiled object:&quot;</span>, len(engine.audit))</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> It is the one deliberately unrecorded path — pair it with <code>approval_router()</code>, which comes back through the engine and does both.</aside>
+<h2 id="how-do-i-answer-what-was-it-allowed-to-do-after-the-fact"><a class="anchor" href="#how-do-i-answer-what-was-it-allowed-to-do-after-the-fact">How do I answer &quot;what was it allowed to do?&quot; after the fact?</a></h2>
+<p>Give the engine an <code>AuditLog</code> with a path and every decision lands as JSONL, stamped with the policy version <em>and</em> digest it was decided under. The version string is a claim by the author; the digest is evidence — widening <code>no-deletes</code> from <code>delete_<em></code> to <code>delete_tmp_</em></code> leaves <code>version</code> identical while the digest changes, so &quot;it was allowed under policy 2026-07-01&quot; is checkable rather than asserted. The digest is taken over the <em>parsed</em> document, so comments and formatting are not in it. <code>context=</code> is yours: put the run id, node and session in it and the policy log joins to the run trace.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">log = AuditLog(Path(tempfile.mkdtemp()) / <span <span class="tok-k">class</span>="tok-s">&quot;policy-audit.jsonl&quot;</span>)
+engine = PolicyEngine.from_file(<span <span class="tok-k">class</span>="tok-s">&quot;policy.toml&quot;</span>, audit=log)
+
+ctx = {<span <span class="tok-k">class</span>="tok-s">&quot;run_id&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;run-42&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;node&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;patch&quot;</span>}
+engine.check_tool(<span <span class="tok-k">class</span>="tok-s">&quot;write_file&quot;</span>, tenant=<span <span class="tok-k">class</span>="tok-s">&quot;acme&quot;</span>, context=ctx)
+
+<span class="tok-k">for</span> row <span class="tok-k">in</span> log.read_jsonl():
+    print(row[<span <span class="tok-k">class</span>="tok-s">&quot;resource&quot;</span>], row[<span <span class="tok-k">class</span>="tok-s">&quot;subject&quot;</span>], row[<span <span class="tok-k">class</span>="tok-s">&quot;effect&quot;</span>], row[<span <span class="tok-k">class</span>="tok-s">&quot;rule_id&quot;</span>],
+          row[<span <span class="tok-k">class</span>="tok-s">&quot;policy_version&quot;</span>], row[<span <span class="tok-k">class</span>="tok-s">&quot;policy_digest&quot;</span>][:8], row[<span <span class="tok-k">class</span>="tok-s">&quot;context&quot;</span>])
+
+<span <span class="tok-k">class</span>="tok-c"># The version string <span class="tok-k">is</span> a claim by the author; the digest <span class="tok-k">is</span> evidence.</span>
+edited = Path(<span <span class="tok-k">class</span>="tok-s">&quot;policy.toml&quot;</span>).read_text().replace(&<span <span class="tok-k">class</span>="tok-c">#x27;match = <span <span class="tok-k">class</span>="tok-s">&quot;delete_*&quot;</span><span <span class="tok-k">class</span>="tok-s">&#x27;, &#x27;</span>match = <span <span class="tok-k">class</span>="tok-s">&quot;delete_tmp_*&quot;</span>&#x27;)</span>
+print(<span <span class="tok-k">class</span>="tok-s">&quot;same version:&quot;</span>, parse_document(edited).version == engine.version)   <span <span class="tok-k">class</span>="tok-c"># <span class="tok-k">True</span></span>
+print(<span <span class="tok-k">class</span>="tok-s">&quot;same digest: &quot;</span>, parse_document(edited).digest == engine.digest)     <span <span class="tok-k">class</span>="tok-c"># <span class="tok-k">False</span></span></pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>AuditLog.entries(kind=..., tenant=...)</code> filters in-memory while <code>read_jsonl()</code> re-reads the file; <code>max_entries</code> caps the in-memory list only, so capping without a path really does lose records — which is why it defaults to off.</aside>
+<h2 id="how-do-i-make-my-toml-document-govern-admission"><a class="anchor" href="#how-do-i-make-my-toml-document-govern-admission">How do I make my TOML document govern admission?</a></h2>
+<p>It does not, by default: <code>AdmissionChecker</code> takes an <code>EdgePolicy</code> built in code, <code>PolicyEngine.check_edge</code> answers over a document, and <strong>there is no shipped compiler between them</strong> — <code>permission_policy()</code> exists for tools and has no edge equivalent. The bridge is about fifteen lines: filter the document&#x27;s <code>edge</code> rules for the tenant, split each <code>match</code> on <code>EDGE_ARROW</code>, and rebuild them as <code>EdgeRule</code>s with the document <code>default</code>. The two agree because they share their semantics: both tier deny → ask → allow over the same ordered rule list, both fnmatch each endpoint separately, and both fall through to the document default.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> edge_policy_for(engine, tenant=<span <span class="tok-k">class</span>="tok-s">&quot;default&quot;</span>):
+    <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>&quot;Compile a document&<span <span class="tok-k">class</span>="tok-c">#x27;s `edge` rules <span class="tok-k">for</span> one tenant into an `EdgePolicy`.<span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>&quot;</span>
+    document = engine.document
+    <span class="tok-k">if</span> <span class="tok-k">not</span> document.declares_tenant(tenant):
+        <span class="tok-k">return</span> EdgePolicy(rules=(), default=Decision.DENY)
+    rules = []
+    <span class="tok-k">for</span> rule <span class="tok-k">in</span> document.rules_for(ResourceKind.EDGE):
+        <span class="tok-k">if</span> <span class="tok-k">not</span> rule.matches_tenant(tenant):
+            <span class="tok-k">continue</span>
+        source, _, target = rule.match.partition(EDGE_ARROW)
+        rules.append(
+            EdgeRule(action=rule.effect, source=source.strip(), target=target.strip())
+        )
+    <span class="tok-k">return</span> EdgePolicy(rules=tuple(rules), default=document.default)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">triage -&gt; deploy     engine=deny   compiled=deny   agree=True
+triage -&gt; patch      engine=allow  compiled=allow  agree=True
+__start__ -&gt; triage  engine=allow  compiled=allow  agree=True
+patch -&gt; deploy      engine=deny   compiled=deny   agree=True</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Same caveat as <code>permission_policy()</code> — the compiled object leaves no audit record; call <code>engine.check_edge</code> alongside it if you need the decision logged. <code>tests/test_cookbook_governance.py</code> pins the equivalence across a matrix so it cannot drift silently.</aside>
+<h2 id="what-this-section-does-not-give-you"><a class="anchor" href="#what-this-section-does-not-give-you">What this section does not give you</a></h2>
+<p>Stated plainly, because a governance layer that overstates itself is worse than none. Ten limits are listed, then the counterpart: the parts that <em>are</em> enforced and that every snippet demonstrates — a proposal cannot execute itself, an unregistered kind cannot run, a denied transition cannot be renamed into an allowed one, an over-budget plan is refused before its first node exists, and every decision (yes and no alike) is a recorded event carrying the reason.</p>
+<aside class="edge"><span class="edge-tag">sharp edge</span> 1. Arguments are not governed — <code>ProposedNode.args</code> are never inspected; <code>forward_args=True</code> hands them to your factory unchecked.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> 2. <code>parent_depth</code> is on your honour — the checker cannot observe how deep the run really is.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> 3. Edge approvals are not routed — <code>NEEDS_APPROVAL</code> tells you an edge needs a human; nothing carries it to one. The <code>ApprovalRouter</code> handles tools.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> 4. Cycles across the boundary are invisible — the acyclicity check sees only topology inside the proposal.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> 5. <code>known_nodes</code> and <code>Materializer</code> do not compose.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> 6. Nested proposals are admitted, not built — <code>Materializer</code> refuses a <code>ProposedNode.subgraph</code> rather than silently dropping it.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> 7. Confinement covers routing, not conduct — <code>UnadmittedTransition</code> bounds where a body may <code>goto</code>, not what it does inside itself.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> 8. Frozen is not deeply frozen — <code>args</code> is an ordinary dict mutable in place; <code>fingerprint()</code> is what detects that, and <code>Materializer</code> checks it for you.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> 9. No shipped edge-policy compiler — the bridge above is fifteen lines you write.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> 10. The spend ledger is in-process — it does not survive a restart and is not shared between processes.</aside>
+<p>Source file: <code>/home/shashank/Desktop/GraphARC/docs/cookbook/05-governance.md</code> (1757 lines). Referenced test file: <code>/home/shashank/Desktop/GraphARC/tests/test_cookbook_governance.py</code>.</p>
+<footer class="pager-row">
+<a class="pager prev" href="verification-and-memory.html">&larr; Verification & memory</a><span class="pager-spacer"></span><a class="pager next" href="serving-and-ops.html">Serving & operations &rarr;</a>
+</footer>
+<footer class="colophon">
+  Generated from the repository's README and cookbook (docs/cookbook/01–06) ·
+  <a href="https://github.com/CodeGraphContext/GraphARC">CodeGraphContext/GraphARC</a> · MIT license
+</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var links = document.querySelectorAll('.nav-chapter ul a');
+  var byId = {};
+  links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+  var current = null;
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        var a = byId[e.target.id];
+        if (a) {
+          if (current) current.classList.remove('active');
+          a.classList.add('active');
+          current = a;
+        }
+      }
+    });
+  }, { rootMargin: '0px 0px -70% 0px' });
+  document.querySelectorAll('main h2[id]').forEach(function (h) { obs.observe(h); });
+})();
+</script>
+</body>
+</html>

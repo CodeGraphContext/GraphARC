@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serving &amp; operations — GraphARC</title>
+<meta name="description" content="Async graphs, sessions, the HTTP API, and reading a run afterwards.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📚</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="side" aria-label="Documentation contents">
+  <a class="brand" href="index.html"><b>GraphARC<span class="amp"> docs</span></b><span>a governed agent runtime on LangGraph</span></a>
+  <ul>
+<li class="nav-chapter"><a href="index.html">Overview</a>
+</li>
+<li class="nav-chapter"><a href="getting-started.html">Getting started</a>
+</li>
+<li class="nav-chapter"><a href="models.html">Models</a>
+</li>
+<li class="nav-chapter"><a href="agents-and-tools.html">Agents & tools</a>
+</li>
+<li class="nav-chapter"><a href="verification-and-memory.html">Verification & memory</a>
+</li>
+<li class="nav-chapter"><a href="governance.html">Governance</a>
+</li>
+<li class="nav-chapter"><a class="active" href="serving-and-ops.html">Serving & operations</a>
+<ul><li><a href="#how-do-i-run-a-graph-whose-node-has-to-await-something">How do I run a graph whose node has to await something?</a></li><li><a href="#why-does-invoke-refuse-my-graph-before-it-runs-anything">Why does invoke() refuse my graph before it runs anything?</a></li><li><a href="#how-do-i-watch-state-land-as-the-graph-runs">How do I watch state land as the graph runs?</a></li><li><a href="#how-do-i-see-every-model-call-live">How do I see every model call, live?</a></li><li><a href="#how-do-i-stop-someone-bypassing-the-budget">How do I stop someone bypassing the budget?</a></li><li><a href="#how-do-i-let-a-node-pick-the-next-node">How do I let a node pick the next node?</a></li><li><a href="#what-happens-when-a-goto-names-a-node-that-does-not-exist">What happens when a goto names a node that does not exist?</a></li><li><a href="#how-do-i-pause-a-graph-let-a-human-edit-state-and-carry-on">How do I pause a graph, let a human edit state, and carry on?</a></li><li><a href="#what-does-update-state-actually-check">What does update_state actually check?</a></li><li><a href="#how-do-i-run-something-a-human-has-to-approve">How do I run something a human has to approve?</a></li><li><a href="#how-do-i-reject-a-step-without-unwinding-it">How do I reject a step without unwinding it?</a></li><li><a href="#how-do-i-resume-a-session-after-the-process-restarts">How do I resume a session after the process restarts?</a></li><li><a href="#how-do-i-stop-a-session-that-is-already-running">How do I stop a session that is already running?</a></li><li><a href="#what-does-a-hold-mean-when-the-gated-node-is-fanned-out">What does a hold mean when the gated node is fanned out?</a></li><li><a href="#how-do-i-put-this-behind-http">How do I put this behind HTTP?</a></li><li><a href="#which-checkpointer-does-the-server-need">Which checkpointer does the server need?</a></li><li><a href="#how-do-i-actually-serve-it">How do I actually serve it?</a></li><li><a href="#how-do-i-reconstruct-a-run-after-it-finished">How do I reconstruct a run after it finished?</a></li><li><a href="#how-do-i-tell-whether-my-change-altered-behaviour">How do I tell whether my change altered behaviour?</a></li><li><a href="#where-did-the-tokens-go">Where did the tokens go?</a></li><li><a href="#the-cli-tour">The CLI tour</a></li></ul>
+</li>
+<li class="nav-chapter"><a href="roadmap.html">Roadmap</a>
+</li>
+<li class="nav-chapter"><a href="contributing.html">Contributing</a>
+</li>
+  </ul>
+</nav>
+<main>
+<header class="page-head">
+  <h1>Serving &amp; operations</h1>
+  <p class="sub">Async graphs, sessions, the HTTP API, and reading a run afterwards.</p>
+</header>
+<h2 id="how-do-i-run-a-graph-whose-node-has-to-await-something"><a class="anchor" href="#how-do-i-run-a-graph-whose-node-has-to-await-something">How do I run a graph whose node has to await something?</a></h2>
+<p>Write the node <code>async def</code> and drive the graph with <code>ainvoke()</code>. Nothing else changes — the node still returns a dict, still declares its writes, still gets a deep-copied state. Sync nodes stay legal on the async path (LangGraph puts them on its own worker threads), so a graph may mix the two freely as long as you drive it with <code>ainvoke()</code>/<code>astream()</code>. <code>max_seconds</code> is the one thing that genuinely differs: on a sync node the ceiling arrives as an interrupt to the thread running it; on an <code>async def</code> node it arrives as task cancellation, because a signal aimed at &quot;the thread&quot; on an event loop would land in whichever coroutine happened to be running.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">async</span> <span class="tok-k">def</span> fetch(state: State) -&gt; dict:
+    <span class="tok-k">await</span> asyncio.sleep(0.01)          <span <span class="tok-k">class</span>="tok-c"># a real client would <span class="tok-k">await</span> here</span>
+    <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;body&quot;</span>: f&quot;&lt;html&gt;{state.url}&lt;/html&gt;&quot;}
+
+
+g = GraphARC(State, name=<span <span class="tok-k">class</span>="tok-s">&quot;fetcher&quot;</span>)
+g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>, fetch, writes={<span <span class="tok-k">class</span>="tok-s">&quot;body&quot;</span>})
+g.add_edge(START, <span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>)
+g.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>, END)
+graph = g.compile()
+
+result = asyncio.run(graph.ainvoke({<span <span class="tok-k">class</span>="tok-s">&quot;url&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;https://example.com&quot;</span>}))
+print(result[<span <span class="tok-k">class</span>="tok-s">&quot;body&quot;</span>])</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Per <code>grapharc.runtime.graph._async_deadline</code>, cancellation arrives at an <code>await</code>, so an async node doing blocking CPU work is not interrupted until it yields.</aside>
+<h2 id="why-does-invoke-refuse-my-graph-before-it-runs-anything"><a class="anchor" href="#why-does-invoke-refuse-my-graph-before-it-runs-anything">Why does invoke() refuse my graph before it runs anything?</a></h2>
+<p>Because it found an <code>async def</code> node and there is no event loop to await it on; the check happens at the entry point, before the first node. In the example <code>cheap ran</code> prints exactly once — from the <code>ainvoke()</code> call — proving the refused <code>invoke()</code> executed nothing. That is the whole point of a pre-flight check: plain LangGraph would have run every sync node first and then died on the first coroutine with a <code>TypeError</code>, leaving half a run and a confusing traceback. <code>stream()</code> refuses the same way and names <code>astream()</code> in its message.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">AsyncNodeError: graph &#x27;mixed&#x27; has async nodes [&#x27;costly&#x27;]; use ainvoke(), because invoke() has no event loop to await them on
+cheap ran
+[&#x27;cheap&#x27;, &#x27;costly&#x27;]</pre></figure>
+<h2 id="how-do-i-watch-state-land-as-the-graph-runs"><a class="anchor" href="#how-do-i-watch-state-land-as-the-graph-runs">How do I watch state land as the graph runs?</a></h2>
+<p>Use <code>astream()</code>. It takes the same <code>stream_mode</code> values LangGraph does; <code>&quot;updates&quot;</code> gives you one chunk per node with just what that node wrote. A <code>&quot;updates&quot;</code> chunk is a <code>{node_name: delta}</code> dict, not a <code>(name, delta)</code> pair. Passing a list of modes (<code>stream_mode=[&quot;updates&quot;, &quot;checkpoints&quot;]</code>) turns the chunks into <code>(mode, payload)</code> tuples instead — that second shape is what the session runtime uses, because <code>checkpoints</code> is the only chunk that means &quot;the superstep is finished and on disk&quot;.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">async</span> <span class="tok-k">def</span> main() -&gt; <span class="tok-k">None</span>:
+    <span class="tok-k">async</span> <span class="tok-k">for</span> chunk <span class="tok-k">in</span> graph.astream(
+        {<span <span class="tok-k">class</span>="tok-s">&quot;question&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;how do budgets work?&quot;</span>}, stream_mode=<span <span class="tok-k">class</span>="tok-s">&quot;updates&quot;</span>
+    ):
+        <span class="tok-k">for</span> node, delta <span class="tok-k">in</span> chunk.items():
+            print(node, &quot;-&gt;&quot;, delta)
+
+
+asyncio.run(main())</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Unpacking an <code>&quot;updates&quot;</code> chunk as two values raises <code>ValueError: not enough values to unpack</code>.</aside>
+<h2 id="how-do-i-see-every-model-call-live"><a class="anchor" href="#how-do-i-see-every-model-call-live">How do I see every model call, live?</a></h2>
+<p><code>astream_events()</code> is LangChain&#x27;s event stream driven through GraphARC&#x27;s budgeted path. It emits per-node <em>and</em> per-model-call events, so it is what you want behind a &quot;thinking…&quot; UI or a token meter — filter on <code>on_chain_start</code> for node starts and <code>on_chat_model_end</code> for <code>usage_metadata</code>. <code>version</code> defaults to <code>&quot;v2&quot;</code> and <code>&quot;v1&quot;</code> is accepted.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">async</span> <span class="tok-k">for</span> event <span class="tok-k">in</span> graph.astream_events({<span <span class="tok-k">class</span>="tok-s">&quot;question&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;meaning of life?&quot;</span>}):
+    <span class="tok-k">if</span> event[<span <span class="tok-k">class</span>="tok-s">&quot;event&quot;</span>] == <span <span class="tok-k">class</span>="tok-s">&quot;on_chain_start&quot;</span>:
+        print(<span <span class="tok-k">class</span>="tok-s">&quot;start&quot;</span>, event[<span <span class="tok-k">class</span>="tok-s">&quot;name&quot;</span>])
+    <span class="tok-k">elif</span> event[<span <span class="tok-k">class</span>="tok-s">&quot;event&quot;</span>] == <span <span class="tok-k">class</span>="tok-s">&quot;on_chat_model_end&quot;</span>:
+        usage = event[<span <span class="tok-k">class</span>="tok-s">&quot;data&quot;</span>][<span <span class="tok-k">class</span>="tok-s">&quot;output&quot;</span>].usage_metadata
+        print(<span <span class="tok-k">class</span>="tok-s">&quot;model&quot;</span>, event[<span <span class="tok-k">class</span>="tok-s">&quot;name&quot;</span>], usage[<span <span class="tok-k">class</span>="tok-s">&quot;total_tokens&quot;</span>], <span <span class="tok-k">class</span>="tok-s">&quot;tokens&quot;</span>)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>&quot;v3&quot;</code> is refused with a <code>ValueError</code> rather than passed through, because LangGraph returns a stream <em>object</em> for v3, not an async iterator — a different shape than this method&#x27;s contract.</aside>
+<h2 id="how-do-i-stop-someone-bypassing-the-budget"><a class="anchor" href="#how-do-i-stop-someone-bypassing-the-budget">How do I stop someone bypassing the budget?</a></h2>
+<p>You do not have to. <code>CompiledGraphARC.inner</code> is the LangGraph object underneath and is reachable, but driving it directly fails closed at the first node with <code>MissingRunContextError</code>. Raw LangGraph entry points would silently bypass budgets and traces, so the node refuses to execute without a GraphARC run context.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">MissingRunContextError: node &#x27;bump&#x27; executed without a GraphARC run context; drive the graph via CompiledGraphARC.invoke()/stream()/ainvoke()/astream() — raw LangGraph entry points would silently bypass budgets and traces
+ValueError: astream_events supports version &#x27;v1&#x27; or &#x27;v2&#x27;, got &#x27;v3&#x27;</pre></figure>
+<h2 id="how-do-i-let-a-node-pick-the-next-node"><a class="anchor" href="#how-do-i-let-a-node-pick-the-next-node">How do I let a node pick the next node?</a></h2>
+<p>Return a <code>langgraph.types.Command</code> (re-exported from <code>grapharc.runtime.graph</code>). Its <code>update</code> goes through exactly the checks a returned dict does, so dynamic routing costs nothing in discipline. There is no <code>add_edge(START, ...)</code> for the destinations and no conditional edge at all — the <code>goto</code> <em>is</em> the transition — but the destination nodes still need their outgoing edges to <code>END</code>.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> triage(state: State) -&gt; Command:
+    <span class="tok-k">if</span> <span <span class="tok-k">class</span>="tok-s">&quot;urgent&quot;</span> <span class="tok-k">in</span> state.text:
+        <span class="tok-k">return</span> Command(update={<span <span class="tok-k">class</span>="tok-s">&quot;verdict&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;urgent&quot;</span>}, goto=<span <span class="tok-k">class</span>="tok-s">&quot;escalate&quot;</span>)
+    <span class="tok-k">return</span> Command(update={<span <span class="tok-k">class</span>="tok-s">&quot;verdict&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;routine&quot;</span>}, goto=<span <span class="tok-k">class</span>="tok-s">&quot;archive&quot;</span>)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>Command(update=...)</code> must be a dict, and <code>Command(graph=...)</code> is refused — an update aimed at another graph&#x27;s state cannot be checked against this graph&#x27;s declared writes.</aside>
+<h2 id="what-happens-when-a-goto-names-a-node-that-does-not-exist"><a class="anchor" href="#what-happens-when-a-goto-names-a-node-that-does-not-exist">What happens when a goto names a node that does not exist?</a></h2>
+<p>It raises <code>GraphRoutingError</code>. This is the case worth knowing about because plain LangGraph does <em>not</em> raise: it logs <code>wrote to unknown channel branch:to:&lt;x&gt;, ignoring it</code> and carries on as if the node had never routed. A transition that silently does not happen is the same defect as one that happens unpermitted — the graph did something other than what the node asked for and nobody was told. The check covers node names, <code>END</code>, <code>Send</code> targets from an <code>add_fanout_edge</code> dispatcher, sequences of those, and <code>Command(goto=None)</code> (which LangGraph cannot iterate at all).</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">GraphRoutingError: node &#x27;triage&#x27; routed to &#x27;esclate&#x27;, which is not a node of graph &#x27;triage&#x27;; LangGraph drops an unknown destination and the run continues as if the routing had not happened. Valid destinations: &#x27;escalate&#x27;, &#x27;triage&#x27;, END</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The stated limit — the check covers destinations GraphARC hands to LangGraph; a <code>Command</code> passed as <em>input</em> to <code>invoke()</code>/<code>stream()</code> is unsupported (those take a dict, a state model, or <code>None</code>).</aside>
+<h2 id="how-do-i-pause-a-graph-let-a-human-edit-state-and-carry-on"><a class="anchor" href="#how-do-i-pause-a-graph-let-a-human-edit-state-and-carry-on">How do I pause a graph, let a human edit state, and carry on?</a></h2>
+<p>Compile with a checkpointer, stream with <code>interrupt_before</code>, then use <code>get_state</code> / <code>update_state</code> / resume-with-<code>None</code>. <code>snapshot.next</code> tells you which node is pending; <code>update_state(..., as_node=&quot;write&quot;)</code> attributes the human edit to the node that produced the value; <code>invoke(None, thread_id=...)</code> picks up from the checkpoint. <code>get_state</code> and friends read and write checkpoints rather than executing nodes, so they carry no budget and emit no trace events.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span <span class="tok-k">class</span>="tok-c"># Run until `send` <span class="tok-k">is</span> next, then stop.</span>
+<span class="tok-k">for</span> _ <span class="tok-k">in</span> graph.stream({<span <span class="tok-k">class</span>="tok-s">&quot;topic&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;the outage&quot;</span>}, thread_id=<span <span class="tok-k">class</span>="tok-s">&quot;t1&quot;</span>, interrupt_before=[<span <span class="tok-k">class</span>="tok-s">&quot;send&quot;</span>]):
+    <span class="tok-k">pass</span>
+
+snapshot = graph.get_state(<span <span class="tok-k">class</span>="tok-s">&quot;t1&quot;</span>)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;next    :&quot;</span>, snapshot.next)
+graph.update_state(<span <span class="tok-k">class</span>="tok-s">&quot;t1&quot;</span>, {<span <span class="tok-k">class</span>="tok-s">&quot;draft&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;Dear customer, we are sorry about the outage.&quot;</span>}, as_node=<span <span class="tok-k">class</span>="tok-s">&quot;write&quot;</span>)
+result = graph.invoke(<span class="tok-k">None</span>, thread_id=<span <span class="tok-k">class</span>="tok-s">&quot;t1&quot;</span>)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>interrupt_before</code> is a <em>stream</em> keyword — not an <code>invoke</code> keyword and not a <code>compile</code> keyword; <code>invoke()</code> takes only <code>input</code>, <code>thread_id</code>, <code>run_id</code>, <code>budget</code>, and passing <code>interrupt_before=</code> raises <code>TypeError</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Without a checkpointer at compile time, <code>get_state</code> raises <code>ValueError(&quot;No checkpointer set&quot;)</code>.</aside>
+<h2 id="what-does-update-state-actually-check"><a class="anchor" href="#what-does-update-state-actually-check">What does update_state actually check?</a></h2>
+<p>Field names and declared types always; the node&#x27;s write allowlist only when you say which node the edit is attributed to. Unknown fields raise <code>WritePermissionError</code>, wrong types raise <code>StateTypeError</code>, and claiming a node whose declared writes do not cover the field raises <code>WritePermissionError</code>. With no <code>as_node</code>, the update is type-checked only — a human editing state mid-run is not a node, so there is no allowlist to apply; <code>as_node=&quot;write&quot;</code> means &quot;record this as if <code>write</code> had done it&quot;, and <code>write</code>&#x27;s declared writes are then exactly the right contract.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">graph.update_state(<span <span class="tok-k">class</span>="tok-s">&quot;t1&quot;</span>, {<span <span class="tok-k">class</span>="tok-s">&quot;sent&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;forged&quot;</span>}, as_node=<span <span class="tok-k">class</span>="tok-s">&quot;write&quot;</span>)
+<span <span class="tok-k">class</span>="tok-c"># WritePermissionError: update_state(as_node=<span <span class="tok-k">class</span>="tok-s">&#x27;write&#x27;</span>) wrote undeclared fields [<span <span class="tok-k">class</span>="tok-s">&#x27;sent&#x27;</span>]; declared writes: [<span <span class="tok-k">class</span>="tok-s">&#x27;draft&#x27;</span>]</span></pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Residual gap, stated rather than papered over — with <code>as_node=None</code> LangGraph attributes the update to whichever node last ran, and GraphARC does not reproduce that inference, so the update is type-checked but not allowlisted. If you want the allowlist, name the node.</aside>
+<h2 id="how-do-i-run-something-a-human-has-to-approve"><a class="anchor" href="#how-do-i-run-something-a-human-has-to-approve">How do I run something a human has to approve?</a></h2>
+<p>Use a <code>Session</code>: the graph&#x27;s state schema derives from <code>SessionState</code>, gated nodes are named on the <code>GraphSpec</code>, and the runtime holds the graph <em>before</em> the gated node runs. <code>grapharc.session.demo</code> ships a four-node graph (<code>ingest -&gt; plan -&gt; apply -&gt; report</code>) with <code>apply</code> gated — importing the module is what registers the graph. <code>TurnResult.nodes</code> is the honest answer to &quot;what executed&quot;: <code>apply</code> is absent from the first turn because its body never ran. <code>SessionManager(root)</code> puts a session store and a checkpoint store in one directory, so &quot;resume this session elsewhere&quot; is &quot;point another <code>SessionManager</code> at the same directory&quot;.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">with</span> SessionManager(root) <span class="tok-k">as</span> manager:
+    session = manager.create(GRAPH_NAME)
+    session.send(<span <span class="tok-k">class</span>="tok-s">&quot;summarise the incident&quot;</span>)
+
+    first = session.run({})
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;status  :&quot;</span>, first.status.value)      <span <span class="tok-k">class</span>="tok-c"># awaiting_approval</span>
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;holding :&quot;</span>, [(h.node, h.action) <span class="tok-k">for</span> h <span class="tok-k">in</span> first.approvals])
+
+    session.decide(approved=<span class="tok-k">True</span>, decided_by=<span <span class="tok-k">class</span>="tok-s">&quot;ops&quot;</span>)
+    second = session.run()
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;ran     :&quot;</span>, second.nodes)            <span <span class="tok-k">class</span>="tok-c"># (<span <span class="tok-k">class</span>="tok-s">&#x27;apply&#x27;</span>, <span <span class="tok-k">class</span>="tok-s">&#x27;report&#x27;</span>)</span></pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The gate belongs to the session, not to the graph — <code>session.graph.invoke(...)</code> runs gated nodes with nothing holding them; do not hand the compiled graph to anything that will not go through a session.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>run()</code> is synchronous and occupies its caller until the session stops; an async turn is buildable, just not built.</aside>
+<h2 id="how-do-i-reject-a-step-without-unwinding-it"><a class="anchor" href="#how-do-i-reject-a-step-without-unwinding-it">How do I reject a step without unwinding it?</a></h2>
+<p><code>decide(approved=False)</code>. Nothing the gated node would have done has happened yet, so a rejection costs nothing to honour — the graph walks <em>past</em> the node rather than running it and undoing it. Calling <code>run()</code> while a hold is open raises <code>ApprovalRequired</code> before the session claims anything, so a refused <code>run()</code> leaves the queue, the holds and the checkpoint exactly as it found them. The rejected node appears in <code>turn.skipped</code> and never in the append-only <code>log</code>; what <em>did</em> run is the node&#x27;s outgoing edges, filed against its own pending task, which is what advances the graph, after which <code>report</code> reads <code>state.decision</code> and routes on the verdict.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">try</span>:
+    session.run()
+<span class="tok-k">except</span> ApprovalRequired <span class="tok-k">as</span> exc:
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;refused :&quot;</span>, exc)
+
+session.decide(approved=<span class="tok-k">False</span>, decided_by=<span <span class="tok-k">class</span>="tok-s">&quot;ops&quot;</span>, reason=<span <span class="tok-k">class</span>="tok-s">&quot;wrong quarter&quot;</span>)
+turn = session.run()
+print(<span <span class="tok-k">class</span>="tok-s">&quot;ran     :&quot;</span>, turn.nodes)      <span <span class="tok-k">class</span>="tok-c"># (<span <span class="tok-k">class</span>="tok-s">&#x27;report&#x27;</span>,)</span>
+print(<span <span class="tok-k">class</span>="tok-s">&quot;skipped :&quot;</span>, turn.skipped)    <span <span class="tok-k">class</span>="tok-c"># (<span <span class="tok-k">class</span>="tok-s">&#x27;apply&#x27;</span>,)</span></pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The approval request id is a fresh random value per hold; yours will differ.</aside>
+<h2 id="how-do-i-resume-a-session-after-the-process-restarts"><a class="anchor" href="#how-do-i-resume-a-session-after-the-process-restarts">How do I resume a session after the process restarts?</a></h2>
+<p>Call <code>SessionManager.resume(session_id)</code> in the new process. Nothing about a session lives in memory: status, queue, holds and audit trail are rows in SQLite, graph state is in the checkpointer, and the graph itself is rebuilt by name from the registry. The chapter proves this by spawning two genuinely separate interpreters against one directory. <code>log</code> is the proof, not the status — the demo graph appends its own node name on every execution, so a resume that quietly re-ran <code>ingest</code> and <code>plan</code> would show them twice; it shows each once.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">SECOND = <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>&quot;
+<span class="tok-k">import</span> json, os, sys
+<span class="tok-k">from</span> grapharc.session <span class="tok-k">import</span> SessionManager
+<span class="tok-k">from</span> grapharc.session.demo <span class="tok-k">import</span> GRAPH_NAME
+
+<span class="tok-k">with</span> SessionManager(sys.argv[1]) <span class="tok-k">as</span> manager:
+    session = manager.resume(<span <span class="tok-k">class</span>="tok-s">&quot;incident-42&quot;</span>)          <span <span class="tok-k">class</span>="tok-c"># rebuilt <span class="tok-k">from</span> the store</span>
+    session.decide(approved=<span class="tok-k">True</span>, decided_by=<span <span class="tok-k">class</span>="tok-s">&quot;ops&quot;</span>)
+    turn = session.run()
+    print(json.dumps({<span <span class="tok-k">class</span>="tok-s">&quot;pid&quot;</span>: os.getpid(), <span <span class="tok-k">class</span>="tok-s">&quot;status&quot;</span>: turn.status.value,
+                      <span <span class="tok-k">class</span>="tok-s">&quot;ran&quot;</span>: turn.nodes, <span <span class="tok-k">class</span>="tok-s">&quot;log&quot;</span>: turn.state[<span <span class="tok-k">class</span>="tok-s">&quot;log&quot;</span>]}))
+<span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>&quot;</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The resuming process must be able to <em>build</em> the graph — <code>register_graph</code> is per-process and a session record only stores a name, so a resume in a process that never imported the registering module fails with <code>UnknownGraphError</code>, loudly, which is intended. That is why the <code>demo</code> import appears in both children: the import is the registration.</aside>
+<h2 id="how-do-i-stop-a-session-that-is-already-running"><a class="anchor" href="#how-do-i-stop-a-session-that-is-already-running">How do I stop a session that is already running?</a></h2>
+<p><code>session.interrupt(reason)</code>. It is a durable row, not a signal, so it works from another thread or another process; the process driving the session reads it after the next superstep. The turn comes back with status <code>interrupted</code>, <code>interrupted_by</code> set to your reason, the nodes that ran, and <code>turn.pending</code> naming what is still queued — and a later <code>run()</code> resumes from there. A stop queued while the session is asleep is honoured before the next turn&#x27;s first node; an interrupt is never silently lost.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> stopper():
+    INSIDE_STEP_ONE.wait(timeout=10)
+    session.interrupt(<span <span class="tok-k">class</span>="tok-s">&quot;operator asked <span class="tok-k">for</span> a stop&quot;</span>)
+    STOP_RECORDED.set()
+
+threading.Thread(target=stopper).start()
+turn = session.run({})
+print(<span <span class="tok-k">class</span>="tok-s">&quot;status       :&quot;</span>, turn.status.value)   <span <span class="tok-k">class</span>="tok-c"># interrupted</span>
+print(<span <span class="tok-k">class</span>="tok-s">&quot;still pending:&quot;</span>, turn.pending)        <span <span class="tok-k">class</span>="tok-c"># (<span <span class="tok-k">class</span>="tok-s">&#x27;two&#x27;</span>,)</span></pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> An interrupt does not stop a running node — it is read at the next <em>superstep</em> boundary, after the whole parallel step has finished and been checkpointed, so a node already inside its body runs to completion and so does everything beside it.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The boundary an interrupt is read at is the next one after it is written, and you do not control which one that is unless you synchronise (the snippet&#x27;s <code>STOP_RECORDED</code> handshake is what keeps it illustrative rather than flaky). Cutting a node off mid-flight is what <code>Budget(max_seconds=...)</code> is for.</aside>
+<h2 id="what-does-a-hold-mean-when-the-gated-node-is-fanned-out"><a class="anchor" href="#what-does-a-hold-mean-when-the-gated-node-is-fanned-out">What does a hold mean when the gated node is fanned out?</a></h2>
+<p>It means one task, and you cannot tell which. A <code>Send</code> fan-out can put the same gated node on the boundary several times over; each task is held separately and each needs its own decision, so the <em>count</em> is exact and nothing runs unapproved — but the requests are indistinguishable, right down to the action text. Approving <em>k</em> of <em>n</em> runs <em>k</em> of them; <strong>which</strong> <em>k</em> is not yours to pick (an artefact of task ordering, not a guarantee). If the choice matters, gate a node that reads the decision from state, or fan out over distinct node names.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">register_graph(<span <span class="tok-k">class</span>="tok-s">&quot;mailshot&quot;</span>, build, approval_nodes=(<span <span class="tok-k">class</span>="tok-s">&quot;send&quot;</span>,), replace=<span class="tok-k">True</span>)
+
+holds = session.pending_approvals
+session.decide(approved=<span class="tok-k">True</span>, request_id=holds[0].id)
+session.decide(approved=<span class="tok-k">True</span>, request_id=holds[1].id)
+session.decide(approved=<span class="tok-k">False</span>, request_id=holds[2].id, reason=<span <span class="tok-k">class</span>="tok-s">&quot;bounced&quot;</span>)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>request_id</code> is <strong>required</strong> once more than one hold is open — <code>decide()</code> without it raises rather than guessing, because guessing is how an operator signs off <code>send_email</code> and releases <code>delete_records</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Only one verdict reaches the graph — <code>SessionState.approval_decision</code> is a single channel, so a boundary settling several holds shows the graph the first hold&#x27;s verdict; every verdict is on the event log and in <code>TurnResult.decisions</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A <code>Send</code> payload that is a Pydantic model goes into the checkpoint and LangGraph prints <code>Deserializing unregistered type &lt;module&gt;.Envelope from checkpoint. This will be blocked in a future version.</code> on stderr — stderr noise today, a future error; the fix is LangGraph&#x27;s <code>allowed_msgpack_modules</code>, not anything in GraphARC.</aside>
+<h2 id="how-do-i-put-this-behind-http"><a class="anchor" href="#how-do-i-put-this-behind-http">How do I put this behind HTTP?</a></h2>
+<p><code>grapharc.server.create_app(registry=...)</code> returns a FastAPI app. A request may <em>name</em> a graph the operator registered and supply input and a budget; it may not <em>describe</em> a graph. Routes: <code>POST /sessions</code> (create and start, <code>201</code> + <code>location</code>), <code>GET /sessions</code>, <code>GET /sessions/{id}</code> (status, result, live meter reading), <code>POST /sessions/{id}/events</code> (<code>message</code>/<code>approval</code>/<code>interrupt</code> → <code>202</code>), <code>GET /sessions/{id}/stream</code> (SSE: <code>trace</code> frames, then <code>status</code>, then <code>done</code>), <code>GET /sessions/{id}/trace</code> (JSONL as <code>application/x-ndjson</code>), <code>GET /healthz</code> (liveness, version, registered graph names). The stream takes a <code>cursor</code> query parameter and honours <code>last-event-id</code>, so a dropped SSE connection resumes without replaying frames you already saw.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">registry = GraphRegistry({<span <span class="tok-k">class</span>="tok-s">&quot;qa&quot;</span>: build_qa})
+app = create_app(registry=registry)
+
+<span class="tok-k">with</span> TestClient(app) <span class="tok-k">as</span> client:
+    created = client.post(
+        <span <span class="tok-k">class</span>="tok-s">&quot;/sessions&quot;</span>, json={<span <span class="tok-k">class</span>="tok-s">&quot;graph&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;qa&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;input&quot;</span>: {<span <span class="tok-k">class</span>="tok-s">&quot;question&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;how do budgets work?&quot;</span>}}
+    )
+    session_id = created.json()[<span <span class="tok-k">class</span>="tok-s">&quot;id&quot;</span>]
+    <span class="tok-k">for</span> _ <span class="tok-k">in</span> range(200):
+        view = client.get(f<span <span class="tok-k">class</span>="tok-s">&quot;/sessions/{session_id}&quot;</span>).json()
+        <span class="tok-k">if</span> view[<span <span class="tok-k">class</span>="tok-s">&quot;status&quot;</span>] <span class="tok-k">in</span> (<span <span class="tok-k">class</span>="tok-s">&quot;succeeded&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;failed&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;interrupted&quot;</span>):
+            <span class="tok-k">break</span>
+        time.sleep(0.01)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Read <code>applied</code>, not the status code — <code>POST /events</code> answers <code>202</code> for everything; whether it changed the run is <code>event.applied</code>, and this runtime only applies <code>interrupt</code> (<code>message</code>/<code>approval</code> are recorded with <code>applied: false</code> plus a <code>detail</code>).</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A stream frame and a trace line are the same record — <code>BroadcastRecorder</code> shapes each event once, including the trace format&#x27;s 2000-character clip on long values; the unclipped answer is the session&#x27;s <code>result</code>, never truncated.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> This default runtime does not resume across a process restart (sessions live in this process&#x27;s memory; the trace files outlive them) and does not evict — every session and its event list is retained for the life of the process. For durable sessions use <code>grapharc.session</code>.</aside>
+<h2 id="which-checkpointer-does-the-server-need"><a class="anchor" href="#which-checkpointer-does-the-server-need">Which checkpointer does the server need?</a></h2>
+<p>An async one, if your nodes are <code>async def</code>. The server drives runs through <code>astream</code>, and <code>SqliteSaver</code> — this repo&#x27;s own dependency, and what <code>grapharc.session</code> uses — has no async side. The runtime probes the saver once per run, on the run&#x27;s own event loop, before anything executes; a sync-only saver quietly selects the sync driver instead. The one combination nothing can serve is <code>async def</code> nodes plus a sync-only saver, which yields <code>CheckpointerNotAsyncError</code>. Matrix: sync nodes with none/<code>SqliteSaver</code> run on the sync driver; sync nodes with <code>InMemorySaver</code>/<code>AsyncSqliteSaver</code> run async; <code>async def</code> with none/<code>InMemorySaver</code>/<code>AsyncSqliteSaver</code> runs async; <code>async def</code> with <code>SqliteSaver</code> errors.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">registry = GraphRegistry(
+    {
+        <span <span class="tok-k">class</span>="tok-s">&quot;sync_saver&quot;</span>: <span class="tok-k">lambda</span> trace: graph_with(SqliteSaver(conn), trace),
+        <span <span class="tok-k">class</span>="tok-s">&quot;async_ok&quot;</span>: <span class="tok-k">lambda</span> trace: graph_with(InMemorySaver(), trace),
+    }
+)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>AsyncSqliteSaver</code> needs <code>aiosqlite</code> and must be constructed on a running loop; <code>InMemorySaver</code> is the zero-dependency answer when durability is not the point.</aside>
+<h2 id="how-do-i-actually-serve-it"><a class="anchor" href="#how-do-i-actually-serve-it">How do I actually serve it?</a></h2>
+<p><code>grapharc serve --registry module:attr</code>, where the attribute is a <code>grapharc.server.GraphRegistry</code> (or a callable returning one). Without <code>--registry</code> the app starts with an empty registry — a legitimate way to check the process comes up and a useless way to run anything, and the CLI tells you which of the two you got. The banner (URL, graph names, &quot;ctrl-c to stop&quot;) is printed <em>before</em> the server blocks, so a script watching stdout for the URL does not have to wait for the process to exit. To use a real model instead of the scripted one, swap the model in the builder with <code>grapharc.gateway.get_model</code>.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body"><span class="tok-p">$ </span><span class="tok-cmd">PYTHONPATH=. grapharc serve --registry mygraphs:REGISTRY --port 8124</span>
+serving grapharc.server on http://127.0.0.1:8124
+graphs   : qa
+ctrl-c to stop
+
+<span class="tok-p">$ </span><span class="tok-cmd">curl -s localhost:8124/healthz</span>
+{&quot;status&quot;:&quot;ok&quot;,&quot;version&quot;:&quot;0.1.0&quot;,&quot;graphs&quot;:[&quot;qa&quot;]}
+
+<span class="tok-p">$ </span><span class="tok-cmd">curl -s -X POST localhost:8124/sessions -H &#x27;content-type: application/json&#x27; \</span>
+      -d &#x27;{&quot;graph&quot;:&quot;qa&quot;,&quot;input&quot;:{&quot;question&quot;:&quot;how do budgets work?&quot;}}&#x27;
+{&quot;id&quot;:&quot;38231fa41b8b4dad&quot;,&quot;graph&quot;:&quot;qa&quot;,&quot;thread_id&quot;:&quot;38231fa41b8b4dad&quot;,&quot;status&quot;:&quot;queued&quot;, ...}</pre></figure>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> get_model
+
+model = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-haiku-4.5&quot;</span>)
+<span <span class="tok-k">class</span>="tok-c"># <span class="tok-k">or</span>, on a Claude subscription <span class="tok-k">with</span> the CLI on PATH <span class="tok-k">and</span> no API key:</span>
+model = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>serve</code> needs the server extra: <code>uv sync --extra server</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The real-model snippet was not executed — it needs a paid API key or a Claude subscription; <code>grapharc models --check</code> tells you which backends this machine could use without contacting any provider.</aside>
+<h2 id="how-do-i-reconstruct-a-run-after-it-finished"><a class="anchor" href="#how-do-i-reconstruct-a-run-after-it-finished">How do I reconstruct a run after it finished?</a></h2>
+<p><code>replay(trace, run_id)</code>. It is a <em>reconstruction</em>, not a re-execution: it reads the JSONL and rebuilds the node sequence, the deltas, the timings and the failures — nothing here calls a model, a tool, or a node. <code>run.path</code>, <code>run.tokens</code>, <code>run.replay_state()</code> and <code>format_replay(run)</code> are the readouts. Passing <code>run_id=</code> to <code>invoke()</code> is what makes a run findable later; without it you get a random hex id and have to fish it out of the trace file. <code>replay_thread(trace, thread_id)</code> gives you every run recorded against one thread, which is how you read a resumed session rather than its last attempt.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">trace = TraceRecorder(path)
+build(trace, [<span <span class="tok-k">class</span>="tok-s">&quot;budgets cap iterations&quot;</span>]).invoke({<span <span class="tok-k">class</span>="tok-s">&quot;question&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;budgets?&quot;</span>}, run_id=<span <span class="tok-k">class</span>="tok-s">&quot;before&quot;</span>)
+
+run = replay(trace, <span <span class="tok-k">class</span>="tok-s">&quot;before&quot;</span>)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;path   :&quot;</span>, run.path)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;tokens :&quot;</span>, run.tokens)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;state  :&quot;</span>, run.replay_state())
+print(format_replay(run))</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>replay_state()</code> is only as good as the deltas — the trace truncates strings past 2000 characters at write time, so a long value replays truncated.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The trace does not record which state fields have reducers, so an appended field replays as last-write-wins unless you pass <code>run.replay_state(reducers={&quot;log&quot;: operator.add})</code>.</aside>
+<h2 id="how-do-i-tell-whether-my-change-altered-behaviour"><a class="anchor" href="#how-do-i-tell-whether-my-change-altered-behaviour">How do I tell whether my change altered behaviour?</a></h2>
+<p><code>diff_trace(trace, run_a, run_b)</code> aligns the two node sequences with <code>difflib</code> and reports where they diverged — which nodes wrote different deltas and which state fields differ — with <code>format_diff</code> for the readout and <code>diff.identical</code> for the verdict. <code>identical</code> deliberately ignores timing and tokens: two runs of a deterministic graph differ by milliseconds every time, and a diff that is never clean is a diff nobody reads. It compares path, deltas and termination reason; the token and duration numbers are still on the <code>RunDiff</code> if you want them.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">diff = diff_trace(trace, <span <span class="tok-k">class</span>="tok-s">&quot;before&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;after&quot;</span>)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;identical:&quot;</span>, diff.identical)
+print(format_diff(diff))</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Diffing runs of <em>different</em> graphs raises <code>ReplayError</code> rather than producing an alignment that is technically correct and means nothing.</aside>
+<h2 id="where-did-the-tokens-go"><a class="anchor" href="#where-did-the-tokens-go">Where did the tokens go?</a></h2>
+<p><code>attribute(trace, run_id, rates=...)</code> splits a run&#x27;s spend per node; a <code>RateCard</code> is USD per 1,000 tokens, <strong>blended</strong> across input and output, because a trace event records one <code>tokens</code> total and no split. <code>summarize(trace, run_id)</code> gives <code>RunMetrics</code> (nodes executed, tokens, per-node counts) and <code>to_mermaid(trace, run_id)</code> renders the executed path. <code>RunCost.tokens</code> and <code>RunMetrics.tokens</code> agree by construction — both count the <code>end</code> events of node executions, and the test suite asserts they match, because a cost report and an audit trail that disagree are worse than either alone. <code>attribute_thread(trace, thread_id)</code> does the same for a whole session across resumes, and <code>by_node(trace)</code> ranks every node in a file by cost.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">cost = attribute(trace, <span <span class="tok-k">class</span>="tok-s">&quot;r1&quot;</span>, rates=RateCard(default=3.0))  <span <span class="tok-k">class</span>="tok-c"># USD per 1k tokens, blended</span>
+<span class="tok-k">for</span> node <span class="tok-k">in</span> cost.per_node:
+    print(f&quot;{node.node:&lt;8} {node.tokens:&gt;3} tok  ${node.estimated_cost_usd:.6f}&quot;)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;total   &quot;</span>, cost.tokens, <span <span class="tok-k">class</span>="tok-s">&quot;tok  complete:&quot;</span>, cost.complete)
+
+metrics = summarize(trace, <span <span class="tok-k">class</span>="tok-s">&quot;r1&quot;</span>)
+print(to_mermaid(trace, <span <span class="tok-k">class</span>="tok-s">&quot;r1&quot;</span>))</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Nothing in GraphARC writes <code>cost_usd</code> onto a trace event today — the field exists and <code>TraceRecorder.event</code> accepts it, but the kernel does not pass it, so <code>recorded_cost_usd</code> is always <code>None</code>; everything shown is <code>estimated_cost_usd</code> (tokens × your rate card), in its own field so nobody mistakes an estimate for an invoice.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>complete</code> is what tells you the total is a total — tokens with neither a recorded cost nor a matching rate land in <code>unpriced_tokens</code>, and a non-zero count means <code>cost_usd</code> is a lower bound; a <code>RateCard</code> with no <code>default</code> and no matching model prices nothing.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A node that raised has no token count at node level (no <code>end</code> event); for an <code>AgentNode</code> the per-call sub-events still hold the spend as <code>tokens_before_error</code>, kept out of the total so the total keeps matching <code>metrics</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>to_mermaid</code> renders the <em>executed</em> path keyed by <code>(node, step)</code>, so parallel fan-out instances are distinct boxes rather than one box with a self-loop the graph never had.</aside>
+<h2 id="the-cli-tour"><a class="anchor" href="#the-cli-tour">The CLI tour</a></h2>
+<p>Eleven commands, every one taking <code>--json</code>, which prints the same payload as one document on stdout — including failures, which become the document rather than a line on stderr. The set: <code>demo &lt;example&gt;</code> (<code>stage0</code>…<code>stage6</code>, <code>capstone</code>), <code>run &lt;graph.json&gt;</code> (through the admission gate; <code>--check-only</code> lints it), <code>plan &lt;goal&gt;</code> (governed loop: propose → admit → execute → replan), <code>agent &lt;task&gt;</code>, <code>serve</code>, <code>models [spec]</code> (<code>--check</code> probes this machine), <code>replay &lt;trace&gt; &lt;run&gt;</code>, <code>diff &lt;trace&gt; &lt;a&gt; &lt;b&gt;</code>, <code>trace &lt;trace&gt;</code>, <code>metrics &lt;trace&gt; &lt;run&gt;</code>, <code>viz &lt;trace&gt; &lt;run&gt;</code>. Exit codes are part of the interface: <code>0</code> did the job, <code>1</code> ran and the answer was negative (two runs differed, a run id had no events, no backend was usable), <code>2</code> could not run at all (missing file, missing component, unknown model spec). <code>--allow</code> / <code>--deny</code> / <code>--ask</code> on <code>grapharc agent</code> are repeatable tool-name globs (<code>--deny</code> wins), <code>--executor local</code> drops the sandbox, and <code>--max-turns</code> / <code>--max-tokens</code> / <code>--max-seconds</code> are the run&#x27;s budget.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body"><span class="tok-p">$ </span><span class="tok-cmd">grapharc demo stage1 --trace trace.jsonl</span>
+<span class="tok-p">$ </span><span class="tok-cmd">grapharc trace trace.jsonl --json | jq -r &#x27;.events[0].run_id&#x27;</span>
+2a47f18064b7
+<span class="tok-p">$ </span><span class="tok-cmd">grapharc metrics trace.jsonl 2a47f18064b7</span>
+run_id: 2a47f18064b7
+graph: stage1_loop
+nodes_executed: 8
+tokens: 81
+termination_reason: target_met
+per_node: {&#x27;start&#x27;: 1, &#x27;plan&#x27;: 2, &#x27;act&#x27;: 2, &#x27;verify&#x27;: 2, &#x27;finish_target_met&#x27;: 1}
+<span class="tok-p">$ </span><span class="tok-cmd">grapharc diff trace.jsonl 2a47f18064b7 3c0d1b4b4b3e; echo &quot;exit $?&quot;</span>
+2a47f18064b7 == 3c0d1b4b4b3e: same path (8 nodes), same state
+exit 0</pre></figure>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body"><span class="tok-p">$ </span><span class="tok-cmd">grapharc models --check</span>
+claude-cli   usable    &#x27;claude&#x27; on PATH at /home/you/.local/bin/claude
+                       credential: claude subscription login (no API key)
+openrouter   unusable  no API key (set OPENROUTER_API_KEY, or add one to .env)
+                       credential: &lt;unset&gt;
+ollama       usable    local server at http://localhost:11434/v1
+mock         usable    scripted test double; never reaches a provider
+
+local probe only — no provider was contacted, so a configured key
+is not a validated one.</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>grapharc run</code> does not print the run id — it prints the trace path, and you get the id out of the file (<code>jq -r &#x27;.events[0].run_id&#x27;</code> or a one-line <code>python -c</code>); everything downstream (<code>metrics</code>, <code>viz</code>, <code>replay</code>, <code>diff</code>) wants that id.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>models --check</code> is a <em>local</em> probe: it reports that a credential is configured, never that it is valid, in credit, or entitled to a model; it exits <code>1</code> when no real provider is usable — <code>mock</code> alone does not count.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>grapharc agent</code> always needs a model, so there is no scripted form and nothing in the chapter claims to have run it.</aside>
+<p>Source file: <code>/home/shashank/Desktop/GraphARC/docs/cookbook/06-serving-and-ops.md</code> (1709 lines); paired test: <code>/home/shashank/Desktop/GraphARC/tests/test_cookbook_serving.py</code>.</p>
+<footer class="pager-row">
+<a class="pager prev" href="governance.html">&larr; Governance</a><span class="pager-spacer"></span><a class="pager next" href="roadmap.html">Roadmap &rarr;</a>
+</footer>
+<footer class="colophon">
+  Generated from the repository's README and cookbook (docs/cookbook/01–06) ·
+  <a href="https://github.com/CodeGraphContext/GraphARC">CodeGraphContext/GraphARC</a> · MIT license
+</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var links = document.querySelectorAll('.nav-chapter ul a');
+  var byId = {};
+  links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+  var current = null;
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        var a = byId[e.target.id];
+        if (a) {
+          if (current) current.classList.remove('active');
+          a.classList.add('active');
+          current = a;
+        }
+      }
+    });
+  }, { rootMargin: '0px 0px -70% 0px' });
+  document.querySelectorAll('main h2[id]').forEach(function (h) { obs.observe(h); });
+})();
+</script>
+</body>
+</html>

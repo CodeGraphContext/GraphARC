@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GraphARC — GraphARC</title>
+<meta name="description" content="A graph engineering toolkit on LangGraph: typed state contracts, per-node write permissions, enforced budgets, and JSONL traces that double as replay points. A planner proposes, a deterministic checker admits, and only then does anything execute.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📚</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="side" aria-label="Documentation contents">
+  <a class="brand" href="index.html"><b>GraphARC<span class="amp"> docs</span></b><span>a governed agent runtime on LangGraph</span></a>
+  <ul>
+<li class="nav-chapter"><a class="active" href="index.html">Overview</a>
+<ul><li><a href="#header-value-proposition">Header / Value proposition</a></li><li><a href="#what-makes-grapharc-different">What makes GraphARC different</a></li><li><a href="#quick-start">Quick Start</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#core-components">Core Components</a></li><li><a href="#what-it-adds-on-top-of-langgraph">What it adds on top of LangGraph</a></li><li><a href="#install">Install</a></li><li><a href="#quickstart-cli-command-list">Quickstart (CLI command list</a></li><li><a href="#the-admission-gate">The admission gate</a></li><li><a href="#configuration-and-the-zero-config-path">Configuration, and the zero-config path</a></li><li><a href="#the-model-gateway">The model gateway</a></li><li><a href="#independent-verification">Independent verification</a></li><li><a href="#tools-and-the-harness">Tools and the harness</a></li><li><a href="#memory">Memory</a></li><li><a href="#sessions-the-http-api-and-policy">Sessions, the HTTP API, and policy</a></li><li><a href="#reading-a-run-afterwards">Reading a run afterwards</a></li><li><a href="#tests-are-gates">Tests are gates</a></li><li><a href="#status-and-limits">Status and limits</a></li><li><a href="#design-lineage-license">Design lineage / License</a></li></ul>
+</li>
+<li class="nav-chapter"><a href="getting-started.html">Getting started</a>
+</li>
+<li class="nav-chapter"><a href="models.html">Models</a>
+</li>
+<li class="nav-chapter"><a href="agents-and-tools.html">Agents & tools</a>
+</li>
+<li class="nav-chapter"><a href="verification-and-memory.html">Verification & memory</a>
+</li>
+<li class="nav-chapter"><a href="governance.html">Governance</a>
+</li>
+<li class="nav-chapter"><a href="serving-and-ops.html">Serving & operations</a>
+</li>
+<li class="nav-chapter"><a href="roadmap.html">Roadmap</a>
+</li>
+<li class="nav-chapter"><a href="contributing.html">Contributing</a>
+</li>
+  </ul>
+</nav>
+<main>
+<header class="page-head">
+  <h1>GraphARC</h1>
+  <p class="sub">A graph engineering toolkit on LangGraph: typed state contracts, per-node write permissions, enforced budgets, and JSONL traces that double as replay points. A planner proposes, a deterministic checker admits, and only then does anything execute.</p>
+</header>
+
+<div class="hero-chips">
+  <span class="chip"><b>0.1.1</b> · alpha</span>
+  <span class="chip">pip install grapharc</span>
+  <span class="chip">Python ≥ 3.12</span>
+  <span class="chip">MIT</span>
+</div>
+<div class="card-grid">
+<a class="card" href="getting-started.html"><b>Getting started</b><span>The graph kernel: typed state, declared writes, budgets, traces, fan-out, async.</span></a><a class="card" href="models.html"><b>Models</b><span>The gateway: five backends, one spec grammar, retries, spend metering.</span></a><a class="card" href="agents-and-tools.html"><b>Agents & tools</b><span>The seven core tools, the permission harness, sandboxing, and the agent loop.</span></a><a class="card" href="verification-and-memory.html"><b>Verification & memory</b><span>Deterministic citation anchoring, fail-closed review, claims with provenance.</span></a><a class="card" href="governance.html"><b>Governance</b><span>Propose, admit, materialise: the admission gate, policy documents, the governed loop.</span></a><a class="card" href="serving-and-ops.html"><b>Serving & operations</b><span>Async graphs, sessions, the HTTP API, and reading a run afterwards.</span></a><a class="card" href="roadmap.html"><b>Roadmap</b><span>The live build list — measured status per workstream, and the seams left.</span></a><a class="card" href="contributing.html"><b>Contributing</b><span>Tests, the live-marker rule, PR conventions, and the honesty rule for docs.</span></a>
+</div>
+<h2 id="chapters-note" class="visually-hidden">Chapters</h2>
+<h2 id="header-value-proposition"><a class="anchor" href="#header-value-proposition">Header / Value proposition</a></h2>
+<p>GraphARC is &quot;a governed agent runtime built on LangGraph&quot; for building production-grade multi-agent systems with built-in safety, auditability, and control. It adds a governance layer over LangGraph: a planner <em>proposes</em> a subgraph, a deterministic checker <em>admits</em> it, and only then does anything execute. Every transition is permitted, every loop is bounded, and afterwards you can prove what happened and why it stopped. Status is early days (<code>0.1.1</code>) — the API is not stable yet. Badges: PyPI, Python versions, CI, MIT license.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">pip install grapharc</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The API is not stable at <code>0.1.1</code>.</aside>
+<h2 id="what-makes-grapharc-different"><a class="anchor" href="#what-makes-grapharc-different">What makes GraphARC different</a></h2>
+<p>Six bullets: <strong>Admission gate</strong> — all runtime topology changes go through deterministic approval before execution; <strong>Typed state contracts</strong> — Pydantic-based state validation at every node boundary; <strong>Per-node write permissions</strong> — explicit control over what each node can modify; <strong>Enforced budgets</strong> — token spend and execution time limits with hard cutoffs; <strong>Complete auditability</strong> — JSONL traces that serve as replay points and proof of execution; <strong>Governed topology</strong> — new nodes and edges proposed at runtime are checked before being built. The framing is <em>graph engineering</em>: when one agent loop stops being enough, coordination becomes the engineering. Nodes do work (agent loops, model calls, deterministic functions, humans approving things), edges decide what runs next, and a typed shared state flows between them. The lineage cited is the July 2026 loops-vs-graphs debate (Steinberger, Ng, et al.), the &quot;Two Graphs, Two Jobs&quot; split, and twenty years of pre-AI graph systems where every edge means something and every path can be explained.</p>
+<h2 id="quick-start"><a class="anchor" href="#quick-start">Quick Start</a></h2>
+<p>Define a Pydantic state model, create a <code>StateGraph</code>, add nodes and edges from <code>START</code> to <code>END</code>, compile, and invoke.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.runtime <span class="tok-k">import</span> StateGraph
+<span class="tok-k">from</span> pydantic <span class="tok-k">import</span> BaseModel
+
+<span <span class="tok-k">class</span>="tok-c"># Define your state</span>
+<span class="tok-k">class</span> MyState(BaseModel):
+    messages: list[str]
+    result: str = <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+
+<span <span class="tok-k">class</span>="tok-c"># Create a graph</span>
+graph = StateGraph(MyState)
+
+<span <span class="tok-k">class</span>="tok-c"># Add nodes <span class="tok-k">and</span> edges</span>
+graph.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;process&quot;</span>, <span class="tok-k">lambda</span> state: {<span <span class="tok-k">class</span>="tok-s">&quot;result&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;done&quot;</span>})
+graph.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;START&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;process&quot;</span>)
+graph.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;process&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;END&quot;</span>)
+
+<span <span class="tok-k">class</span>="tok-c"># Compile <span class="tok-k">and</span> run</span>
+compiled = graph.compile()
+result = compiled.invoke({<span <span class="tok-k">class</span>="tok-s">&quot;messages&quot;</span>: [<span <span class="tok-k">class</span>="tok-s">&quot;hello&quot;</span>]})</pre></div>
+<h2 id="architecture"><a class="anchor" href="#architecture">Architecture</a></h2>
+<p>A CLI or HTTP request reaches a planner, which emits a typed proposal; a deterministic admission checker either refuses it with reasons or admits it; only an admitted proposal is materialised and run by the graph kernel, on top of the model, tool and memory planes; everything lands on one JSONL record, and work discovered mid-run re-enters the gate. The amber curve along the top of the diagram is the claim: refusals return as traced reason codes, and work discovered mid-run <strong>re-enters admission</strong> — there is no already-approved path and no cached authorisation. Detailed views live in <code>docs/diagrams/grapharc-architecture.drawio</code> plus five more views generated from <code>architecture.py</code>.</p>
+<h2 id="core-components"><a class="anchor" href="#core-components">Core Components</a></h2>
+<p>Nine components, each reachable from a shipped command.</p>
+<div class="table-wrap"><table>
+<tr><th>Component</th><th>Purpose</th><th>Module</th></tr>
+<tr><td><strong>Kernel</strong></td><td>Typed state contracts, declared writes, budgets, traces, fan-out, async support</td><td><code>grapharc.runtime</code></td></tr>
+<tr><td><strong>Planner + Admission</strong></td><td>Propose subgraphs, admit/reject with reasons, materialise, replan</td><td><code>grapharc.planner</code></td></tr>
+<tr><td><strong>Agent Node</strong></td><td>Observe → model → permission check → sandboxed tool → repeat loop</td><td><code>grapharc.harness</code></td></tr>
+<tr><td><strong>Tools</strong></td><td>Seven core tools with workspace confinement; container executor</td><td><code>grapharc.tools</code></td></tr>
+<tr><td><strong>Sessions</strong></td><td>Long-lived, resumable across processes, human approval gates</td><td><code>grapharc.session</code></td></tr>
+<tr><td><strong>HTTP API</strong></td><td>FastAPI + Server-Sent Events for streaming</td><td><code>grapharc.server</code></td></tr>
+<tr><td><strong>Policy</strong></td><td>TOML rules over nodes, edges, tools and spend; decision audit trail</td><td><code>grapharc.policy</code></td></tr>
+<tr><td><strong>Memory</strong></td><td>Durable claims with provenance, artifacts, BM25F + graph retrieval</td><td><code>grapharc.memory</code></td></tr>
+<tr><td><strong>Observability</strong></td><td>Replay, run diffing, OpenTelemetry spans, cost attribution</td><td><code>grapharc.observe</code></td></tr>
+</table></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> See ROADMAP §12 for known gaps — the HTTP API still runs its own in-process session layer instead of the durable one.</aside>
+<h2 id="what-it-adds-on-top-of-langgraph"><a class="anchor" href="#what-it-adds-on-top-of-langgraph">What it adds on top of LangGraph</a></h2>
+<p>Everything in the table is enforced by the library rather than left to convention, and has a test you can run. Disciplines: write permissions (undeclared write raises <code>WritePermissionError</code>; plain LangGraph applies it and moves on); state isolation (nodes receive <code>state.model_copy(deep=True)</code>, so the returned dict is the only way out of a node); typed state (Pydantic with <code>extra=&quot;forbid&quot;</code>; a write to a nonexistent field fails when the node is added, not when it runs); earned cycles (<code>dag=True</code> rejects conditional and fan-out edges when added, cycles at compile time — Stage 0 before Stage 2); code-only routing (routers are ordinary Python functions over typed state, so model prose cannot steer an edge; <code>Command(goto=…)</code> destinations are validated against the compiled graph); convergence (<code>ProgressGuard</code> returns the first triggered <code>StopReason</code> — target met / no progress / round cap); traces (JSONL <code>start</code>/<code>end</code>/<code>error</code> events; <code>start</code> carries only step identity, <code>end</code> adds state delta, duration and tokens, <code>error</code> adds duration and exception — <code>metrics</code>, <code>viz</code>, <code>replay</code>, <code>diff</code> and the OTel exporter read that same file so the dashboard and the audit trail cannot disagree); fail-closed entry points (<code>.inner.invoke()</code> raises <code>MissingRunContextError</code>); bounded work (per-run <code>Budget</code> of iterations/tokens/seconds/concurrency, with <code>max_seconds</code> delivered as an interrupt <em>into</em> the running node); checked state edits (<code>update_state()</code> rejects unknown fields, type-checks values, and with <code>as_node=</code> applies that node&#x27;s write allowlist); governed topology.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>, answer, writes={<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>})   <span <span class="tok-k">class</span>="tok-c"># undeclared writes <span class="tok-k">raise</span></span></pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>Budgets</strong> — spend a provider never reports cannot be charged; a model invoked on a thread the node started itself is outside the LangChain callback&#x27;s context; an async exception cannot unwind a thread inside a C call, landing only when that call returns. The deadline still holds at the node boundary: an overrunning node does not get its writes into state.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>Routing</strong> — <code>add_conditional_edge</code> passes router and mapping straight through to LangGraph; GraphARC does not verify the router&#x27;s return value is a key in the mapping, so a typo is a run-time <code>KeyError</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>Typing</strong> — write-time validation is built from each field&#x27;s <em>annotation</em>, so <code>Annotated[int, Field(gt=0)]</code> bites, but a state model&#x27;s own <code>@field_validator</code> / <code>@model_validator</code> does not run on a write; the violation surfaces only when a later node rebuilds the model, so one written by the last node before <code>END</code> still reaches the result. The write allowlist is GraphARC&#x27;s; the types are Pydantic&#x27;s.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>Crash-safe resume is LangGraph&#x27;s</strong> — a checkpointer handed to <code>compile()</code> goes straight to <code>StateGraph.compile()</code>. GraphARC adds trace continuity (step numbers continue from thread history, attempt counter increments); <code>grapharc.session</code> adds who is driving, what has been said, and whether a human must sign off.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>Async</strong> — sync entry points refuse a graph containing <code>async def</code> nodes with <code>AsyncNodeError</code> before anything runs. <code>astream_events</code> offers <code>v1</code>/<code>v2</code>; <code>v3</code> is refused because LangGraph returns a stream object rather than an async iterator.</aside>
+<h2 id="install"><a class="anchor" href="#install">Install</a></h2>
+<p>Python &gt;= 3.12. The bare package carries the kernel, the planner and the admission gate, the agent harness, the seven core tools, memory, policy and the observability commands. Backends and the HTTP API are extras because each pulls dependencies you should not pay for unless you use them. The Claude CLI backend — the default — needs no extra; it shells out to <code>claude</code> on your <code>PATH</code>. <code>grapharc models --check</code> reports what your machine can actually reach.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">pip install grapharc          # or: uv pip install grapharc
+grapharc demo stage0          # costs nothing, needs no key</pre></figure>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">pip install &#x27;grapharc[openrouter]&#x27;   # tool calling, structured output
+pip install &#x27;grapharc[openai]&#x27;       # OpenAI and OpenAI-compatible endpoints
+pip install &#x27;grapharc[ollama]&#x27;       # a local server
+pip install &#x27;grapharc[server]&#x27;       # the FastAPI + SSE HTTP API
+pip install &#x27;grapharc[otel]&#x27;         # OpenTelemetry span export
+pip install &#x27;grapharc[all]&#x27;          # every one of the above</pre></figure>
+<p>Development install (working on GraphARC itself):</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">git clone https://github.com/CodeGraphContext/GraphARC
+cd GraphARC
+uv sync --group dev              # Python &gt;= 3.12
+uv sync --all-extras --group dev # everything, plus the dev group</pre></figure>
+<h2 id="quickstart-cli-command-list"><a class="anchor" href="#quickstart-cli-command-list">Quickstart (CLI command list</a></h2>
+<p>Eight demo stages plus the governed loop, agent, server and observability commands. Eleven commands, every one taking <code>--json</code> — in JSON mode the failure is the document rather than a line on stderr. Exit codes are part of the interface: <code>0</code> did the job, <code>1</code> ran and the answer was negative (an agent stopped short, a run id had no events, two runs differed), <code>2</code> could not run at all. The demo stages use scripted models by default, so they cost nothing and produce the same trace every time.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">grapharc demo stage0        # deterministic DAG: load -&gt; split -&gt; count -&gt; report
+grapharc demo stage1        # one earned agent loop: discover -&gt; act -&gt; verify -&gt; repeat
+grapharc demo stage2        # typed cyclic graph: extract claims -&gt; verify -&gt; retry
+grapharc demo stage3        # bounded fan-out with failure isolation and dedup
+grapharc demo stage4        # bounded investigation loop with convergence guards
+grapharc demo stage5        # verifier: fresh context + deterministic evidence anchor
+grapharc demo stage6        # memory: provenance, supersession, recall
+grapharc demo capstone      # all of the above in one research agent
+
+grapharc plan &quot;look into the outage&quot;   # governed loop: propose -&gt; admit -&gt; execute -&gt; replan
+grapharc run graph.json                # a topology you wrote, through the same gate
+grapharc run graph.json --check-only   # admission as a linter; executes nothing
+
+grapharc agent &quot;fix the failing test&quot; --workspace ./sandbox   # agent + the seven core tools
+grapharc serve --port 8000       # the HTTP API (needs the `server` extra)
+
+grapharc models                  # what a model spec resolves to
+grapharc trace &lt;path&gt;            # pretty-print a run trace
+grapharc metrics &lt;path&gt; &lt;run-id&gt; # tokens, retries, termination reason, per-node counts
+grapharc viz &lt;path&gt; &lt;run-id&gt;     # Mermaid diagram of the executed path
+grapharc replay &lt;path&gt; &lt;run-id&gt;  # reconstruct a run from its trace
+grapharc diff &lt;path&gt; &lt;a&gt; &lt;b&gt;     # what changed between two runs</pre></figure>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc <span class="tok-k">import</span> GraphARC, GraphARCState, Budget
+<span class="tok-k">from</span> grapharc.runtime.graph <span class="tok-k">import</span> START, END
+
+<span class="tok-k">class</span> State(GraphARCState):
+    question: str
+    answer: str = <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+
+<span class="tok-k">def</span> answer(state: State) -&gt; dict:
+    <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>: f<span <span class="tok-k">class</span>="tok-s">&quot;42 (asked: {state.question})&quot;</span>}
+
+g = GraphARC(State, name=<span <span class="tok-k">class</span>="tok-s">&quot;demo&quot;</span>, budget=Budget(max_iterations=10))
+g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>, answer, writes={<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>})   <span <span class="tok-k">class</span>="tok-c"># undeclared writes <span class="tok-k">raise</span></span>
+g.add_edge(START, <span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>)
+g.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>, END)
+print(g.compile().invoke({<span <span class="tok-k">class</span>="tok-s">&quot;question&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;meaning of life&quot;</span>}))</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>--model</code> works for stage1 through stage6 and the capstone; stage0 is pure code with no model in it.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>grapharc agent</code> needs a tool-calling backend and says so rather than degrading — a scripted model has no <code>bind_tools</code> to drive a tool loop with.</aside>
+<h2 id="the-admission-gate"><a class="anchor" href="#the-admission-gate">The admission gate</a></h2>
+<p>The part with no prior art to copy, and the reason the rest exists. You cannot pre-author a graph for &quot;investigate this incident&quot; — the shape is discovered while working — so the graph is built at runtime and a deterministic checker stands between building it and running it. The shipped planner is scripted and its first proposal names the policy-denied <code>deploy</code> kind, so round 1 is rejected on <code>edge_denied</code> and never executes while round 2 goes through the <em>same</em> checker and runs. The <code>policy</code> line ends in <code>[registry-default]</code> — the <strong>provenance</strong>, also on the JSON payload as <code>policy_source</code> — which matters because a policy can come from four places: a <code>--policy</code> flag, a <code>grapharc.toml</code>, one an LLM generated on a first run, or the registry&#x27;s own default. <strong>Five checks, all of which run on every proposal</strong>, so a planner gets the complete list of objections rather than the first one: is every node&#x27;s kind in the registry, is every edge permitted between the kinds it joins, does the worst case fit what is <em>left</em> of the budget, is the nesting within the depth limit, and is it acyclic.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body"><span class="tok-p">$ </span><span class="tok-cmd">grapharc plan &quot;investigate the checkout outage&quot;</span>
+goal      : investigate the checkout outage
+model     : scripted
+registry  : grapharc.examples.plan_incident:build_registry
+kinds     : deploy, patch, triage, verify
+policy    : grapharc.examples.plan_incident:build_registry default (deny -&gt; deploy, otherwise allow)  [registry-default]
+config    : no grapharc.toml (flags and defaults only)
+
+stopped   : goal_met  (the goal check was satisfied)
+rounds    : 2 of max 8
+   round 1: rejected  nodes=2 executed=False  rejected: edge_denied
+   round 2: admitted  nodes=3 executed=True
+
+state     : goal=&#x27;investigate the checkout outage&#x27; notes=[&#x27;triage ran&#x27;, &#x27;patch ran&#x27;, &#x27;verify ran&#x27;]</pre></figure>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> pydantic <span class="tok-k">import</span> BaseModel
+
+<span class="tok-k">from</span> grapharc.harness.permissions <span class="tok-k">import</span> Decision
+<span class="tok-k">from</span> grapharc.planner <span class="tok-k">import</span> (
+    AdmissionChecker, CostEstimate, EdgePolicy, EdgeRule, GovernedLoop,
+    LoopLimits, Materializer, NodeRegistry, NodeSpec, PlannerNode,
+)
+<span class="tok-k">from</span> grapharc.runtime.budget <span class="tok-k">import</span> Budget
+<span class="tok-k">from</span> grapharc.testing <span class="tok-k">import</span> ScriptedChatModel
+
+
+<span class="tok-k">class</span> State(BaseModel):
+    found: str = <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+    fixed: str = <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+
+
+<span class="tok-k">def</span> factory(spec):                              <span <span class="tok-k">class</span>="tok-c"># bodies come <span class="tok-k">from</span> HERE, never a proposal</span>
+    <span class="tok-k">def</span> body(state):
+        <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;found&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;cause&quot;</span>} <span class="tok-k">if</span> spec.name == <span <span class="tok-k">class</span>="tok-s">&quot;search&quot;</span> <span class="tok-k">else</span> {<span <span class="tok-k">class</span>="tok-s">&quot;fixed&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;patch&quot;</span>}
+    <span class="tok-k">return</span> body
+
+
+registry = NodeRegistry([                        <span <span class="tok-k">class</span>="tok-c"># the kinds a planner may propose</span>
+    NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;search&quot;</span>, factory=factory, worst_case=CostEstimate(tokens=500)),
+    NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;edit&quot;</span>,   factory=factory, worst_case=CostEstimate(tokens=2000)),
+    NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>, factory=factory),
+]).freeze()
+policy = EdgePolicy(rules=(                      <span <span class="tok-k">class</span>="tok-c"># deny -&gt; ask -&gt; allow, unmatched <span class="tok-k">is</span> deny</span>
+    EdgeRule(action=Decision.DENY, target=<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>),
+    EdgeRule(action=Decision.ALLOW),
+))
+
+plan = &<span <span class="tok-k">class</span>="tok-c">#x27;{<span <span class="tok-k">class</span>="tok-s">&quot;nodes&quot;</span>: [{<span <span class="tok-k">class</span>="tok-s">&quot;name&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;%s&quot;</span>}], <span <span class="tok-k">class</span>="tok-s">&quot;edges&quot;</span>: [{<span <span class="tok-k">class</span>="tok-s">&quot;source&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;__start__&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;target&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;%s&quot;</span>}]}&#x27;</span>
+loop = GovernedLoop(
+    planner=PlannerNode(
+        ScriptedChatModel(responses=[plan % (<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>), plan % (<span <span class="tok-k">class</span>="tok-s">&quot;edit&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;edit&quot;</span>)]),
+        catalog=registry.catalog(),
+    ),
+    checker=AdmissionChecker(registry=registry, edge_policy=policy),
+    materializer=Materializer(
+        registry=registry, state_schema=State,
+        writes={<span <span class="tok-k">class</span>="tok-s">&quot;search&quot;</span>: {<span <span class="tok-k">class</span>="tok-s">&quot;found&quot;</span>}, <span <span class="tok-k">class</span>="tok-s">&quot;edit&quot;</span>: {<span <span class="tok-k">class</span>="tok-s">&quot;fixed&quot;</span>}, <span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>: set()},
+    ),
+    budget=Budget(max_tokens=100_000),
+    limits=LoopLimits(max_rounds=8),
+    goal_reached=<span class="tok-k">lambda</span> s: bool(s.fixed),
+)
+result = loop.run(<span <span class="tok-k">class</span>="tok-s">&quot;find <span class="tok-k">and</span> fix the bug&quot;</span>, State())
+
+print(result.stop.value)
+<span class="tok-k">for</span> record <span class="tok-k">in</span> result.rounds:
+    print(record.round, record.admission.status.value, record.executed)
+print([r.code <span class="tok-k">for</span> r <span class="tok-k">in</span> result.rejections()])</pre></div>
+<p>Properties, stated rather than adjectives: <strong>Nothing runs during a check</strong> — <code>NodeSpec.factory</code> is never called and the budget meter is read, not written; an over-budget proposal is refused before its first node exists. <strong>A rejection is data</strong> — no &quot;admit a reduced version&quot;, no truncated fan-out, no downgraded edge; <code>AdmissionResult.feedback()</code> is handed back to the planner and the loop never retries an identical proposal. <strong>Costs come from the registry, never the proposal.</strong> <strong>Every decision keys on the registry <code>kind</code>, never the instance <code>name</code></strong> — <code>ProposedNode(name=&quot;harmless_helper&quot;, kind=&quot;deploy&quot;)</code> is refused by a rule denying <code>deploy</code>. <strong>A proposal cannot carry code</strong> — <code>Subgraph</code> and <code>ProposedNode</code> are Pydantic models with <code>extra=&quot;forbid&quot;</code>, so a <code>body=</code> or <code>fn=</code> key is a validation error. <strong>Materialisation binds to the authorisation</strong> — <code>Materializer.materialize(admitted, proposal)</code> matches by fingerprint; a result authorising something else raises <code>NotAdmitted</code>. <strong>Every decision is traced</strong> as a <code>phase=&quot;admission&quot;</code> event carrying status, fingerprint, checks run and failed codes; deliberately not <code>&quot;end&quot;</code> so admission cannot inflate node-execution counts.</p>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>Admission authorises a kind, not its arguments</strong> — no rule reaches <code>ProposedNode.args</code>, so <code>args={&quot;path&quot;: &quot;/etc/passwd&quot;}</code> is admitted on the strength of its kind alone. <code>Materializer</code> drops args by default (<code>forward_args=False</code>); turning it on hands a model&#x27;s unchecked dictionary to your factory.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong><code>parent_depth</code> is the caller&#x27;s word</strong> — a caller that always passes <code>0</code> has no recursion limit beyond the nesting visible inside a single proposal.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>One surface, one demo registry</strong> — kinds come from <code>grapharc/examples/plan_incident.py</code> unless <code>--registry module:attr</code>; that module also declares <code>STATE_SCHEMA</code> and <code>WRITES</code>, because a kind nobody declared writes for may write nothing. No session-backed or HTTP-backed planning surface yet (ROADMAP §12.3).</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Both code blocks are executed by <code>tests/test_readme.py</code>, which byte-compares the page&#x27;s output against a real run.</aside>
+<h2 id="configuration-and-the-zero-config-path"><a class="anchor" href="#configuration-and-the-zero-config-path">Configuration, and the zero-config path</a></h2>
+<p>Three flags carry every run — <code>--registry</code> (what may be proposed), <code>--policy</code> (what may connect to what), <code>--model</code> — and they can come from a file. Resolution is <code>flag &gt; env (GRAPHARC_<em>) &gt; grapharc.toml &gt; built-in</code>, and <strong>every value reports which layer supplied it</strong>: <code>--json</code> carries a <code>sources</code> block, the human view prints a <code>config</code> line. With nothing configured at all a run still works: <code>grapharc.stdlib</code> ships general-purpose node kinds — <code>collect_context</code>, <code>investigate</code>, <code>verify</code>, <code>summarize</code>, and <code>apply_change</code>, which is registered </em>and denied by default<em>. No phase anywhere is given <code>run_command</code>. If a model is available and no policy was named, one is <strong>generated</strong>, written to <code>.grapharc/generated-policy.toml</code> with a <code>REVIEW THIS</code> header, and reported as <code>policy_source: generated</code>; the second run reads it off disk as an ordinary file. <strong>Policy is generated; a registry never is</strong> — policy is data whose worst case is bad rules you can read, whereas a registry holds </em>functions*, so generating one would mean a model writing code that then executes and the gate checking a list the gated thing wrote. The model selects from shipped kinds instead: selecting is safe, authoring is not.</p>
+<div class="codeblock"><div class="code-lang">toml</div><pre class="code-body"><span class="tok-c"># grapharc.toml</span>
+<span class="tok-k">[grapharc]</span>
+registry   = <span class="tok-s">&quot;myco.incident:build_registry&quot;</span>
+policy     = <span class="tok-s">&quot;policy.toml&quot;</span>
+max_rounds = 6</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>It does not search parent directories.</strong> git, npm and cargo walk upward; this deliberately doesn&#x27;t, because a run must never be silently governed by a policy file in a directory you didn&#x27;t know about. Read from the working directory, or name one with <code>--config PATH</code>. A relative path <em>inside</em> a config resolves against the config.</aside>
+<h2 id="the-model-gateway"><a class="anchor" href="#the-model-gateway">The model gateway</a></h2>
+<p>The primary backend drives the <strong>Claude Code CLI</strong> (<code>claude -p</code>), so GraphARC runs on a Claude subscription with no API key. Because that CLI is a full agent, the adapter invokes it as a pure inference endpoint: every tool disallowed, no settings sources loaded, no CLAUDE.md pickup, prompt via stdin, flags via an argv array — never a shell string. An injected &quot;run this command&quot; has no tool to run it with. A spec is <code>backend/model</code>; <code>grapharc models</code> shows what a spec resolves to. OpenRouter carries routing: model-level <code>fallback_models</code> chains, provider <code>order</code> / <code>sort</code> / <code>max_price</code>, and per-call cost in the usage envelope; every backend reports usage in the same shape with cached input folded into the total. <code>openrouter</code>, <code>openai</code> and <code>ollama</code> share a base class — same tool-calling, streaming, retry policy and envelope — differing only in routing and where a price comes from.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> get_model
+
+<span <span class="tok-k">class</span>="tok-c"># Subscription, no API key — but text completion only.</span>
+worker = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>)
+
+<span <span class="tok-k">class</span>="tok-c"># OpenRouter: one key <span class="tok-k">for</span> a catalog spanning most vendors, <span class="tok-k">with</span></span>
+<span <span class="tok-k">class</span>="tok-c"># tool-calling, structured output, streaming, <span class="tok-k">and</span> <span class="tok-k">async</span>.</span>
+worker   = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-haiku-4.5&quot;</span>)
+reviewer = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/openai/gpt-4o-mini&quot;</span>)   <span <span class="tok-k">class</span>="tok-c"># a genuinely different vendor</span>
+
+<span <span class="tok-k">class</span>="tok-c"># Or go direct: your own OpenAI key, <span class="tok-k">or</span> a model on your own machine.</span>
+reviewer = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;openai/gpt-4o-mini&quot;</span>)              <span <span class="tok-k">class</span>="tok-c"># OPENAI_API_KEY</span>
+local    = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;ollama/llama3.1&quot;</span>)                 <span <span class="tok-k">class</span>="tok-c"># no key, no bill, no egress</span></pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">grapharc demo stage5 --model openrouter/anthropic/claude-haiku-4.5 \
+                    --reviewer-model openrouter/openai/gpt-4o-mini</pre></figure>
+<p>Retries have a policy, not a loop: three attempts by default, 0.5s initial backoff doubling to a 20s cap, jitter drawn from <code>[0.75, 1]</code> — shrinking rather than centred, so successive delays stay strictly increasing. A timeout, connection reset, 429 or 5xx is transient and re-issued; a 400, 401, 402, 403 or content refusal is a verdict raised on the first attempt; anything unrecognised is treated as deterministic. <code>Retry-After</code> raises the delay but never lowers it, and is itself capped. Cost ceilings are enforced on both sides of a call: a <code>SpendMeter</code> refuses before a call once the ceiling is reached, and after a call charges the cost and <em>then</em> raises if that crossed the line, so overspend is bounded by the single call that crossed it.</p>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A <strong>bare name with no slash is treated as a model on the <code>claude-cli</code> backend</strong>, so <code>--model mock</code> reaches the Claude subscription with a nonsense model name; the scripted double needs <code>mock/anything</code>. A mistyped backend <em>with</em> a slash exits 2 naming the known backends.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Streaming is not retried — once a chunk has reached the caller the request cannot be re-issued transparently.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A call whose cost the provider does not report cannot be charged; those land in <code>unpriced_calls</code>. <code>unpriced_calls &gt; 0</code> means the ceiling saw less than the whole bill.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>Claude CLI:</strong> <code>bind_tools</code> and <code>with_structured_output</code> raise <code>NotImplementedError</code>; no cache control on this path; calls spend subscription quota. <strong>OpenRouter:</strong> credit is reserved against <code>max_tokens</code>, so the default is deliberately modest. <strong>OpenAI:</strong> returns token counts and no price, so <code>cost_usd</code> is <code>None</code> and a dollar ceiling counts calls instead of enforcing — pass <code>price_per_million=</code> or price the trace afterwards with <code>observe.cost.RateCard</code>. <strong>Ollama:</strong> free by definition, charged <code>0.0</code>; tool-calling depends on the model you pulled.</aside>
+<h2 id="independent-verification"><a class="anchor" href="#independent-verification">Independent verification</a></h2>
+<p><code>verify_claim</code> is the piece worth copying even if you use none of the rest. <strong>The anchor runs before the model</strong> — the citation must appear verbatim in the source (whitespace is the only latitude), so a fabricated quote is rejected with the reviewer&#x27;s call count still at zero and a hallucinated citation costs nothing. <strong>The reviewer gets a fresh context</strong> — only the claim, the quote, and a mechanically extracted window of surrounding source, never the author&#x27;s conversation, which is what lets it catch a real quote lifted out of a negated sentence. <strong>Ambiguity fails closed</strong> — an unparseable reply, a non-boolean <code>supported</code> value, or a citation under 12 characters is a rejection. Independence is enforced in two places: <code>build_stage5</code>/<code>build_capstone</code> refuse the <em>same object</em> for author and reviewer, and the CLI&#x27;s <code>different_providers()</code> compares the <em>vendor</em> each spec reaches, warning when the pair shares one.</p>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The identity check will not catch two separate instances of the same model; the CLI&#x27;s vendor comparison is the stronger check (a Claude-CLI author and an Anthropic model over OpenRouter are correctly read as correlated).</aside>
+<h2 id="tools-and-the-harness"><a class="anchor" href="#tools-and-the-harness">Tools and the harness</a></h2>
+<p>Inside an agent node: task and context, recall memory, model call, then a permission decision that either denies the call back to the model, routes it to a human, or lets it reach the sandbox; execution is followed by a budget check and an evidence check before any result leaves. Every diamond is code, not prompt text, and the <code>deny</code> branch matters: a refused tool never reaches the sandbox and its schema is never shown to the model. Seven core tools — <code>read_file</code>, <code>write_file</code>, <code>edit_file</code>, <code>list_dir</code>, <code>glob</code>, <code>grep</code>, <code>run_command</code> — which <code>grapharc agent &lt;task&gt;</code> registers into a <code>ToolRegistry</code> that an <code>AgentNode</code> drives. <strong>Confinement is in the tool, not only the executor</strong>: every path argument is resolved and checked against the workspace by the tool itself, because <code>LocalExecutor</code> confines nothing; both a traversing <code>../../../etc/passwd</code> and an absolute <code>/etc/passwd</code> raise <code>WorkspaceEscape</code>. <strong>Permissions decide which tools run</strong> — deny → ask → allow, first match wins, unmatched defaults to deny, and a denied tool&#x27;s schema is invisible rather than described-then-refused. <strong>The executor bounds what a tool touches</strong> — the default runs the tool in a forked child under a CPython audit hook confining filesystem paths to the granted workspace plus the interpreter&#x27;s own runtime paths, refusing sockets unless <code>needs_network</code>, refusing subprocess spawning outright, and SIGKILLing the whole process group on timeout. <strong><code>ContainerExecutor</code> is the real boundary</strong> where one is needed: same <code>run(spec, args)</code> interface, one bind mount, <code>--network none</code> unless <code>needs_network</code>, all capabilities dropped, <code>no-new-privileges</code>, non-root uid, read-only rootfs, memory and pid limits.</p>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong><code>run_command</code> is a decision of a different size.</strong> Argv <strong>list</strong> only, <code>shell=False</code> always, a single string refused rather than split, a pipeline spelled <code>[&quot;bash&quot;, &quot;-lc&quot;, &quot;…&quot;]</code>. But the child runs outside every guard: cwd is workspace-resolved and env is an allowlist, past that it is an ordinary process with your privileges that can reach the whole filesystem. It cannot run under <code>SandboxedExecutor</code> at all — that raises <code>SandboxViolation</code> every time.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>The audit-hook boundary is in-process confinement, not a kernel sandbox.</strong> Coverage is a maintained list of audit events, not a guarantee — CPython raises no event for <code>os.stat</code>, so metadata reads outside the workspace are not blocked. Treat it as defense in depth against a confused tool, not containment for a hostile one.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The runtime-path exemption is now <strong>read-only</strong> — reads and mutations use separate grants, so a sandboxed tool dropping a <code>.pth</code> into <code>site-packages</code> is refused with <code>SandboxViolation</code> while stdlib reads still succeed.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>ContainerExecutor</code> requires the tool be resolvable <em>inside the image</em> — a lambda, <code>functools.partial</code> or bound method is refused before a container starts — and arguments and results must survive JSON. The default <code>python:3.12-slim</code> contains no GraphARC and none of your code.</aside>
+<h2 id="memory"><a class="anchor" href="#memory">Memory</a></h2>
+<p>Claims carry provenance — source, observation time, and the run that produced them — and corrections are recorded by supersession rather than overwrite, so a later run can see that a fact was replaced and skip the dead end. Entity resolution is Unicode-aware, so 東京 and 北京 stay distinct instead of both collapsing to an empty key. <strong>It has a disk</strong>: <code>SQLiteMemoryStore</code> and <code>SQLiteArtifactStore</code> share one file and are verified durable across genuinely separate processes; artifacts are append-only with versions, provenance is mandatory, and blob content is written before the row referencing it — so a crash leaves an unreferenced blob (garbage) and never a row pointing at content that does not exist (a lie). <strong>And a graph backend</strong>: <code>LadybugMemoryStore</code> implements the same <code>ClaimStore</code> protocol against LadybugDB, an embedded property-graph database with Cypher forked from Kuzu, where <code>superseded_by</code> is a <code>SUPERSEDED_BY</code> edge and a correction chain is a path you can walk rather than a scan you pay for. <strong>Retrieval</strong> is Okapi BM25F over subject + predicate + object with the subject weighted highest, an optional injected vector channel that stays silent below a similarity floor, and graph traversal that reads a claim&#x27;s object as an entity so a question about A reaches facts about B, each hop decaying the inherited score. <strong>Contradiction detection reports; it never resolves.</strong></p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">pip install &#x27;grapharc[ladybug]&#x27;</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> LadybugDB takes an exclusive lock — one process may write or several may read, never both; sequential hand-off works, concurrent multi-process writing does not. A test spawns a second process against a held database and asserts the failure.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The distribution is <code>real-ladybug</code>; the <code>ladybug</code> name on PyPI is an unrelated building-science package.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Scoring needs corpus statistics, so it is O(claims) per call — nothing is sublinear and nothing pretends to be. <code>render_context</code> takes <code>max_tokens</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Contradiction detection is a structural test: it will not relate &quot;is fast&quot; to &quot;is slow&quot;, will not match a rephrased object, and <em>will</em> flag a legitimately multi-valued predicate as disagreement.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>The in-process store is still the default</strong> — <code>stage6</code> and <code>capstone</code> keep claims in a dict for the life of the process unless you pass <code>--memory PATH</code>. <code>pyproject.toml</code> declares a <code>memory</code> extra for Neo4j with no implementation behind it.</aside>
+<h2 id="sessions-the-http-api-and-policy"><a class="anchor" href="#sessions-the-http-api-and-policy">Sessions, the HTTP API, and policy</a></h2>
+<p><strong>Sessions survive a process restart</strong> — a <code>SessionManager</code> over a directory keeps status, the event queue, approval holds and the audit trail in SQLite, with graph state in the kernel&#x27;s checkpointer. Verified by running it: one interpreter created a session, ran two nodes and stopped <code>awaiting_approval</code> holding a gated node; a second interpreter resumed it by id, saw the hold, approved it, and ran the rest — each node appearing exactly once in an append-only log. <strong>The HTTP API is FastAPI plus SSE</strong> — create a session, list, get, post an event, stream the trace, fetch it as NDJSON, healthz; a request may name a registered graph and supply input and a budget, but it may not <em>describe</em> a graph, because topology comes from a registry the operator fills in Python. <strong>Policy is a TOML document</strong> over nodes, edges, tools and spend, with tiered evaluation — every <code>deny</code> before every <code>ask</code> before every <code>allow</code>, so a broad deny beats a narrow allow including one scoped to a single tenant — and every decision lands in an audit record naming the rule id, the reason, the policy version and a digest of the document.</p>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The resuming process must register the graph in its own registry, or it gets <code>UnknownGraphError</code> rather than a guess.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>An interrupt does not stop a running node</strong> — it is read at the next superstep boundary, after the whole parallel step has finished and been checkpointed.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>The approval gate is enforced by the session runtime, not by the graph</strong> — driving the same compiled graph directly runs gated nodes with nothing holding them.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>A turn is synchronous</strong> — an async turn is buildable and simply not built.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>The HTTP API does not use the session layer above.</strong> It ships its own in-process runtime whose sessions die with the process, never evict, and record <code>message</code> and <code>approval</code> events without delivering them into a running graph (ROADMAP §12.3).</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>The edge half of policy is wired and the tool half is not.</strong> <code>PolicyEngine.edge_policy()</code> compiles the document into the <code>EdgePolicy</code> admission consults and <code>grapharc plan --policy</code> is a real caller, but <code>permission_policy()</code>, <code>check_tool()</code> and <code>approval_router()</code> have no caller outside <code>grapharc/policy/</code>, so <code>grapharc agent</code> still assembles tool gating from <code>--allow</code> / <code>--deny</code> / <code>--ask</code> globs. Issue #6 is that work; the precedence question is what happens when a flag <code>allow</code> meets a document <code>deny</code>.</aside>
+<h2 id="reading-a-run-afterwards"><a class="anchor" href="#reading-a-run-afterwards">Reading a run afterwards</a></h2>
+<p><code>trace</code> is the only writer; <code>metrics</code>, <code>replay</code>, <code>diff</code>, <code>cost</code> and the OTel exporter all read that one file and nothing else, which is what keeps a dashboard from contradicting an audit trail. <strong>Replay is a reconstruction, not a re-execution</strong> — it rebuilds the node sequence, folded state, timing and failures from the JSONL and calls no model, no tool and no node. <strong>Spans are optional by construction</strong> — one root span per run, one child per node execution, <code>AgentNode</code> sub-steps parented by inference, with an unidentifiable parent going to the run span rather than a guess; the OpenTelemetry dependency is confined behind a Protocol, and this has now been run against <code>opentelemetry-sdk</code> 1.44.0 with spans arriving at a real exporter. <strong>Cost attribution is per run, thread and node</strong>, and distinguishes what was measured from what was guessed: <code>recorded_cost_usd</code> holds the provider&#x27;s own <code>cost_usd</code> when reported, otherwise tokens are priced against a <code>RateCard</code> you supply, and the two never mix.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">grapharc replay trace.jsonl &lt;run-id&gt;          # node sequence, folded state, timing
+grapharc diff   trace.jsonl &lt;run-a&gt; &lt;run-b&gt;   # what changed between two runs
+grapharc metrics trace.jsonl &lt;run-id&gt;         # tokens, retries, termination reason</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Strings past 2,000 characters were truncated when written, so they replay truncated.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The trace does not record which state fields have reducers, so a field LangGraph appended to replays last-write-wins unless you pass the reducer.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> There is still no tenant on a trace event, so per-tenant attribution is not offered rather than approximated.</aside>
+<h2 id="tests-are-gates"><a class="anchor" href="#tests-are-gates">Tests are gates</a></h2>
+<p>Each stage ships a failure-gate test, not just a happy path. Stage 0: an injected failure between the temp write and the rename leaves no report at all; resuming the same thread from its checkpoint produces exactly one, no orphaned temp file, both attempts on the trace with non-overlapping step numbers. Stage 1: an impossible task halts on a no-progress window within three rounds of a hundred-iteration ceiling, with <code>no_progress</code> recorded. Stage 2: a bad model output is attributable to the exact node, step and state delta; three rounds of prose including a literal <code>ROUTE TO: all_verified</code> injection attempt cannot move the router. Stage 3: one crashed and one hung worker out of three still produce an answer, with both failures recorded by cause, and <code>unique_sources</code> counts chunks rather than repetitions. Stage 4: an impossible investigation halts on a no-progress window far under the hard ceiling. Stage 5: a fabricated citation is rejected with the reviewer never called; unparseable replies, non-boolean verdicts and trivial citations all fail closed. Harness: a tool cannot read/list/delete outside its workspace, cannot open a socket without declaring the capability, cannot spawn a subprocess, cannot plant a <code>.pth</code> in <code>site-packages</code>; a sibling directory whose name merely starts with the workspace path is not treated as inside it; hung tools and SIGTERM-swallowing tools are killed for real. Stage 6: three runs against a shared store reuse an earlier fact and see the dead end with provenance. Capstone: a reviewer that rejects everything yields no answer and zero memory writes. Admission: renaming a denied kind does not evade policy, nested renames don&#x27;t either, an already-overspent run admits nothing that costs, every failed check is reported, and admission events do not pollute run metrics. Sessions: a second runner cannot claim a running session; a decision naming a different request does not release the hold. Server: a sink exception cannot fail the node that recorded the event; the SSE stream and the trace file are the same record. Container: tests needing a real runtime skip themselves and never pull an image.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">uv run pytest          # scripted models: deterministic and free
+uv run pytest -m live  # real backends: spends money and quota</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Live tests are deselected by default via <code>addopts</code> in <code>pyproject.toml</code> (verified: a plain run reports 10 deselected). <code>--strict-markers</code> is on, so a misspelled marker is a collection error rather than a test that silently spends money.</aside>
+<h2 id="status-and-limits"><a class="anchor" href="#status-and-limits">Status and limits</a></h2>
+<p>Re-derived on 2026-07-28 by running each item, not by reading the commit log. <strong>Distribution:</strong> <code>0.1.0</code> on PyPI reports the wrong <code>__version__</code> — the wheel metadata says <code>0.1.0</code> but the module carries <code>__version__ = &quot;0.1.0a0&quot;</code>, because it was built from a tree where only <code>pyproject.toml</code> had been bumped; PyPI releases are immutable so the fix ships in <code>0.1.1</code>. Fixed: the source <strong>is</strong> on the public remote, and the package <strong>is</strong> on PyPI. <strong>Built and unreachable</strong> used to be the honest headline, four subsystems deep; one seam is left — the HTTP API does not use the durable session layer. Closed: <code>grapharc plan</code> drives the governed loop, <code>PolicyEngine.edge_policy()</code> compiles the TOML document into the gate, <code>grapharc demo --memory PATH</code> hands the shipped graphs the durable SQLite store, and the shipped registry now gives the trace recorder to its <code>PlannerNode</code> and <code>Materializer</code>. <strong>Verified this pass:</strong> <code>pytest</code> → 1,533 passed, 12 deselected; <code>ruff check .</code> clean; all eight demo stages green plus <code>plan</code> and <code>run</code>; the wheel builds and imports all 103 submodules in a clean virtualenv with <code>[all]</code>.</p>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Admission authorises a kind, not its arguments.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The audit-hook sandbox is in-process confinement, not a kernel boundary; <code>os.stat</code> outside the workspace is not blocked.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>run_command</code> is not confined — argv-only and never a shell, but the child is an ordinary process with your privileges.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>interrupt()</code> suspends but cannot be resumed — there is no supported resume path (resuming would mean passing a <code>Command</code> as <em>input</em>, closed by design). Use the session layer&#x27;s approval gate for human-in-the-loop.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Still unwrapped from LangGraph: <code>retry_policy</code>, <code>cache_policy</code>, <code>durability</code>, subgraphs. <code>.inner</code> reaches them but execution entry points there fail closed, so it is an inspection escape hatch.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A node&#x27;s tokens are its own, not the run&#x27;s movement while it ran — previously an <code>end</code> event carried the difference between two readings of the <em>shared</em> meter, so under fan-out three workers costing 8 tokens each traced as 24/16/8 and metrics/cost agreed on 48 for 24 tokens of real work. Attribution now comes from a per-node scope on the meter.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A planning round is an envelope, not a measurement — the planner&#x27;s <code>tokens</code> and the round&#x27;s <code>duration_ms</code> are no longer on the <code>round</code> event; both are on its <code>state_delta</code> as <code>round_tokens</code> / <code>round_iterations</code> / <code>round_duration_ms</code>, where no reader sums them.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <em>Closed bug:</em> a <code>max_seconds</code> past the platform&#x27;s <code>time_t</code> (<code>float(&quot;inf&quot;)</code>, or <code>1e10</code>) used to <strong>disable the deadline guard for the rest of the process</strong> — <code>setitimer</code> raised after SIGALRM was installed, leaking both. Arming is undone on failure now and the delay is clamped.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <em>Closed bug:</em> every <code>async def</code> node <strong>double-charged</strong> its token re-reports, because the ledger was keyed by thread ident while <code>on_llm_end</code> is dispatched to a worker thread under <code>ainvoke</code>; nodes hit <code>max_tokens</code> at half their declared allowance. The ledger is a <code>contextvars</code> scope now.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <em>Closed bug:</em> a bracket anywhere in a model&#x27;s <strong>prose</strong> hijacked JSON extraction — <code>Analysis (note [1]): {&quot;supported&quot;: false}</code> returned a valid <code>[1]</code>, substituting a fabricated value for the verifier&#x27;s actual answer. Every opener is tried now, longest parse wins.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The Claude CLI backend is completion-only; tool calling and structured output need <code>openrouter</code>, <code>openai</code> or a local <code>ollama</code>.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A session turn is synchronous, and a runner claim is a claim rather than a lease — nothing reclaims a session whose runner died holding it.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong><code>.env</code> is found by walking up parent directories; <code>grapharc.toml</code> is not.</strong> The thing that <em>spends money</em> is discovered more eagerly than the thing that <em>constrains</em> it.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong><code>grapharc run</code> has no budget unless you give it one</strong> — set <code>--max-tokens</code>, <code>--max-iterations</code>, <code>--max-seconds</code> or <code>--max-concurrency</code>; without them each dimension is unlimited and the gate admits a topology of any worst-case cost.</aside>
+<h2 id="design-lineage-license"><a class="anchor" href="#design-lineage-license">Design lineage / License</a></h2>
+<p>Architecturally <em>inspired by</em> systems studied from public documentation: OpenClaw (policy-before-schema tool gating, file-first state, security post-mortems), Hermes Agent (budgeted tiered memory, ephemeral subagents), Claude Code (advisory-vs-enforced split, subagent context isolation, verification-centered loops), and OpenRouter (routing semantics, budget-scoped accounting). Licensed MIT.</p>
+<footer class="pager-row">
+<span class="pager-spacer"></span><a class="pager next" href="getting-started.html">Getting started &rarr;</a>
+</footer>
+<footer class="colophon">
+  Generated from the repository's README and cookbook (docs/cookbook/01–06) ·
+  <a href="https://github.com/CodeGraphContext/GraphARC">CodeGraphContext/GraphARC</a> · MIT license
+</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var links = document.querySelectorAll('.nav-chapter ul a');
+  var byId = {};
+  links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+  var current = null;
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        var a = byId[e.target.id];
+        if (a) {
+          if (current) current.classList.remove('active');
+          a.classList.add('active');
+          current = a;
+        }
+      }
+    });
+  }, { rootMargin: '0px 0px -70% 0px' });
+  document.querySelectorAll('main h2[id]').forEach(function (h) { obs.observe(h); });
+})();
+</script>
+</body>
+</html>

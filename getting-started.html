@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting started — GraphARC</title>
+<meta name="description" content="The graph kernel: typed state, declared writes, budgets, traces, fan-out, async.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📚</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="side" aria-label="Documentation contents">
+  <a class="brand" href="index.html"><b>GraphARC<span class="amp"> docs</span></b><span>a governed agent runtime on LangGraph</span></a>
+  <ul>
+<li class="nav-chapter"><a href="index.html">Overview</a>
+</li>
+<li class="nav-chapter"><a class="active" href="getting-started.html">Getting started</a>
+<ul><li><a href="#preamble">Preamble</a></li><li><a href="#how-do-i-install-it">How do I install it?</a></li><li><a href="#how-do-i-build-and-run-my-first-graph">How do I build and run my first graph?</a></li><li><a href="#why-is-a-field-missing-from-the-result-dict">Why is a field missing from the result dict?</a></li><li><a href="#how-do-i-say-what-a-node-is-allowed-to-write">How do I say what a node is allowed to write?</a></li><li><a href="#how-do-i-stop-a-node-from-mutating-state-behind-my-back">How do I stop a node from mutating state behind my back?</a></li><li><a href="#how-do-i-get-a-bad-value-rejected-before-it-reaches-the-next">How do I get a bad value rejected before it reaches the next node?</a></li><li><a href="#does-my-state-model-s-own-field-validator-run-when-a-node-wr">Does my state model&#x27;s own @field_validator run when a node writes?</a></li><li><a href="#how-do-i-stop-a-graph-that-will-not-stop-itself">How do I stop a graph that will not stop itself?</a></li><li><a href="#how-do-i-cap-tokens-and-wall-clock-time">How do I cap tokens and wall-clock time?</a></li><li><a href="#how-do-i-forbid-cycles-until-i-actually-need-one">How do I forbid cycles until I actually need one?</a></li><li><a href="#how-do-i-write-a-loop-that-ends-for-a-reason-instead-of-runn">How do I write a loop that ends for a reason instead of running out of road?</a></li><li><a href="#how-do-i-see-what-actually-happened">How do I see what actually happened?</a></li><li><a href="#how-do-i-see-what-a-run-spent-from-inside-a-node">How do I see what a run spent, from inside a node?</a></li><li><a href="#how-do-i-resume-a-run-that-died-halfway">How do I resume a run that died halfway?</a></li><li><a href="#does-that-survive-a-real-process-kill">Does that survive a real process kill?</a></li><li><a href="#why-can-t-i-just-call-inner-invoke">Why can&#x27;t I just call .inner.invoke()?</a></li><li><a href="#how-do-i-fan-out-across-workers-without-one-of-them-sinking-">How do I fan out across workers without one of them sinking the run?</a></li><li><a href="#can-my-nodes-be-async">Can my nodes be async?</a></li><li><a href="#how-do-i-swap-the-scripted-model-for-a-real-one">How do I swap the scripted model for a real one?</a></li><li><a href="#what-this-page-did-not-cover">What this page did not cover</a></li></ul>
+</li>
+<li class="nav-chapter"><a href="models.html">Models</a>
+</li>
+<li class="nav-chapter"><a href="agents-and-tools.html">Agents & tools</a>
+</li>
+<li class="nav-chapter"><a href="verification-and-memory.html">Verification & memory</a>
+</li>
+<li class="nav-chapter"><a href="governance.html">Governance</a>
+</li>
+<li class="nav-chapter"><a href="serving-and-ops.html">Serving & operations</a>
+</li>
+<li class="nav-chapter"><a href="roadmap.html">Roadmap</a>
+</li>
+<li class="nav-chapter"><a href="contributing.html">Contributing</a>
+</li>
+  </ul>
+</nav>
+<main>
+<header class="page-head">
+  <h1>Getting started</h1>
+  <p class="sub">The graph kernel: typed state, declared writes, budgets, traces, fan-out, async.</p>
+</header>
+<h2 id="preamble"><a class="anchor" href="#preamble">Preamble</a></h2>
+<p>Recipes for the part of GraphARC you touch first: a typed state model, nodes that declare what they write, edges that decide what runs next, and the machinery that stops a run before it costs you something. Every snippet was executed against this repo&#x27;s <code>.venv</code>, and every block labelled <em>Output</em> is pasted from that run — not predicted, not tidied. Exactly one snippet is an exception: the real-model call near the end, labelled as unrun because it would spend money. <code>tests/test_cookbook_basics.py</code> reproduces every recipe and asserts these exact strings, so the page cannot rot quietly. Verified against <code>grapharc 0.1.0</code>, Python 3.14.6, <code>langgraph 1.2.9</code>, <code>langchain-core 1.5.1</code>, <code>pydantic 2.13.4</code>. Each snippet is a complete file; nothing carries over between recipes.</p>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Where output would depend on a clock or a random id, the snippet prints a stable projection instead and says which fields it dropped.</aside>
+<h2 id="how-do-i-install-it"><a class="anchor" href="#how-do-i-install-it">How do I install it?</a></h2>
+<p>Not on PyPI — <code>git clone</code> is the install path. Clone, <code>cd</code>, and <code>uv sync --group dev</code>. Check that it took with <code>uv run grapharc --version</code>, which prints <code>grapharc 0.1.0</code>. Everything below uses only the base install — no API key, no network, no optional extras.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">git clone https://github.com/CodeGraphContext/GraphARC
+cd GraphARC
+uv sync --group dev</pre></figure>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body"><span class="tok-p">$ </span><span class="tok-cmd">uv run grapharc --version</span>
+grapharc 0.1.0</pre></figure>
+<h2 id="how-do-i-build-and-run-my-first-graph"><a class="anchor" href="#how-do-i-build-and-run-my-first-graph">How do I build and run my first graph?</a></h2>
+<p>Four moving parts: a state schema, a function, edges wiring it between <code>START</code> and <code>END</code>, and <code>compile().invoke()</code>. A node takes the state <strong>model</strong> (not a dict) and returns a <strong>dict</strong> of updates; it never assigns to <code>state</code>, and the returned dict is the only way anything leaves a node. On imports: <code>GraphARC</code>, <code>GraphARCState</code>, <code>Budget</code>, <code>BudgetExceeded</code>, <code>BudgetMeter</code> and <code>WritePermissionError</code> are on the top-level <code>grapharc</code> package; <code>START</code> and <code>END</code> are not — they come from <code>grapharc.runtime.graph</code>, along with <code>StateTypeError</code>, <code>GraphCycleError</code>, <code>GraphRoutingError</code>, <code>MissingRunContextError</code>, <code>AsyncNodeError</code> and <code>RunContext</code>.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc <span class="tok-k">import</span> GraphARC, GraphARCState
+<span class="tok-k">from</span> grapharc.runtime.graph <span class="tok-k">import</span> END, START
+
+
+<span class="tok-k">class</span> State(GraphARCState):
+    question: str
+    answer: str = <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+
+
+<span class="tok-k">def</span> answer(state: State) -&gt; dict:
+    <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>: f<span <span class="tok-k">class</span>="tok-s">&quot;42 (you asked: {state.question})&quot;</span>}
+
+
+g = GraphARC(State, name=<span <span class="tok-k">class</span>="tok-s">&quot;hello&quot;</span>)
+g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>, answer, writes={<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>})
+g.add_edge(START, <span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>)
+g.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>, END)
+
+print(g.compile().invoke({<span <span class="tok-k">class</span>="tok-s">&quot;question&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;meaning of life&quot;</span>}))</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">{&#x27;question&#x27;: &#x27;meaning of life&#x27;, &#x27;answer&#x27;: &#x27;42 (you asked: meaning of life)&#x27;}</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>grapharc.runtime</code> re-exports most names but <strong>not</strong> <code>START</code>, <code>END</code> or <code>GraphCycleError</code>, so <code>from grapharc.runtime.graph import ...</code> is the import that always works.</aside>
+<h2 id="why-is-a-field-missing-from-the-result-dict"><a class="anchor" href="#why-is-a-field-missing-from-the-result-dict">Why is a field missing from the result dict?</a></h2>
+<p><code>invoke()</code> returns a plain dict of <em>channel values</em>, and a field that was never in the input and never written by a node is not one — its schema default is not materialised for you. Inside the graph your nodes always see a fully constructed <code>State</code>, defaults and all, because the model is rebuilt on the way into every node. The gap is only at the exit: LangGraph hands back the channel dict, not a model. <code>State(**result)</code> is the one-line fix, and it is worth doing at the boundary of your program anyway: it is also the moment your state model&#x27;s own validators finally run.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">result = g.compile().invoke({<span <span class="tok-k">class</span>="tok-s">&quot;question&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;?&quot;</span>})
+print(result)
+print(State(**result))</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">{&#x27;question&#x27;: &#x27;?&#x27;, &#x27;answer&#x27;: &#x27;42&#x27;}
+question=&#x27;?&#x27; answer=&#x27;42&#x27; untouched=&#x27;default never written&#x27;</pre></figure>
+<h2 id="how-do-i-say-what-a-node-is-allowed-to-write"><a class="anchor" href="#how-do-i-say-what-a-node-is-allowed-to-write">How do I say what a node is allowed to write?</a></h2>
+<p><code>writes=</code> is an allowlist, not documentation. A write outside it raises <code>WritePermissionError</code> and the update never reaches state. A node that writes nothing still needs the parameter: <code>writes=set()</code>; the check is on the keys of the returned dict, so returning <code>None</code> is the idiomatic &quot;I wrote nothing&quot; and is always legal. Note the asymmetry in <em>when</em> the two failures land: a typo naming a field the schema does not have is caught at <code>add_node</code>, because the schema is known then; a node writing a real field it did not declare can only be caught when it actually returns.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> write_draft(state: State) -&gt; dict:
+    <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;draft&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;hello&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;published&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;hello&quot;</span>}   <span <span class="tok-k">class</span>="tok-c"># published <span class="tok-k">is</span> <span class="tok-k">not</span> declared</span>
+
+
+g = GraphARC(State, name=<span <span class="tok-k">class</span>="tok-s">&quot;perms&quot;</span>)
+g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;write_draft&quot;</span>, write_draft, writes={<span <span class="tok-k">class</span>="tok-s">&quot;draft&quot;</span>})
+g.add_edge(START, <span <span class="tok-k">class</span>="tok-s">&quot;write_draft&quot;</span>)
+g.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;write_draft&quot;</span>, END)
+
+<span class="tok-k">try</span>:
+    g.compile().invoke({})
+<span class="tok-k">except</span> WritePermissionError <span class="tok-k">as</span> exc:
+    print(exc)
+
+<span class="tok-k">try</span>:
+    GraphARC(State, name=<span <span class="tok-k">class</span>="tok-s">&quot;perms&quot;</span>).add_node(<span <span class="tok-k">class</span>="tok-s">&quot;x&quot;</span>, write_draft, writes={<span <span class="tok-k">class</span>="tok-s">&quot;publised&quot;</span>})
+<span class="tok-k">except</span> WritePermissionError <span class="tok-k">as</span> exc:
+    print(exc)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">node &#x27;write_draft&#x27; wrote undeclared fields [&#x27;published&#x27;]; declared writes: [&#x27;draft&#x27;]
+node &#x27;x&#x27; declares writes to unknown state fields: [&#x27;publised&#x27;]</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Neither failure is a warning; both stop the run.</aside>
+<h2 id="how-do-i-stop-a-node-from-mutating-state-behind-my-back"><a class="anchor" href="#how-do-i-stop-a-node-from-mutating-state-behind-my-back">How do I stop a node from mutating state behind my back?</a></h2>
+<p>You do not have to: every node gets a deep copy, so in-place mutation of a nested model is invisible to everyone else. Pydantic passes nested models by reference, so without the copy a node could rewrite <code>state.report.title</code> and have it stick — a write no <code>writes=</code> declaration approved and no trace recorded. The copy makes the returned dict the only channel out. The mutation is <em>not</em> an error, just local; if you want the change to land, return it.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> sneak(state: State) -&gt; dict:
+    state.report.title = <span <span class="tok-k">class</span>="tok-s">&quot;rewritten <span class="tok-k">in</span> place&quot;</span>   <span <span class="tok-k">class</span>="tok-c"># <span class="tok-k">not</span> a declared write</span>
+    <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;seen&quot;</span>: state.report.title}
+
+
+result = g.compile().invoke({<span <span class="tok-k">class</span>="tok-s">&quot;report&quot;</span>: Report(title=<span <span class="tok-k">class</span>="tok-s">&quot;original&quot;</span>)})
+print(<span <span class="tok-k">class</span>="tok-s">&quot;node saw: &quot;</span>, result[<span <span class="tok-k">class</span>="tok-s">&quot;seen&quot;</span>])
+print(<span <span class="tok-k">class</span>="tok-s">&quot;state has:&quot;</span>, result[<span <span class="tok-k">class</span>="tok-s">&quot;report&quot;</span>].title)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">node saw:  rewritten in place
+state has: original</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The cost is real — a <code>model_copy(deep=True)</code> per node execution, so a state carrying a 50 MB blob pays for that blob on every hop. Keep bulk data behind a path or an id in state, not in state.</aside>
+<h2 id="how-do-i-get-a-bad-value-rejected-before-it-reaches-the-next"><a class="anchor" href="#how-do-i-get-a-bad-value-rejected-before-it-reaches-the-next">How do I get a bad value rejected before it reaches the next node?</a></h2>
+<p>You already have it. Every value a node returns is validated against the declared type of its field at the node boundary, and the <em>validated</em> value is what gets written, raising <code>StateTypeError</code> otherwise. Constraints carried in the annotation (<code>Annotated[int, Field(ge=0)]</code>) bite too. The error names the node, the field, the declared type, the type that arrived and the value, because when this fires at 3am the question is always &quot;which node did it&quot;. Writing <code>&quot;7&quot;</code> into an <code>int</code> field is <em>accepted</em> — Pydantic&#x27;s default coercion — but what lands is the integer <code>7</code>: a schema that says <code>int</code> means the result holds an <code>int</code>.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">try</span>:
+    one_node(<span class="tok-k">lambda</span> s: {<span <span class="tok-k">class</span>="tok-s">&quot;count&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;seven&quot;</span>}, writes={<span <span class="tok-k">class</span>="tok-s">&quot;count&quot;</span>}).invoke({})
+<span class="tok-k">except</span> StateTypeError <span class="tok-k">as</span> exc:
+    print(exc)
+
+out = one_node(<span class="tok-k">lambda</span> s: {<span <span class="tok-k">class</span>="tok-s">&quot;count&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;7&quot;</span>}, writes={<span <span class="tok-k">class</span>="tok-s">&quot;count&quot;</span>}).invoke({})
+print(repr(out[<span <span class="tok-k">class</span>="tok-s">&quot;count&quot;</span>]))</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">node &#x27;n&#x27; wrote &#x27;count&#x27; with a value the state schema rejects: expected int, got str (&#x27;seven&#x27;); Input should be a valid integer, unable to parse string as an integer
+node &#x27;n&#x27; wrote &#x27;retries&#x27; with a value the state schema rejects: expected int, got int (-1); Input should be greater than or equal to 0
+7</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> This includes the last node before <code>END</code>, so a bad type cannot escape into the result.</aside>
+<h2 id="does-my-state-model-s-own-field-validator-run-when-a-node-wr"><a class="anchor" href="#does-my-state-model-s-own-field-validator-run-when-a-node-wr">Does my state model&#x27;s own @field_validator run when a node writes?</a></h2>
+<p>No. This is the sharpest edge in the kernel. Write-time validation is built per field from that field&#x27;s <em>annotation</em>, and the state model itself is never constructed — only the one field&#x27;s value is — so a <code>@field_validator</code> declared on the state model has nothing to run against. Direct construction does run it; a write from the last node before <code>END</code> does not; add a node downstream and the model is rebuilt on the way in, so it does. The rule to hold in your head: <strong><code>writes=</code> is GraphARC&#x27;s; the types are Pydantic&#x27;s, and only the annotation half of Pydantic.</strong> So prefer <code>Annotated[...]</code> constraints (<code>Field(ge=0)</code>, <code>Field(pattern=...)</code>, <code>Field(min_length=1)</code>, <code>Literal[...]</code>, <code>StringConstraints(to_lower=True)</code>) for anything you want enforced per write, or push the invariant into a nested model — the annotation <em>is</em> that model, so validating the write constructs it and its validators run.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">class</span> Article(BaseModel):
+    slug: str
+
+    @field_validator(<span <span class="tok-k">class</span>="tok-s">&quot;slug&quot;</span>)
+    @classmethod
+    <span class="tok-k">def</span> must_be_lower(cls, v: str) -&gt; str:
+        <span class="tok-k">if</span> v != v.lower():
+            <span class="tok-k">raise</span> ValueError(<span <span class="tok-k">class</span>="tok-s">&quot;slug must be lowercase&quot;</span>)
+        <span class="tok-k">return</span> v
+
+
+<span class="tok-k">class</span> State(GraphARCState):
+    article: Article | <span class="tok-k">None</span> = <span class="tok-k">None</span>
+
+
+<span class="tok-k">def</span> publish(state: State) -&gt; dict:
+    <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;article&quot;</span>: {<span <span class="tok-k">class</span>="tok-s">&quot;slug&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;NOT-LOWER&quot;</span>}}</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">ValidationError on direct construction
+result: {&#x27;slug&#x27;: &#x27;NOT-LOWER&#x27;}
+ValidationError when the next node receives the state</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A violation written by the <em>last</em> node before <code>END</code> reaches your result unchecked; <code>State(**result)</code> at your program&#x27;s boundary closes that.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The gap is specifically the <em>state model&#x27;s own</em> validators — anything one level down is fine.</aside>
+<h2 id="how-do-i-stop-a-graph-that-will-not-stop-itself"><a class="anchor" href="#how-do-i-stop-a-graph-that-will-not-stop-itself">How do I stop a graph that will not stop itself?</a></h2>
+<p>Give it a <code>Budget</code>. <code>max_iterations</code> is charged once per node execution and checked before every node, so a router that never says stop still stops. Crossing a budget <em>raises</em> <code>BudgetExceeded</code>; it does not return partial state — a truncated answer that looks like a real one is worse than an exception — which means the caller, not the graph, decides what to do about it. For a partial result, either catch <code>BudgetExceeded</code> and read the checkpoint, or build the stop condition into the graph so the run ends through <code>END</code> with a recorded reason. The budget is the ceiling, not the plan.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">g = GraphARC(State, name=<span <span class="tok-k">class</span>="tok-s">&quot;runaway&quot;</span>, budget=Budget(max_iterations=5))
+g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;spin&quot;</span>, spin, writes={<span <span class="tok-k">class</span>="tok-s">&quot;spins&quot;</span>})
+g.add_edge(START, <span <span class="tok-k">class</span>="tok-s">&quot;spin&quot;</span>)
+g.add_conditional_edge(<span <span class="tok-k">class</span>="tok-s">&quot;spin&quot;</span>, again, {<span <span class="tok-k">class</span>="tok-s">&quot;go&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;spin&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;stop&quot;</span>: END})
+
+compiled = g.compile()
+<span class="tok-k">try</span>:
+    compiled.invoke({})
+<span class="tok-k">except</span> BudgetExceeded <span class="tok-k">as</span> exc:
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;stopped:&quot;</span>, exc.reason)
+
+print(<span <span class="tok-k">class</span>="tok-s">&quot;iterations charged:&quot;</span>, compiled.last_run.meter.iterations)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">stopped: max_iterations reached (5/5)
+iterations charged: 5</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>compiled.last_run</code> holds the <code>RunContext</code> of the most recent <code>invoke</code> and is overwritten by the next <code>invoke</code> on the same compiled graph — read it before you run again.</aside>
+<h2 id="how-do-i-cap-tokens-and-wall-clock-time"><a class="anchor" href="#how-do-i-cap-tokens-and-wall-clock-time">How do I cap tokens and wall-clock time?</a></h2>
+<p>Same <code>Budget</code>; neither <code>max_tokens</code> nor <code>max_seconds</code> needs your nodes to cooperate. GraphARC installs a usage callback for the duration of every node, so any chat model invoked on that thread charges this run&#x27;s meter, and the token ceiling is enforced at <code>on_llm_end</code> rather than waiting for the node to return — the LangChain &quot;Error in MeterCallbackHandler.on_llm_end callback&quot; line is that mechanism, not a second failure. <code>max_seconds</code> is delivered as an <em>interrupt into</em> the running node — SIGALRM on the main thread, <code>PyThreadState_SetAsyncExc</code> otherwise — which is why a node parked in <code>time.sleep(5.0)</code> dies at 0.25s. <code>Budget</code> also carries <code>max_concurrency</code>. Budgets are per-<code>invoke</code>, not per-thread: resuming a thread starts a fresh meter, and you can override with <code>invoke(..., budget=Budget(...))</code>.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">try</span>:
+    one_node(talk, Budget(max_tokens=5)).invoke({})
+<span class="tok-k">except</span> BudgetExceeded <span class="tok-k">as</span> exc:
+    print(exc.reason)
+
+t0 = time.monotonic()
+<span class="tok-k">try</span>:
+    one_node(nap, Budget(max_seconds=0.25)).invoke({})
+<span class="tok-k">except</span> BudgetExceeded <span class="tok-k">as</span> exc:
+    print(exc.reason.split(<span <span class="tok-k">class</span>="tok-s">&quot; (&quot;</span>)[0])
+print(f&quot;gave up after under a second: {time.monotonic() - t0 &lt; 1.0}&quot;)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">Error in MeterCallbackHandler.on_llm_end callback: BudgetExceeded(&#x27;max_tokens reached (10/5)&#x27;)
+max_tokens reached (10/5)
+max_seconds reached while node &#x27;n&#x27; was running
+gave up after under a second: True</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A node inside a C call cannot be unwound by the second mechanism; the signal path needs <code>invoke()</code> on the process&#x27;s <strong>main thread</strong>, so driving a run from a <code>ThreadPoolExecutor</code> or threaded request handler silently falls back to the weaker mechanism.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A node that catches every interrupt and never returns cannot be stopped from Python at all (the interrupt is re-armed every 50 ms, but <code>while True:</code> around <code>except BaseException</code> still hangs you).</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Even when the node survives the interrupt, the deadline holds at the node boundary — an overrun node&#x27;s writes never reach state.</aside>
+<h2 id="how-do-i-forbid-cycles-until-i-actually-need-one"><a class="anchor" href="#how-do-i-forbid-cycles-until-i-actually-need-one">How do I forbid cycles until I actually need one?</a></h2>
+<p><code>dag=True</code>. Cycles are something you earn, not something you start with. Static edges can only be judged together, so a cycle built from them waits for <code>compile()</code> and <code>GraphCycleError</code> names the cycle it found (<code>a -&gt; b -&gt; a</code>) rather than saying &quot;graph is cyclic&quot;. Conditional and fan-out edges are refused at <code>add_*</code> time, because in dag mode there is no version of them that would be legal later.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">g = GraphARC(State, name=<span <span class="tok-k">class</span>="tok-s">&quot;pipeline&quot;</span>, dag=<span class="tok-k">True</span>)
+g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;a&quot;</span>, bump, writes={<span <span class="tok-k">class</span>="tok-s">&quot;n&quot;</span>})
+g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;b&quot;</span>, bump, writes={<span <span class="tok-k">class</span>="tok-s">&quot;n&quot;</span>})
+g.add_edge(START, <span <span class="tok-k">class</span>="tok-s">&quot;a&quot;</span>)
+g.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;a&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;b&quot;</span>)
+g.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;b&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;a&quot;</span>)        <span <span class="tok-k">class</span>="tok-c"># accepted here...</span>
+g.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;b&quot;</span>, END)
+
+<span class="tok-k">try</span>:
+    g.compile()             <span <span class="tok-k">class</span>="tok-c"># ...<span class="tok-k">and</span> refused here</span>
+<span class="tok-k">except</span> GraphCycleError <span class="tok-k">as</span> exc:
+    print(exc)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">graph &#x27;pipeline&#x27; is dag=True but has a cycle: a -&gt; b -&gt; a
+graph &#x27;pipeline&#x27; is dag=True: conditional edges are not allowed</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>GraphCycleError</code> is the one exception <code>grapharc.runtime</code> does not re-export — import it from <code>grapharc.runtime.graph</code>.</aside>
+<h2 id="how-do-i-write-a-loop-that-ends-for-a-reason-instead-of-runn"><a class="anchor" href="#how-do-i-write-a-loop-that-ends-for-a-reason-instead-of-runn">How do I write a loop that ends for a reason instead of running out of road?</a></h2>
+<p>Route with code, and record <em>why</em> you stopped in state. <code>ProgressGuard</code> gives you three independent brakes — a target, a no-progress window, and a round cap — and <code>assess()</code> returns the first one that trips as a <code>StopReason</code>. In the example the target of 10 findings was never met, but the loop stopped anyway at round 4 with <code>no_progress</code> on the record, and the 50-iteration budget was never touched: the budget is the thing that catches your bug, not the thing that ends your run. Routers are ordinary Python functions over typed state — no model output is ever consulted to pick an edge, so a model writing <code>ROUTE TO: all_verified</code> into a state field is writing a string, not choosing a branch.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">GUARD = ProgressGuard(target=10, max_rounds=8, max_empty_rounds=2)
+
+
+<span class="tok-k">def</span> decide(state: State) -&gt; dict:
+    stop = GUARD.assess(
+        round=state.round,
+        total_findings=state.findings,
+        empty_rounds=state.empty_rounds,
+    )
+    <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;termination_reason&quot;</span>: stop.value <span class="tok-k">if</span> stop <span class="tok-k">else</span> <span class="tok-k">None</span>}
+
+
+<span class="tok-k">def</span> route(state: State) -&gt; str:
+    <span class="tok-k">return</span> <span <span class="tok-k">class</span>="tok-s">&quot;stop&quot;</span> <span class="tok-k">if</span> state.termination_reason <span class="tok-k">else</span> <span <span class="tok-k">class</span>="tok-s">&quot;again&quot;</span>
+
+
+g.add_conditional_edge(<span <span class="tok-k">class</span>="tok-s">&quot;decide&quot;</span>, route, {<span <span class="tok-k">class</span>="tok-s">&quot;again&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;search&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;stop&quot;</span>: END})</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">{&#x27;round&#x27;: 4, &#x27;findings&#x27;: 3, &#x27;empty_rounds&#x27;: 2, &#x27;termination_reason&#x27;: &#x27;no_progress&#x27;}
+stopped because: no_progress
+iterations used: 8 of 50</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>add_conditional_edge</code> passes router and mapping straight through to LangGraph; GraphARC does <strong>not</strong> check that the router&#x27;s return values are keys of the mapping — a typo is a run-time <code>KeyError</code>. <code>StopReason</code> is a <code>StrEnum</code>, so using its members as mapping keys makes that typo impossible.</aside>
+<h2 id="how-do-i-see-what-actually-happened"><a class="anchor" href="#how-do-i-see-what-actually-happened">How do I see what actually happened?</a></h2>
+<p>Hand the graph a <code>TraceRecorder</code>. Every node execution writes a <code>start</code> line and then either an <code>end</code> or an <code>error</code> line, as JSONL. <code>start</code> carries identity only (run, thread, attempt, graph, node, step, timestamp) and is written <em>before</em> the node body, so it exists even when the node never returns; <code>end</code> adds <code>state_delta</code> (exactly the validated update applied), <code>duration_ms</code> and <code>tokens</code>; <code>error</code> adds <code>duration_ms</code> and <code>error</code> (<code>repr()</code> of the exception, so the type is preserved) and has no <code>state_delta</code>, because a node that raised wrote nothing. <code>start</code> and <code>end</code> share a step number — the pair is the node execution — so step numbers do not order the file; read events in file order (the recorder appends under a lock). The <code>grapharc trace</code>, <code>grapharc metrics</code> and <code>grapharc viz</code> commands read this exact file, which is why the dashboard and the audit trail cannot disagree.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">trace = TraceRecorder(tmp / <span <span class="tok-k">class</span>="tok-s">&quot;trace.jsonl&quot;</span>)
+
+g = GraphARC(State, name=<span <span class="tok-k">class</span>="tok-s">&quot;counter&quot;</span>, trace=trace)
+...
+VOLATILE = {<span <span class="tok-k">class</span>="tok-s">&quot;ts&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;run_id&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;thread_id&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;duration_ms&quot;</span>}
+<span class="tok-k">for</span> event <span class="tok-k">in</span> trace.read_events():
+    print({k: v <span class="tok-k">for</span> k, v <span class="tok-k">in</span> event.model_dump(exclude_none=<span class="tok-k">True</span>).items() <span class="tok-k">if</span> k <span class="tok-k">not</span> <span class="tok-k">in</span> VOLATILE})</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">{&#x27;attempt&#x27;: 1, &#x27;graph&#x27;: &#x27;counter&#x27;, &#x27;node&#x27;: &#x27;load&#x27;, &#x27;phase&#x27;: &#x27;start&#x27;, &#x27;step&#x27;: 1}
+{&#x27;attempt&#x27;: 1, &#x27;graph&#x27;: &#x27;counter&#x27;, &#x27;node&#x27;: &#x27;load&#x27;, &#x27;phase&#x27;: &#x27;end&#x27;, &#x27;step&#x27;: 1, &#x27;state_delta&#x27;: {&#x27;items&#x27;: [&#x27;a&#x27;, &#x27;b&#x27;, &#x27;c&#x27;]}, &#x27;tokens&#x27;: 0}
+{&#x27;attempt&#x27;: 1, &#x27;graph&#x27;: &#x27;counter&#x27;, &#x27;node&#x27;: &#x27;count&#x27;, &#x27;phase&#x27;: &#x27;start&#x27;, &#x27;step&#x27;: 2}
+{&#x27;attempt&#x27;: 1, &#x27;graph&#x27;: &#x27;counter&#x27;, &#x27;node&#x27;: &#x27;count&#x27;, &#x27;phase&#x27;: &#x27;error&#x27;, &#x27;step&#x27;: 2, &#x27;error&#x27;: &quot;ValueError(&#x27;the counter is not implemented yet&#x27;)&quot;}</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Nodes may emit their own phases on the same recorder — treat the phase set as open rather than exhaustive.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Long values are truncated at 2000 characters with a <code>…[truncated N chars]</code> marker and non-JSON-able values fall back to <code>repr()</code>; a trace is an audit trail, not a serialisation format.</aside>
+<h2 id="how-do-i-see-what-a-run-spent-from-inside-a-node"><a class="anchor" href="#how-do-i-see-what-a-run-spent-from-inside-a-node">How do I see what a run spent, from inside a node?</a></h2>
+<p>Give your node a second parameter. Any node function with two or more parameters receives the <code>RunContext</code> as the second one, and the rule is detected from the function signature, so you never register which form you wrote. <code>ctx.meter.tokens</code> is populated without the node charging anything by hand — the usage callback did it. <code>RunContext</code> also carries <code>run_id</code>, <code>thread_id</code>, <code>attempt</code> and <code>graph</code>, which is what you want when a node writes to something outside the graph and needs to stamp it with the run that produced it.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> talk(state: State, ctx: RunContext) -&gt; dict:      <span <span class="tok-k">class</span>="tok-c"># two parameters =&gt; you get ctx</span>
+    model = ScriptedChatModel(responses=[<span <span class="tok-k">class</span>="tok-s">&quot;a scripted reply&quot;</span>])
+    reply = str(model.invoke([HumanMessage(content=<span <span class="tok-k">class</span>="tok-s">&quot;hi&quot;</span>)]).content)
+    <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;reply&quot;</span>: reply, <span <span class="tok-k">class</span>="tok-s">&quot;spent_so_far&quot;</span>: ctx.meter.tokens}</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">{&#x27;reply&#x27;: &#x27;a scripted reply&#x27;, &#x27;spent_so_far&#x27;: 5}
+iterations: 1
+tokens:     5</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Adding a defaulted second parameter for your own reasons — <code>def node(state, retries=3)</code> — silently turns it into a ctx parameter, and <code>retries</code> will be a <code>RunContext</code>. Keep extra arguments in a closure or in state.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A bare <code>ctx.meter.charge_tokens(n)</code> is always counted even when the callback already metered that call, so hand-metering an automatic call pays twice; pass the message: <code>charge_tokens(n, source=message)</code>.</aside>
+<h2 id="how-do-i-resume-a-run-that-died-halfway"><a class="anchor" href="#how-do-i-resume-a-run-that-died-halfway">How do I resume a run that died halfway?</a></h2>
+<p>Compile with a checkpointer, then call <code>invoke(None, thread_id=...)</code> to resume that thread from its last checkpoint — <code>input=None</code> means &quot;resume&quot;. <code>get_state(&quot;t1&quot;).next</code> tells you what will run, and in the example exactly one fetch happened across both attempts. Crash-safe resume is LangGraph&#x27;s, not GraphARC&#x27;s: the checkpointer passed to <code>compile()</code> goes straight through. What GraphARC adds is trace continuity — after a resume, step numbers continue from the thread&#x27;s history and <code>attempt</code> increments, so <code>(thread_id, step)</code> stays unique across attempts and one logical thread is stitchable across restarts.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">compiled = (
+    GraphARC(State, name=<span <span class="tok-k">class</span>="tok-s">&quot;fetch_save&quot;</span>)
+    .add_node(<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>, fetch, writes={<span <span class="tok-k">class</span>="tok-s">&quot;data&quot;</span>})
+    .add_node(<span <span class="tok-k">class</span>="tok-s">&quot;save&quot;</span>, save, writes={<span <span class="tok-k">class</span>="tok-s">&quot;saved&quot;</span>})
+    .add_edge(START, <span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>)
+    .add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;fetch&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;save&quot;</span>)
+    .add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;save&quot;</span>, END)
+    .compile(checkpointer=SqliteSaver(conn))
+)
+
+print(<span <span class="tok-k">class</span>="tok-s">&quot;next to run:&quot;</span>, compiled.get_state(<span <span class="tok-k">class</span>="tok-s">&quot;t1&quot;</span>).next)
+result = compiled.invoke(<span class="tok-k">None</span>, thread_id=<span <span class="tok-k">class</span>="tok-s">&quot;t1&quot;</span>)     <span <span class="tok-k">class</span>="tok-c"># input=<span class="tok-k">None</span> means <span <span class="tok-k">class</span>="tok-s">&quot;resume&quot;</span></span></pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">attempt 1  step 1  fetch  start
+attempt 1  step 1  fetch  end
+attempt 1  step 2  save   start
+attempt 1  step 2  save   error
+attempt 2  step 3  save   start
+attempt 2  step 3  save   end</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>SqliteSaver</code> needs <code>check_same_thread=False</code> because LangGraph runs nodes on worker threads.</aside>
+<h2 id="does-that-survive-a-real-process-kill"><a class="anchor" href="#does-that-survive-a-real-process-kill">Does that survive a real process kill?</a></h2>
+<p>Partly. LangGraph&#x27;s default checkpoint durability is <code>&quot;async&quot;</code> — the checkpoint for a completed step is written in the background while the next step starts — and <code>CompiledGraphARC.invoke()</code> does not expose the <code>durability</code> parameter to change it. After a SIGKILL the run resumed and produced exactly one result, but <code>fetch</code> ran <strong>twice</strong>: no checkpoint reached disk saying &quot;<code>fetch</code> is done, start at <code>save</code>&quot;, so the resume replayed from the beginning. What to do: make nodes idempotent, or make the expensive step&#x27;s effect externally deduplicated (content-addressed path, upsert on a key, check before you fetch) — the right answer regardless of durability mode, since a node can also be re-run by a retry or a deliberate resume from an earlier checkpoint.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">    <span class="tok-k">def</span> save(state: State) -&gt; dict:
+        <span class="tok-k">if</span> os.environ.get(<span <span class="tok-k">class</span>="tok-s">&quot;KILL_ME&quot;</span>):
+            os.kill(os.getpid(), signal.SIGKILL)
+        <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;saved&quot;</span>: <span class="tok-k">True</span>}</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">child killed by signal: 9
+a checkpoint that resumes at &#x27;save&#x27;: False
+resumed: True
+times fetch ran: 2</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Do not treat &quot;it was checkpointed&quot; as &quot;it will not run again&quot;.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>durability=&quot;sync&quot;</code> exists on LangGraph&#x27;s <code>Pregel.invoke</code> and would keep the post-<code>fetch</code> checkpoint, but reaching it means bypassing <code>CompiledGraphARC.invoke()</code> — and <code>.inner.invoke()</code> fails closed, so there is no supported path to it right now.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> How much got written before the kill is itself a race — the step-0 checkpoint sometimes lands and sometimes does not.</aside>
+<h2 id="why-can-t-i-just-call-inner-invoke"><a class="anchor" href="#why-can-t-i-just-call-inner-invoke">Why can&#x27;t I just call .inner.invoke()?</a></h2>
+<p>Because a run with no budget and no trace is not a GraphARC run, and failing silently into one is the bug this prevents — raw LangGraph entry points raise <code>MissingRunContextError</code>. <code>.inner</code> is an <em>inspection</em> escape hatch, not an execution one: <code>compiled.inner.get_graph().draw_mermaid()</code> works fine, as does anything else that reads; only the entry points that would run nodes fail closed. GraphARC already wraps <code>get_state</code>, <code>get_state_history</code> and <code>update_state</code> on the compiled object, so you rarely need <code>.inner</code> at all — and the wrapped <code>update_state</code> type-checks your values and, when you pass <code>as_node=</code>, applies that node&#x27;s write allowlist.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">try</span>:
+    compiled.inner.invoke({})       <span <span class="tok-k">class</span>="tok-c"># raw LangGraph entry point</span>
+<span class="tok-k">except</span> MissingRunContextError <span class="tok-k">as</span> exc:
+    print(exc)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">node &#x27;bump&#x27; executed without a GraphARC run context; drive the graph via CompiledGraphARC.invoke()/stream()/ainvoke()/astream() — raw LangGraph entry points would silently bypass budgets and traces</pre></figure>
+<h2 id="how-do-i-fan-out-across-workers-without-one-of-them-sinking-"><a class="anchor" href="#how-do-i-fan-out-across-workers-without-one-of-them-sinking-">How do I fan out across workers without one of them sinking the run?</a></h2>
+<p><code>add_fanout_edge</code> dispatches parallel <code>Send</code>s; <code>run_guarded</code> turns a worker&#x27;s crash or hang into data. Use both — the first alone gives you parallelism with a shared fate. The pieces: <code>input_schema=Shard</code> types the payload a worker receives (a fan-out worker is called with the <code>Send</code> payload, <em>not</em> the graph state, which is why <code>worker</code> never reads <code>state</code>); a reducer on the target field, <code>Annotated[list[WorkerResult], operator.add]</code>, is what lets three parallel workers all write <code>results</code> without clobbering each other; <code>run_guarded</code> runs the job on a daemon thread joined with a timeout, so a raised exception becomes <code>WorkerResult(ok=False, error=repr(exc))</code> and a hang becomes <code>ok=False, error=&quot;timeout after 0.2s&quot;</code>; <code>Budget(max_concurrency=2)</code> caps how many workers run at once. Two of three workers died — one crashing, one hanging — and the run still produced an answer with both failures attributed by cause.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">def</span> worker(shard: Shard) -&gt; dict:
+    <span class="tok-k">def</span> job() -&gt; list[dict]:
+        <span class="tok-k">if</span> shard.fail:
+            <span class="tok-k">raise</span> RuntimeError(<span <span class="tok-k">class</span>="tok-s">&quot;shard parser blew up&quot;</span>)
+        <span class="tok-k">if</span> shard.hang:
+            time.sleep(shard.hang)
+        <span class="tok-k">return</span> [{<span <span class="tok-k">class</span>="tok-s">&quot;word&quot;</span>: w} <span class="tok-k">for</span> w <span class="tok-k">in</span> shard.words]
+
+    <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;results&quot;</span>: [run_guarded(job, worker=shard.name, timeout_seconds=0.2)]}
+
+
+g = GraphARC(State, name=<span <span class="tok-k">class</span>="tok-s">&quot;fanout&quot;</span>, budget=Budget(max_concurrency=2))
+g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;worker&quot;</span>, worker, writes={<span <span class="tok-k">class</span>="tok-s">&quot;results&quot;</span>}, input_schema=Shard)
+g.add_fanout_edge(<span <span class="tok-k">class</span>="tok-s">&quot;prepare&quot;</span>, dispatch)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">counted:  2
+failed:   w1: RuntimeError(&#x27;shard parser blew up&#x27;)
+failed:   w2: timeout after 0.2s</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A hung worker is <em>abandoned</em>, not killed — the daemon thread keeps sleeping, a late result is ignored, and a worker holding a lock or file handle keeps holding it.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The fan-out timeout is per worker and separate from <code>Budget(max_seconds=...)</code>, which is per run.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Drop the <code>Annotated[...]</code> reducer and LangGraph raises <code>InvalidUpdateError: At key &#x27;results&#x27;: Can receive only one value per step.</code> — it does not silently pick a winner.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Without <code>run_guarded</code>, one bad worker takes the whole run with it.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A dispatcher naming a node the graph does not have raises <code>GraphRoutingError</code>; plain LangGraph logs <code>Ignoring unknown node name</code> and carries on, so the shard is never worked and your answer is quietly built from two thirds of the evidence. <code>END</code> is not a valid <code>Send</code> target.</aside>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">run died: shard parser blew up
+the fan-out dispatcher on node &#x27;prepare&#x27; routed to Send(node=&#x27;wroker&#x27;, ...), but &#x27;wroker&#x27; is not a node of graph &#x27;unguarded&#x27;; LangGraph drops an unknown Send target and the run continues as if the routing had not happened. Valid Send targets: &#x27;prepare&#x27;, &#x27;worker&#x27; — END is not one, because a Send has to name a node that runs</pre></figure>
+<h2 id="can-my-nodes-be-async"><a class="anchor" href="#can-my-nodes-be-async">Can my nodes be async?</a></h2>
+<p>Yes — and if a graph has any <code>async def</code> node you must use <code>ainvoke</code>/<code>astream</code>, which it will tell you via <code>AsyncNodeError</code>. The rejection happens before any node runs, so a graph mixing sync and async nodes cannot half-execute; plain LangGraph would run every sync node first and then fail on the first coroutine. Sync nodes stay legal under <code>ainvoke()</code> — LangGraph runs each on a worker thread.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">print(asyncio.run(compiled.ainvoke({})))
+
+<span class="tok-k">try</span>:
+    compiled.invoke({})
+<span class="tok-k">except</span> AsyncNodeError <span class="tok-k">as</span> exc:
+    print(exc)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">{&#x27;reply&#x27;: &#x27;from an async node&#x27;}
+graph &#x27;async&#x27; has async nodes [&#x27;fetch&#x27;]; use ainvoke(), because invoke() has no event loop to await them on</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> For an <code>async def</code> node, <code>max_seconds</code> is delivered as task cancellation rather than a thread interrupt, so it lands at an <code>await</code> — an async node doing blocking work between awaits is not interrupted until it yields.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> If you read <code>README.md</code> first and saw &quot;No async&quot; under Status, trust the snippet above — it ran.</aside>
+<h2 id="how-do-i-swap-the-scripted-model-for-a-real-one"><a class="anchor" href="#how-do-i-swap-the-scripted-model-for-a-real-one">How do I swap the scripted model for a real one?</a></h2>
+<p>Everything above used <code>grapharc.testing.ScriptedChatModel</code>, a real <code>BaseChatModel</code> that replays a fixed list of strings and reports plausible usage metadata — so budgets, traces and the usage callback are all exercised for free. Swapping in a real backend is a one-line change at the point of construction via <code>grapharc.gateway.get_model</code>. What you can check without spending anything is how a spec resolves, with <code>describe</code>, which never constructs a model and never touches a credential; a mistyped backend is rejected rather than folded into a model name, so <code>opnerouter/...</code> fails there instead of failing much later as a nonsense Claude CLI call. Once a real model is in a node, nothing else on the page changes: the usage callback charges the run&#x27;s meter whether the model is scripted or real, including calls made deep inside library code your node merely called — the whole reason <code>max_tokens</code> is worth setting.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> get_model
+
+<span <span class="tok-k">class</span>="tok-c"># Claude Code CLI: uses your Claude subscription, no API key. Text completion only —</span>
+<span <span class="tok-k">class</span>="tok-c"># bind_tools <span class="tok-k">and</span> with_structured_output <span class="tok-k">raise</span> NotImplementedError on this backend.</span>
+model = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>)
+
+<span <span class="tok-k">class</span>="tok-c"># OpenRouter: needs OPENROUTER_API_KEY <span class="tok-k">and</span> the `openrouter` extra</span>
+<span <span class="tok-k">class</span>="tok-c"># (uv sync --extra openrouter). Tool calling, structured output, streaming, <span class="tok-k">async</span>.</span>
+model = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-haiku-4.5&quot;</span>)
+
+<span <span class="tok-k">class</span>="tok-c"># OpenAI directly: needs OPENAI_API_KEY <span class="tok-k">and</span> the `openai` extra.</span>
+model = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;openai/gpt-4o-mini&quot;</span>)
+
+<span <span class="tok-k">class</span>="tok-c"># Ollama: a model on this machine. No key, no bill — the one real backend you</span>
+<span <span class="tok-k">class</span>="tok-c"># can run without an account. Needs the `ollama` extra <span class="tok-k">and</span> a pulled model.</span>
+model = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;ollama/llama3.1&quot;</span>)</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body">{&#x27;spec&#x27;: &#x27;claude-cli/claude-sonnet-5&#x27;, &#x27;backend&#x27;: &#x27;claude-cli&#x27;, &#x27;model&#x27;: &#x27;claude-sonnet-5&#x27;}
+{&#x27;spec&#x27;: &#x27;openrouter/anthropic/claude-haiku-4.5&#x27;, &#x27;backend&#x27;: &#x27;openrouter&#x27;, &#x27;model&#x27;: &#x27;anthropic/claude-haiku-4.5&#x27;}</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <strong>The <code>get_model</code> snippet was NOT executed</strong> — it calls a paid or subscription-metered backend, and this cookbook does not run those. It is here for the shape only.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> On the <code>claude-cli</code> backend, <code>bind_tools</code> and <code>with_structured_output</code> raise <code>NotImplementedError</code>.</aside>
+<h2 id="what-this-page-did-not-cover"><a class="anchor" href="#what-this-page-did-not-cover">What this page did not cover</a></h2>
+<p>Deliberate omissions, so you know they exist rather than discovering them: <code>stream()</code> / <code>astream()</code> / <code>astream_events()</code> — the same discipline, incremental output, and <code>.inner.stream()</code> fails closed exactly like <code>.inner.invoke()</code>; returning a <code>langgraph</code> <code>Command</code> from a node for dynamic <code>goto</code> routing, whose <code>update</code> goes through the same allowlist and type checks and whose destination is checked against the graph&#x27;s nodes; <code>update_state</code> for human-in-the-loop edits between steps; and the model gateway&#x27;s retry policies, spend meters and cost ceilings, verification (<code>verify_claim</code>), memory, and the tool harness — other pages.</p>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A state model&#x27;s own <code>@field_validator</code> / <code>@model_validator</code> does not run when a node writes — only the field&#x27;s annotation is enforced (which does include a nested model&#x27;s own validators). Rebuild the model at your program&#x27;s boundary, or keep the invariant one level down.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>add_conditional_edge</code> does not verify that your router&#x27;s return values are keys of your mapping. A typo is a run-time <code>KeyError</code>.</aside>
+<p>Source file: <code>/home/shashank/Desktop/GraphARC/docs/cookbook/01-basics.md</code> (1512 lines, 20 sections). Companion test asserting these outputs: <code>/home/shashank/Desktop/GraphARC/tests/test_cookbook_basics.py</code>.</p>
+<footer class="pager-row">
+<a class="pager prev" href="index.html">&larr; Overview</a><span class="pager-spacer"></span><a class="pager next" href="models.html">Models &rarr;</a>
+</footer>
+<footer class="colophon">
+  Generated from the repository's README and cookbook (docs/cookbook/01–06) ·
+  <a href="https://github.com/CodeGraphContext/GraphARC">CodeGraphContext/GraphARC</a> · MIT license
+</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var links = document.querySelectorAll('.nav-chapter ul a');
+  var byId = {};
+  links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+  var current = null;
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        var a = byId[e.target.id];
+        if (a) {
+          if (current) current.classList.remove('active');
+          a.classList.add('active');
+          current = a;
+        }
+      }
+    });
+  }, { rootMargin: '0px 0px -70% 0px' });
+  document.querySelectorAll('main h2[id]').forEach(function (h) { obs.observe(h); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Models — GraphARC</title>
+<meta name="description" content="The gateway: five backends, one spec grammar, retries, spend metering.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📚</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="side" aria-label="Documentation contents">
+  <a class="brand" href="index.html"><b>GraphARC<span class="amp"> docs</span></b><span>a governed agent runtime on LangGraph</span></a>
+  <ul>
+<li class="nav-chapter"><a href="index.html">Overview</a>
+</li>
+<li class="nav-chapter"><a href="getting-started.html">Getting started</a>
+</li>
+<li class="nav-chapter"><a class="active" href="models.html">Models</a>
+<ul><li><a href="#how-do-i-get-a-model">How do I get a model?</a></li><li><a href="#how-do-i-write-a-spec-and-what-happens-if-i-typo-one">How do I write a spec, and what happens if I typo one?</a></li><li><a href="#how-do-i-see-what-my-machine-can-actually-reach">How do I see what my machine can actually reach?</a></li><li><a href="#how-do-i-run-on-a-claude-subscription-with-no-api-key">How do I run on a Claude subscription with no API key?</a></li><li><a href="#how-do-i-get-tool-calling-structured-output-streaming-and-as">How do I get tool-calling, structured output, streaming and async?</a></li><li><a href="#how-do-i-use-my-own-openai-key">How do I use my own OpenAI key?</a></li><li><a href="#how-do-i-run-models-on-my-own-machine">How do I run models on my own machine?</a></li><li><a href="#how-do-i-give-a-reviewer-a-genuinely-different-provider">How do I give a reviewer a genuinely different provider?</a></li><li><a href="#how-do-i-add-fallbacks-and-steer-provider-routing">How do I add fallbacks and steer provider routing?</a></li><li><a href="#how-do-i-know-what-a-call-cost">How do I know what a call cost?</a></li><li><a href="#how-do-i-stop-a-graph-spending-more-than-a-fixed-amount">How do I stop a graph spending more than a fixed amount?</a></li><li><a href="#what-happens-to-cost-accounting-when-i-stream">What happens to cost accounting when I stream?</a></li><li><a href="#what-gets-retried-and-what-does-not">What gets retried, and what does not?</a></li><li><a href="#how-long-does-it-wait-between-attempts">How long does it wait between attempts?</a></li><li><a href="#how-do-i-test-all-of-this-without-spending-anything">How do I test all of this without spending anything?</a></li></ul>
+</li>
+<li class="nav-chapter"><a href="agents-and-tools.html">Agents & tools</a>
+</li>
+<li class="nav-chapter"><a href="verification-and-memory.html">Verification & memory</a>
+</li>
+<li class="nav-chapter"><a href="governance.html">Governance</a>
+</li>
+<li class="nav-chapter"><a href="serving-and-ops.html">Serving & operations</a>
+</li>
+<li class="nav-chapter"><a href="roadmap.html">Roadmap</a>
+</li>
+<li class="nav-chapter"><a href="contributing.html">Contributing</a>
+</li>
+  </ul>
+</nav>
+<main>
+<header class="page-head">
+  <h1>Models</h1>
+  <p class="sub">The gateway: five backends, one spec grammar, retries, spend metering.</p>
+</header>
+<h2 id="how-do-i-get-a-model"><a class="anchor" href="#how-do-i-get-a-model">How do I get a model?</a></h2>
+<p><code>get_model(spec)</code> is the only entry point you need; a spec is <code>backend/model</code>, and <code>describe()</code> tells you how one splits without building anything. There are five backends: <code>claude-cli</code> (a Claude subscription, no API key), <code>openrouter</code> (<code>OPENROUTER_API_KEY</code>, one key for most vendors with per-call cost in the response), <code>openai</code> (the OpenAI API directly, or any endpoint via <code>OPENAI_BASE_URL</code>), <code>ollama</code> (no credential, a local server) and <code>mock</code> (a scripted test double). Extra keyword arguments go straight to the backend&#x27;s constructor — <code>temperature=0</code>, <code>max_tokens=512</code>, and the gateway-wide <code>retry_policy=</code> / <code>cost_ceiling_usd=</code> / <code>price_per_million=</code> / <code>spend=</code> all arrive this way. The registry imports each adapter lazily inside the branch that needs it, so a missing optional dependency fails only for the backend that wanted it. <code>openrouter</code>, <code>openai</code> and <code>ollama</code> all speak the OpenAI wire format and share one base class, so they behave identically on everything except money and routing: same <code>bind_tools</code>, same <code>with_structured_output</code>, same streaming and async, same retry policy, same usage envelope.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> describe, get_model
+
+<span class="tok-k">for</span> spec <span class="tok-k">in</span> (
+    <span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>,
+    <span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-haiku-4.5&quot;</span>,
+    <span <span class="tok-k">class</span>="tok-s">&quot;openai/gpt-4o-mini&quot;</span>,
+    <span <span class="tok-k">class</span>="tok-s">&quot;ollama/llama3.1&quot;</span>,
+    <span <span class="tok-k">class</span>="tok-s">&quot;mock/anything&quot;</span>,
+):
+    print(describe(spec))
+
+<span <span class="tok-k">class</span>="tok-c"># The mock backend needs no credential <span class="tok-k">and</span> never leaves the process.</span>
+model = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;mock/anything&quot;</span>, responses=[<span <span class="tok-k">class</span>="tok-s">&quot;hello <span class="tok-k">from</span> a scripted model&quot;</span>])
+print(model.invoke(<span <span class="tok-k">class</span>="tok-s">&quot;say hi&quot;</span>).content)</pre></div>
+<div class="codeblock"><div class="code-lang">text</div><pre class="code-body">{&#x27;spec&#x27;: &#x27;claude-cli/claude-sonnet-5&#x27;, &#x27;backend&#x27;: &#x27;claude-cli&#x27;, &#x27;model&#x27;: &#x27;claude-sonnet-5&#x27;}
+{&#x27;spec&#x27;: &#x27;openrouter/anthropic/claude-haiku-4.5&#x27;, &#x27;backend&#x27;: &#x27;openrouter&#x27;, &#x27;model&#x27;: &#x27;anthropic/claude-haiku-4.5&#x27;}
+{&#x27;spec&#x27;: &#x27;openai/gpt-4o-mini&#x27;, &#x27;backend&#x27;: &#x27;openai&#x27;, &#x27;model&#x27;: &#x27;gpt-4o-mini&#x27;}
+{&#x27;spec&#x27;: &#x27;ollama/llama3.1&#x27;, &#x27;backend&#x27;: &#x27;ollama&#x27;, &#x27;model&#x27;: &#x27;llama3.1&#x27;}
+{&#x27;spec&#x27;: &#x27;mock/anything&#x27;, &#x27;backend&#x27;: &#x27;mock&#x27;, &#x27;model&#x27;: &#x27;anything&#x27;}
+hello from a scripted model</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The model half of a <code>mock/</code> spec is decoration; only <code>responses=</code> matters.</aside>
+<h2 id="how-do-i-write-a-spec-and-what-happens-if-i-typo-one"><a class="anchor" href="#how-do-i-write-a-spec-and-what-happens-if-i-typo-one">How do I write a spec, and what happens if I typo one?</a></h2>
+<p>Only the first segment of a spec is a backend, because OpenRouter model ids are themselves <code>author/slug</code> and must survive intact; <code>:floor</code> and <code>:nitro</code> suffixes are part of the model id and pass through untouched. A bare name gets the default backend, <code>claude-cli</code>. Unrecognised heads are rejected immediately with <code>UnknownBackendError</code> rather than folded into a model name — that rejection is the case this rule exists to catch.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> split_spec
+<span class="tok-k">from</span> grapharc.gateway.registry <span class="tok-k">import</span> UnknownBackendError
+
+print(split_spec(<span <span class="tok-k">class</span>="tok-s">&quot;claude-sonnet-5&quot;</span>))                    <span <span class="tok-k">class</span>="tok-c"># bare -&gt; default backend</span>
+print(split_spec(<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/openai/gpt-4o-mini:floor&quot;</span>))  <span <span class="tok-k">class</span>="tok-c"># author/slug survives</span>
+print(split_spec(<span <span class="tok-k">class</span>="tok-s">&quot;anthropic/claude-haiku-4.5&quot;</span>))         <span <span class="tok-k">class</span>="tok-c"># a known author, NOT openrouter</span>
+print(split_spec(<span <span class="tok-k">class</span>="tok-s">&quot;openai/gpt-4o-mini&quot;</span>))                 <span <span class="tok-k">class</span>="tok-c"># a backend that <span class="tok-k">is</span> also an author</span>
+
+<span class="tok-k">try</span>:
+    split_spec(<span <span class="tok-k">class</span>="tok-s">&quot;opnerouter/openai/gpt-4o-mini&quot;</span>)
+<span class="tok-k">except</span> UnknownBackendError <span class="tok-k">as</span> exc:
+    print(f<span <span class="tok-k">class</span>="tok-s">&quot;UnknownBackendError: {exc}&quot;</span>)</pre></div>
+<div class="codeblock"><div class="code-lang">text</div><pre class="code-body">(&#x27;claude-cli&#x27;, &#x27;claude-sonnet-5&#x27;)
+(&#x27;openrouter&#x27;, &#x27;openai/gpt-4o-mini:floor&#x27;)
+(&#x27;claude-cli&#x27;, &#x27;anthropic/claude-haiku-4.5&#x27;)
+(&#x27;openai&#x27;, &#x27;gpt-4o-mini&#x27;)
+UnknownBackendError: unknown backend &#x27;opnerouter&#x27; in spec &#x27;opnerouter/openai/gpt-4o-mini&#x27;; expected one of: claude-cli, openrouter, openai, ollama, mock — or a bare model name for the claude-cli default</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>anthropic/claude-haiku-4.5</code> looks like an OpenRouter spec and is not one — <code>anthropic</code> is a recognised <em>model author</em>, so it is treated as a bare model name on <code>claude-cli</code>; you only find out when the Claude CLI is asked for a model it does not know. Write <code>openrouter/</code> in front if you mean the broker.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>openai</code> is both a backend name and a model author, and the backend wins — <code>openai/gpt-4o-mini</code> is the OpenAI API. Reaching the same model through the broker is still <code>openrouter/openai/gpt-4o-mini</code>.</aside>
+<h2 id="how-do-i-see-what-my-machine-can-actually-reach"><a class="anchor" href="#how-do-i-see-what-my-machine-can-actually-reach">How do I see what my machine can actually reach?</a></h2>
+<p><code>grapharc models</code> prints the backends and a few example specs and contacts nothing; giving it a spec resolves just that one. <code>--check</code> probes credentials, optional dependencies and <code>PATH</code>, and its output depends on your machine. <code>&lt;unset&gt;</code> is what you see with no key configured; with one, that line shows a redacted fingerprint, never the key. The Ollama line is an address rather than a credential, so it is printed whole — it is where a request <em>would</em> go, not evidence that anything is listening. <code>--check</code> exits non-zero when no <em>real</em> provider is usable; <code>mock</code> being always-available does not count.</p>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body"><span class="tok-p">$ </span><span class="tok-cmd">grapharc models</span>
+backends: claude-cli, openrouter, openai, ollama, mock
+openrouter key: &lt;unset&gt;
+openai key: &lt;unset&gt;
+ollama url: http://localhost:11434/v1
+
+examples:
+  claude-cli/claude-sonnet-5              subscription, no API key
+  openrouter/anthropic/claude-haiku-4.5   many providers, one key
+  openrouter/openai/gpt-4o-mini:floor     cheapest provider for that model
+  openai/gpt-4o-mini                      the OpenAI API directly, your key
+  ollama/llama3.1                         a local server, no key and no bill
+
+grapharc models --check  probes which of these this machine can use</pre></figure>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">console</span></figcaption><pre class="term-body"><span class="tok-p">$ </span><span class="tok-cmd">grapharc models --check</span>
+claude-cli   usable    &#x27;claude&#x27; on PATH at ~/.local/bin/claude
+                       credential: claude subscription login (no API key)
+openrouter   unusable  no API key (set OPENROUTER_API_KEY, or add one to .env)
+                       credential: &lt;unset&gt;
+openai       unusable  no API key (set OPENAI_API_KEY, or add one to .env)
+                       credential: &lt;unset&gt;
+ollama       usable    local server at http://localhost:11434/v1
+                       credential: none needed (local server)
+mock         usable    scripted test double; never reaches a provider
+
+local probe only — no provider was contacted, so a configured key
+is not a validated one.</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>--check</code> cannot tell you a key is valid, in credit, or entitled to the model you named — finding that out costs a request, and the command deliberately does not make one.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>ollama usable</code> is the weakest line in the report: what stands in for a credential is the <code>ollama</code> binary on <code>PATH</code> or a deliberately set <code>OLLAMA_HOST</code>. Neither says the daemon is running nor that you pulled the model; a stopped server shows up as a connection error on the first call.</aside>
+<h2 id="how-do-i-run-on-a-claude-subscription-with-no-api-key"><a class="anchor" href="#how-do-i-run-on-a-claude-subscription-with-no-api-key">How do I run on a Claude subscription with no API key?</a></h2>
+<p>The <code>claude-cli</code> backend drives <code>claude -p</code>, authenticating with your existing Claude Code login so there is no API key anywhere. The tradeoffs are real: no tool-calling (<code>bind_tools</code> raises), no structured output (<code>with_structured_output</code> raises), no real streaming (only <code>_generate</code> is implemented, so <code>.stream()</code> yields one chunk — the whole finished message — and <code>.ainvoke()</code> runs the blocking subprocess in an executor thread), and no caching you control (every call is a fresh <code>claude -p</code> with <code>--no-session-persistence</code> and an empty working directory). The first two are enforced, not documented-and-hoped. It works this way because <code>claude -p</code> is a full agent with its own tools, settings, hooks and <code>CLAUDE.md</code> pickup, none of which GraphARC&#x27;s permission engine can see or veto, so the adapter invokes it as a pure inference endpoint and gives up the agent features on purpose.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> get_model
+
+model = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>, timeout_seconds=120)
+print(model.invoke(<span <span class="tok-k">class</span>="tok-s">&quot;Reply <span class="tok-k">with</span> exactly one word: pong&quot;</span>).content)
+print(model.last_usage)</pre></div>
+<div class="codeblock"><div class="code-lang">text</div><pre class="code-body">[&#x27;claude&#x27;, &#x27;-p&#x27;, &#x27;--output-format&#x27;, &#x27;json&#x27;, &#x27;--model&#x27;, &#x27;claude-sonnet-5&#x27;, &#x27;--setting-sources&#x27;, &#x27;&#x27;, &#x27;--no-session-persistence&#x27;, &#x27;--disallowedTools&#x27;, &#x27;*&#x27;, &#x27;Task&#x27;, &#x27;Bash&#x27;, &#x27;BashOutput&#x27;, &#x27;KillShell&#x27;, &#x27;Read&#x27;, &#x27;Write&#x27;, &#x27;Edit&#x27;, &#x27;MultiEdit&#x27;, &#x27;NotebookEdit&#x27;, &#x27;Glob&#x27;, &#x27;Grep&#x27;, &#x27;WebFetch&#x27;, &#x27;WebSearch&#x27;, &#x27;TodoWrite&#x27;, &#x27;SlashCommand&#x27;, &#x27;Skill&#x27;, &#x27;ExitPlanMode&#x27;, &#x27;--system-prompt&#x27;, &#x27;be terse&#x27;]</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> This backend spends your subscription quota, and quota is not dollars — treat a <code>cost_ceiling_usd</code> here as a proxy for &quot;how much work&quot; rather than a bill you will receive.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The adapter folds the CLI&#x27;s <code>cache_creation</code> / <code>cache_read</code> counts into the usage envelope, but you cannot arrange a cache hit from GraphARC. Keep node contexts lean.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Every tool is denied by name plus a wildcard, with no settings sources and no session. The prompt travels over stdin, and the flags are an argv array handed to <code>subprocess.run</code> with no shell, so a prompt saying &quot;run this command&quot; has no tool to run it with.</aside>
+<h2 id="how-do-i-get-tool-calling-structured-output-streaming-and-as"><a class="anchor" href="#how-do-i-get-tool-calling-structured-output-streaming-and-as">How do I get tool-calling, structured output, streaming and async?</a></h2>
+<p>Use OpenRouter: one key reaches models from most vendors, and because the backend subclasses <code>ChatOpenAI</code> you get the whole LangChain chat-model surface — <code>bind_tools</code>, <code>with_structured_output</code>, <code>.stream()</code>, <code>.ainvoke()</code>. Install the extra (<code>uv sync --extra openrouter</code>) and set <code>OPENROUTER_API_KEY</code> (or put it in a <code>.env</code> file) first. Two constructor defaults are worth knowing: <code>max_tokens</code> defaults to 4096 rather than the model&#x27;s ceiling, and <code>max_retries</code> (the OpenAI SDK&#x27;s own retry layer) defaults to 0.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">model = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/openai/gpt-4o-mini&quot;</span>, api_key=<span <span class="tok-k">class</span>="tok-s">&quot;sk-<span class="tok-k">or</span>-<span class="tok-k">not</span>-a-real-key&quot;</span>)
+
+print(model._llm_type, <span <span class="tok-k">class</span>="tok-s">&quot;|&quot;</span>, model.model_name)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;max_tokens:&quot;</span>, model.max_tokens, <span <span class="tok-k">class</span>="tok-s">&quot;| sdk max_retries:&quot;</span>, model.max_retries)
+
+<span <span class="tok-k">class</span>="tok-c"># Neither of these raises here, <span class="tok-k">and</span> both <span class="tok-k">raise</span> NotImplementedError on claude-cli.</span>
+model.bind_tools([get_weather])
+model.with_structured_output(Verdict)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;bind_tools + with_structured_output: available&quot;</span>)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;ainvoke:&quot;</span>, callable(model.ainvoke), <span <span class="tok-k">class</span>="tok-s">&quot;| stream:&quot;</span>, callable(model.stream))</pre></div>
+<div class="codeblock"><div class="code-lang">text</div><pre class="code-body">grapharc-openrouter | openai/gpt-4o-mini
+max_tokens: 4096 | sdk max_retries: 0
+bind_tools + with_structured_output: available
+ainvoke: True | stream: True</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> OpenRouter reserves credit against <code>max_tokens</code> before generating anything, so asking for a 64k ceiling on a small balance is refused outright with a 402 — even for a ten-token reply. Raise it deliberately when a node needs the room.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> SDK <code>max_retries=0</code> because GraphARC has its own; two layers compose into <code>max_attempts * sdk_retries</code> requests against a provider that just said 429. Pass <code>max_retries=</code> explicitly to get the SDK&#x27;s back.</aside>
+<h2 id="how-do-i-use-my-own-openai-key"><a class="anchor" href="#how-do-i-use-my-own-openai-key">How do I use my own OpenAI key?</a></h2>
+<p><code>openai/…</code> goes straight to api.openai.com with no broker in between, which is what a contract naming who may see the prompt tends to require. The gateway accepts <code>OPENAI_API_KEY</code>, <code>OPENAI_KEY</code>, or <code>openai-api-key</code> in a file; <code>langchain-openai</code> would read the environment variable itself, so going through the gateway is what adds the file, the spellings, and an error naming the variable instead of an SDK exception four frames down. <code>max_tokens</code> is <code>None</code> here where OpenRouter defaults to 4096, because that default exists to dodge OpenRouter&#x27;s credit reservation and OpenAI reserves nothing. <code>OPENAI_BASE_URL</code> (or the older <code>OPENAI_API_BASE</code>) is honoured, making this the backend for any OpenAI-compatible endpoint that is not Ollama — a corporate gateway, a proxy, a self-hosted vLLM.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> get_model
+
+priced = get_model(
+    <span <span class="tok-k">class</span>="tok-s">&quot;openai/gpt-4o-mini&quot;</span>,
+    api_key=<span <span class="tok-k">class</span>="tok-s">&quot;sk-<span class="tok-k">not</span>-a-real-key&quot;</span>,
+    price_per_million={<span <span class="tok-k">class</span>="tok-s">&quot;input&quot;</span>: 0.15, <span <span class="tok-k">class</span>="tok-s">&quot;cached_input&quot;</span>: 0.075, <span <span class="tok-k">class</span>="tok-s">&quot;output&quot;</span>: 0.60},
+)
+unpriced = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;openai/gpt-4o-mini&quot;</span>, api_key=<span <span class="tok-k">class</span>="tok-s">&quot;sk-<span class="tok-k">not</span>-a-real-key&quot;</span>)</pre></div>
+<div class="codeblock"><div class="code-lang">text</div><pre class="code-body">with a rate card  cost_usd=0.18 unpriced_calls=0
+without one       cost_usd=None unpriced_calls=1</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The OpenAI API does not tell you what a call cost — the response carries token counts and no price. So <code>cost_usd</code> is <code>None</code>, the call lands in <code>SpendMeter.unpriced_calls</code>, and a <code>cost_ceiling_usd</code> on this backend counts calls instead of enforcing dollars.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Two explicit ways to get a real number: <code>price_per_million=</code> on the model, or price the whole trace afterwards with <code>observe.cost.RateCard</code>. A price table baked into the repo would go stale the first time a vendor changed one. Token counts are always real, so a <em>token</em> budget (<code>runtime.budget</code>) bites regardless.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> With a custom base URL the trace still says <code>grapharc-openai</code>, and your spec string is the only record of where the request actually went.</aside>
+<h2 id="how-do-i-run-models-on-my-own-machine"><a class="anchor" href="#how-do-i-run-models-on-my-own-machine">How do I run models on my own machine?</a></h2>
+<p><code>ollama/…</code> talks to a local Ollama server over its OpenAI-compatible endpoint — no key, no bill, no network egress — and, unlike <code>claude-cli</code>, full tool-calling, so it is the cheapest way to exercise an agent node. The <code>api key sent: ollama</code> value is a placeholder: Ollama ignores the <code>Authorization</code> header and the OpenAI client refuses to send an empty one, so a constant with nothing to protect is sent; set <code>OLLAMA_API_KEY</code> when the address points at an authenticating proxy. <code>OLLAMA_HOST</code> — the variable the <code>ollama</code> CLI itself reads — is accepted in the shorthand forms people actually write, and the port is filled in only for the bare form, since a value with a scheme is a URL and is left to URL rules. Cost is charged <code>0.0</code> and does <em>not</em> land in <code>unpriced_calls</code>, because that means &quot;the meter missed a bill&quot; and here there is none to miss.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway.config <span class="tok-k">import</span> normalize_ollama_base_url
+
+<span class="tok-k">for</span> raw <span class="tok-k">in</span> (<span <span class="tok-k">class</span>="tok-s">&quot;127.0.0.1:11434&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;gpu-box&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;http://gpu-box:11434&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;https://ollama.internal/v1/&quot;</span>):
+    print(f&quot;{raw:&lt;28} -&gt; {normalize_ollama_base_url(raw)}&quot;)</pre></div>
+<div class="codeblock"><div class="code-lang">text</div><pre class="code-body">127.0.0.1:11434              -&gt; http://127.0.0.1:11434/v1
+gpu-box                      -&gt; http://gpu-box:11434/v1
+http://gpu-box:11434         -&gt; http://gpu-box:11434/v1
+https://ollama.internal/v1/  -&gt; https://ollama.internal/v1</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Tool-calling depends on the model you pulled, not on this adapter. Ollama accepts a <code>tools</code> array for every model and quietly returns prose for one not trained to emit tool calls, so <code>bind_tools</code> cannot raise the way <code>claude-cli</code>&#x27;s does — the failure shows up as an agent loop that never calls a tool.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Nothing here checks that the server is running; a stopped daemon is a connection error on the first call, and <code>grapharc models --check</code> reports configuration only.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Electricity and an occupied GPU are real costs but not provider charges; pass <code>price_per_million=</code> if you want them attributed anyway.</aside>
+<h2 id="how-do-i-give-a-reviewer-a-genuinely-different-provider"><a class="anchor" href="#how-do-i-give-a-reviewer-a-genuinely-different-provider">How do I give a reviewer a genuinely different provider?</a></h2>
+<p>A verifier that grades its author&#x27;s own model family is correlated evidence, and <code>different_providers()</code> answers that question by comparing the <em>vendor</em> rather than the object. Two specs from the same author are <code>False</code> even though they are different models — that is the point — and the same vendor reached two different ways (<code>claude-cli/claude-sonnet-5</code> vs <code>openrouter/anthropic/…</code>, <code>openai/gpt-4o-mini</code> vs <code>openrouter/openai/gpt-4o-mini</code>) is <code>False</code> too. Both used to read <code>True</code>, because the check short-circuited whenever the backends differed, and adding a direct <code>openai</code> backend made that failure trivial to hit. The CLI wires this into live runs: <code>grapharc demo stage5 --model … --reviewer-model …</code> warns when the pair is correlated and proceeds anyway, because a stated weakness beats a silent one.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> different_providers
+
+pairs = [
+    (<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-haiku-4.5&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;openrouter/openai/gpt-4o-mini&quot;</span>),
+    (<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-opus-4.5&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-haiku-4.5&quot;</span>),
+    (<span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;openrouter/openai/gpt-4o-mini&quot;</span>),
+    (<span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-haiku-4.5&quot;</span>),
+    (<span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-haiku-4.5&quot;</span>),
+    (<span <span class="tok-k">class</span>="tok-s">&quot;openai/gpt-4o-mini&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;openrouter/openai/gpt-4o-mini&quot;</span>),
+    (<span <span class="tok-k">class</span>="tok-s">&quot;ollama/llama3.1&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;openai/gpt-4o-mini&quot;</span>),
+]
+<span class="tok-k">for</span> author, reviewer <span class="tok-k">in</span> pairs:
+    print(f&quot;{different_providers(author, reviewer)!s:&lt;5} {author}  vs  {reviewer}&quot;)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Two blind spots remain, neither fixable by comparing strings: a re-seller fronting someone else&#x27;s model under its own slug is invisible, and <code>ollama/llama3.1</code> vs a Llama served over OpenRouter reads <code>True</code> although they are the same family of weights.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Read the result as &quot;am I obviously grading my own family&quot;, not as a proof of independence.</aside>
+<h2 id="how-do-i-add-fallbacks-and-steer-provider-routing"><a class="anchor" href="#how-do-i-add-fallbacks-and-steer-provider-routing">How do I add fallbacks and steer provider routing?</a></h2>
+<p>OpenRouter has two independent failover layers and GraphARC exposes both as constructor arguments: <code>fallback_models</code> is model-level (try a different model), while <code>provider_order</code> and friends are provider-level (try a different host serving the <em>same</em> model). The primary model is always first in <code>models</code>, and an <code>openrouter/</code> prefix on a fallback is stripped. <code>sort</code> takes <code>&quot;price&quot;</code>, <code>&quot;throughput&quot;</code> or <code>&quot;latency&quot;</code>; <code>max_price_per_million</code> caps the prompt price; <code>require_parameters=True</code> filters out providers that would silently drop a parameter you sent. Set none of them and the whole <code>provider</code> block is omitted rather than sent empty. None of these are OpenAI parameters, so they ride in <code>extra_body</code>, which <code>langchain-openai</code> merges into the JSON body verbatim.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">model = get_model(
+    <span <span class="tok-k">class</span>="tok-s">&quot;openrouter/openai/gpt-4o-mini&quot;</span>,
+    api_key=<span <span class="tok-k">class</span>="tok-s">&quot;sk-<span class="tok-k">or</span>-<span class="tok-k">not</span>-a-real-key&quot;</span>,
+    fallback_models=[<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-haiku-4.5&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;google/gemini-2.5-flash&quot;</span>],
+    provider_order=[<span <span class="tok-k">class</span>="tok-s">&quot;openai&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;azure&quot;</span>],
+    allow_provider_fallbacks=<span class="tok-k">False</span>,
+    sort=<span <span class="tok-k">class</span>="tok-s">&quot;price&quot;</span>,
+    max_price_per_million=2.5,
+    require_parameters=<span class="tok-k">True</span>,
+)
+
+body = model._get_request_payload([HumanMessage(content=<span <span class="tok-k">class</span>="tok-s">&quot;hi&quot;</span>)])[<span <span class="tok-k">class</span>="tok-s">&quot;extra_body&quot;</span>]
+print(json.dumps(body, indent=2))</pre></div>
+<div class="codeblock"><div class="code-lang">json</div><pre class="code-body">{
+  <span class="tok-k">&quot;usage&quot;</span>: { <span class="tok-k">&quot;include&quot;</span>: true },
+  <span class="tok-k">&quot;models&quot;</span>: [&quot;openai/gpt-4o-mini&quot;, &quot;anthropic/claude-haiku-4.5&quot;, &quot;google/gemini-2.5-flash&quot;],
+  <span class="tok-k">&quot;provider&quot;</span>: {
+    <span class="tok-k">&quot;order&quot;</span>: [&quot;openai&quot;, &quot;azure&quot;],
+    <span class="tok-k">&quot;allow_fallbacks&quot;</span>: false,
+    <span class="tok-k">&quot;sort&quot;</span>: <span class="tok-s">&quot;price&quot;</span>,
+    <span class="tok-k">&quot;max_price&quot;</span>: { <span class="tok-k">&quot;prompt&quot;</span>: 2.5 },
+    <span class="tok-k">&quot;require_parameters&quot;</span>: true
+  }
+}</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>_get_request_payload</code> is internal and shown only to expose the bytes; in normal use you set constructor arguments and forget about it.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Failed requests are not billed by OpenRouter, which is why <code>allow_provider_fallbacks</code> defaults to <code>True</code> — leaving failover on costs nothing when it fires.</aside>
+<h2 id="how-do-i-know-what-a-call-cost"><a class="anchor" href="#how-do-i-know-what-a-call-cost">How do I know what a call cost?</a></h2>
+<p>Every backend fills in the same <code>last_usage</code> envelope after every non-streamed call, so a meter reads one shape whichever backend ran the turn. Cached input is still input: the envelope folds <code>cache_creation</code> and <code>cache_read</code> into <code>input_tokens</code> and keeps the breakdown in <code>input_token_details</code>, with the raw uncached figure preserved as <code>uncached_input_tokens</code>. In the worked example <code>input_tokens</code> is 1812, not the provider&#x27;s 12. <code>cost_usd</code> is <code>None</code> when nobody could price the call.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">model = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>)
+<span class="tok-k">with</span> patch.object(subprocess, <span <span class="tok-k">class</span>="tok-s">&quot;run&quot;</span>, <span class="tok-k">lambda</span> *a, **k: Completed()):
+    print(model.invoke(<span <span class="tok-k">class</span>="tok-s">&quot;ping&quot;</span>).content)
+<span class="tok-k">for</span> key, value <span class="tok-k">in</span> model.last_usage.items():
+    print(f<span <span class="tok-k">class</span>="tok-s">&quot;  {key}: {value}&quot;</span>)</pre></div>
+<div class="codeblock"><div class="code-lang">text</div><pre class="code-body">pong
+  input_tokens: 1812
+  output_tokens: 5
+  total_tokens: 1817
+  input_token_details: {&#x27;cache_creation&#x27;: 300, &#x27;cache_read&#x27;: 1500}
+  uncached_input_tokens: 12
+  cost_usd: 0.0123
+  model: claude-sonnet-5
+  retries: 0
+  cumulative_cost_usd: 0.0123</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Counting only the provider&#x27;s <code>input_tokens</code> field is how a budget under-counts a real run by an order of magnitude, because most of a turn&#x27;s prompt arrives as cache traffic.</aside>
+<h2 id="how-do-i-stop-a-graph-spending-more-than-a-fixed-amount"><a class="anchor" href="#how-do-i-stop-a-graph-spending-more-than-a-fixed-amount">How do I stop a graph spending more than a fixed amount?</a></h2>
+<p>A <code>SpendMeter</code> accumulates <code>cost_usd</code> and refuses to go past a ceiling, enforcing at two points: after a call, so overspend is bounded by the single call that crossed the line, and before the next one, so an exhausted budget never reaches the provider at all. The two messages differ — &quot;exceeded&quot; is the call that crossed, &quot;reached before this call&quot; is every call after it — and the crossing call is charged <em>before</em> the raise, so a run catching <code>CostCeilingExceeded</code> still knows what it actually spent. You rarely build the meter by hand: <code>cost_ceiling_usd=</code> seeds one per model, and <code>spend=</code> shares one across several, which is what you want for a whole run. This is separate from <code>Budget(max_tokens=…)</code>, which the <em>runtime</em> meters per run — the spend meter is per model object (or shared group) and counts dollars; the budget is per run and counts tokens, iterations and seconds.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> CostCeilingExceeded, SpendMeter
+
+meter = SpendMeter(ceiling_usd=0.10)
+meter.charge(0.04, model=<span <span class="tok-k">class</span>="tok-s">&quot;claude-sonnet-5&quot;</span>)
+meter.charge(0.05, model=<span <span class="tok-k">class</span>="tok-s">&quot;claude-sonnet-5&quot;</span>)
+<span class="tok-k">try</span>:
+    meter.charge(0.03, model=<span <span class="tok-k">class</span>="tok-s">&quot;gpt-4o-mini&quot;</span>)
+<span class="tok-k">except</span> CostCeilingExceeded <span class="tok-k">as</span> exc:
+    print(exc)
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;spent after the <span class="tok-k">raise</span>:&quot;</span>, exc.spent_usd)
+
+<span <span class="tok-k">class</span>="tok-c"># The next call <span class="tok-k">is</span> refused before it reaches a provider.</span>
+<span class="tok-k">try</span>:
+    meter.ensure_headroom(model=<span <span class="tok-k">class</span>="tok-s">&quot;gpt-4o-mini&quot;</span>)
+<span class="tok-k">except</span> CostCeilingExceeded <span class="tok-k">as</span> exc:
+    print(exc)
+
+print(meter.snapshot())</pre></div>
+<div class="codeblock"><div class="code-lang">text</div><pre class="code-body">cost ceiling exceeded: $0.120000 spent of $0.100000 after 3 call(s); this call cost $0.030000 — model &#x27;gpt-4o-mini&#x27;
+spent after the raise: 0.12
+cost ceiling reached before this call: $0.120000 spent of $0.100000 over 3 call(s) — model &#x27;gpt-4o-mini&#x27;
+{&#x27;spent_usd&#x27;: 0.12, &#x27;ceiling_usd&#x27;: 0.1, &#x27;calls&#x27;: 3, &#x27;unpriced_calls&#x27;: 0, &#x27;per_model_usd&#x27;: {&#x27;claude-sonnet-5&#x27;: 0.09, &#x27;gpt-4o-mini&#x27;: 0.03}}</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A ceiling can only enforce against costs the provider reports; <code>unpriced_calls &gt; 0</code> is your signal that the ceiling saw less than the whole bill.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The meter is unsynchronised — sharing one across concurrent nodes means a check can interleave with a charge, so the bound is approximate by at most the number of calls in flight.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> In the end-to-end example <code>calls</code> stayed at 2: the third invocation never spawned a process.</aside>
+<h2 id="what-happens-to-cost-accounting-when-i-stream"><a class="anchor" href="#what-happens-to-cost-accounting-when-i-stream">What happens to cost accounting when I stream?</a></h2>
+<p>This is the one place where the accounting is knowingly incomplete, so it gets its own recipe rather than a footnote. A streamed call is checked against the ceiling <em>before</em> it starts and lands in <code>unpriced_calls</code> afterwards. LangChain routes streamed calls through <code>_stream</code>, never <code>_generate</code>, and OpenRouter reports the per-call cost in the final SSE chunk, which <code>langchain-openai</code> does not surface — so <code>last_usage</code> is cleared to <code>None</code> rather than left holding the previous call&#x27;s numbers, and the meter records that it missed one instead of implying it saw the whole bill.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">meter = SpendMeter(ceiling_usd=0.01)
+model = get_model(
+    <span <span class="tok-k">class</span>="tok-s">&quot;openrouter/openai/gpt-4o-mini&quot;</span>,
+    api_key=<span <span class="tok-k">class</span>="tok-s">&quot;sk-<span class="tok-k">or</span>-<span class="tok-k">not</span>-a-real-key&quot;</span>,
+    spend=meter,
+    streaming=<span class="tok-k">True</span>,
+)
+
+<span class="tok-k">with</span> patch.object(ChatOpenAI, <span <span class="tok-k">class</span>="tok-s">&quot;_stream&quot;</span>, <span class="tok-k">lambda</span> self, *a, **k: iter(CHUNKS)):
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>.join(c.content <span class="tok-k">for</span> c <span class="tok-k">in</span> model.stream(<span <span class="tok-k">class</span>="tok-s">&quot;ping&quot;</span>)))
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;last_usage:&quot;</span>, model.last_usage)
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;meter:&quot;</span>, meter.snapshot())</pre></div>
+<div class="codeblock"><div class="code-lang">text</div><pre class="code-body">pong
+last_usage: None
+meter: {&#x27;spent_usd&#x27;: 0.0, &#x27;ceiling_usd&#x27;: 0.01, &#x27;calls&#x27;: 1, &#x27;unpriced_calls&#x27;: 1, &#x27;per_model_usd&#x27;: {}}</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> Streamed calls are never retried — tokens already handed to the caller cannot be un-handed.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> If cost enforcement matters more than time-to-first-token for a node, do not stream that node.</aside>
+<h2 id="what-gets-retried-and-what-does-not"><a class="anchor" href="#what-gets-retried-and-what-does-not">What gets retried, and what does not?</a></h2>
+<p>A model call fails in two ways and treating them alike is expensive in both directions. <code>is_transient</code> is the whole policy, and it is closed by default: an exception has to present evidence of transience to be retried. Retried: 408, 409, 425, 429, any 5xx (529 included), connection and timeout errors that never reached a verdict, and anything raised as <code>TransientGatewayError</code>. Not retried: 400, 401, 402, 403, 404, 422, a content refusal, <code>CostCeilingExceeded</code> (spending more cannot fix having spent too much), and — importantly — anything unrecognised.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> GatewayError, TransientGatewayError, is_transient
+
+cases = [
+    HTTPError(429), HTTPError(503), HTTPError(529),
+    HTTPError(400), HTTPError(401), HTTPError(402),
+    TimeoutError(<span <span class="tok-k">class</span>="tok-s">&quot;read timed out&quot;</span>),
+    ConnectionError(<span <span class="tok-k">class</span>="tok-s">&quot;reset by peer&quot;</span>),
+    TransientGatewayError(<span <span class="tok-k">class</span>="tok-s">&quot;overloaded&quot;</span>),
+    GatewayError(<span <span class="tok-k">class</span>="tok-s">&quot;<span class="tok-k">not</span> logged <span class="tok-k">in</span>&quot;</span>),
+    ValueError(<span <span class="tok-k">class</span>="tok-s">&quot;I cannot help <span class="tok-k">with</span> that&quot;</span>),   <span <span class="tok-k">class</span>="tok-c"># a refusal <span class="tok-k">is</span> a verdict</span>
+]
+<span class="tok-k">for</span> exc <span class="tok-k">in</span> cases:
+    print(f&quot;{is_transient(exc)!s:&lt;5} {type(exc).__name__}: {exc}&quot;)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> A missed retry costs one failed call; a wrong retry multiplies a deterministic failure by <code>max_attempts</code>.</aside>
+<h2 id="how-long-does-it-wait-between-attempts"><a class="anchor" href="#how-long-does-it-wait-between-attempts">How long does it wait between attempts?</a></h2>
+<p>Delay before attempt <em>n+1</em> is <code>initial * multiplier**(n-1)</code>, capped at <code>max_backoff_seconds</code>, then multiplied by a random factor in <code>[1 - jitter, 1]</code>. The defaults are 3 attempts, 0.5s initial, 20s cap, ×2, 25% jitter. Jitter <em>shrinks</em> the delay rather than centring it, so every draw is strictly larger than the previous attempt&#x27;s, not merely larger on average — a burst of unlucky short waits hammering a provider that just said 429 is exactly what that avoids. A provider&#x27;s <code>Retry-After</code> header raises the wait but never lowers it, and is itself capped by <code>max_backoff_seconds</code>. Wire a policy into a model with <code>retry_policy=</code>; <code>NO_RETRY</code> is the one-attempt policy. The CLI has no status codes, so its failures are classified from their own text, and the deterministic markers are checked first and win.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">policy = RetryPolicy(max_attempts=4, initial_backoff_seconds=0.5, jitter=0.25)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;un-jittered backoff:&quot;</span>, [policy.base_delay(n) <span class="tok-k">for</span> n <span class="tok-k">in</span> range(1, 5)])
+<span <span class="tok-k">class</span>="tok-c"># `sleep=` <span class="tok-k">is</span> the seam that keeps this fast: nothing actually waits.</span>
+print(call_with_retry(flaky, policy=policy, sleep=waited.append))
+print(<span <span class="tok-k">class</span>="tok-s">&quot;attempts:&quot;</span>, len(attempts), <span <span class="tok-k">class</span>="tok-s">&quot;waits:&quot;</span>, [round(w, 3) <span class="tok-k">for</span> w <span class="tok-k">in</span> waited])</pre></div>
+<div class="codeblock"><div class="code-lang">text</div><pre class="code-body">un-jittered backoff: [0.5, 1.0, 2.0, 4.0]
+ok
+attempts: 3 waits: [0.486, 0.976]
+HTTP 400 -&gt; attempts: 1 waits: []</pre></div>
+<div class="codeblock"><div class="code-lang">text</div><pre class="code-body">pong after 3 attempts
+retries recorded in the envelope: 2
+claude -p exited 1: Invalid API key · Please run /login -&gt; 1 attempt(s)</pre></div>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The <code>waits:</code> figures differ on every run — that is the jitter, and it is the one snippet on the page whose output the test runs but does not compare byte-for-byte.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>&quot;Not logged in. Please try again&quot;</code> contains &quot;try again&quot; and is still not retried, because retrying a login failure three times fixes nothing.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> On <code>claude-cli</code> a timeout counts as transient and <code>timeout_seconds</code> defaults to 600, so worst-case latency is <code>max_attempts * timeout_seconds</code> — half an hour on the defaults. Lower one of the two for a latency-sensitive node.</aside>
+<h2 id="how-do-i-test-all-of-this-without-spending-anything"><a class="anchor" href="#how-do-i-test-all-of-this-without-spending-anything">How do I test all of this without spending anything?</a></h2>
+<p><code>ScriptedChatModel</code> replays a fixed list of responses and records what it was asked; this is how the entire GraphARC test suite runs — the gate tests verify orchestration mechanics (routing, budgets, traces, replay) and scripted responses exercise those deterministically. Running off the end of the script raises by default, because a graph that made more model calls than you scripted has changed behaviour; <code>on_exhausted=&quot;repeat&quot;</code> is there for loops whose iteration count is not the thing under test. Dropped into a graph it is the same object the real backends are, so swapping the backend is a one-line change. The runtime meters the model call itself — the node never touches the budget — because a LangChain callback is installed for the duration of every node, so any chat model invoked on that thread reports usage to the run&#x27;s meter, including calls buried in library code the node merely called. The ceiling is enforced <em>inside</em> <code>on_llm_end</code>, at the call that crossed the line, rather than at the node boundary after everything has already been paid for.</p>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.testing <span class="tok-k">import</span> ScriptedChatModel
+
+model = ScriptedChatModel(responses=[<span <span class="tok-k">class</span>="tok-s">&quot;first answer&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;second answer&quot;</span>])
+print(model.invoke(<span <span class="tok-k">class</span>="tok-s">&quot;q1&quot;</span>).content)
+reply = model.invoke(<span <span class="tok-k">class</span>="tok-s">&quot;q2&quot;</span>)
+print(reply.content, reply.usage_metadata)
+print(<span <span class="tok-k">class</span>="tok-s">&quot;calls:&quot;</span>, model.call_count, <span <span class="tok-k">class</span>="tok-s">&quot;| first prompt:&quot;</span>, model.calls[0][0].content)
+
+<span class="tok-k">try</span>:
+    model.invoke(<span <span class="tok-k">class</span>="tok-s">&quot;q3&quot;</span>)
+<span class="tok-k">except</span> RuntimeError <span class="tok-k">as</span> exc:
+    print(<span <span class="tok-k">class</span>="tok-s">&quot;exhausted:&quot;</span>, exc)
+
+repeating = ScriptedChatModel(responses=[<span <span class="tok-k">class</span>="tok-s">&quot;same&quot;</span>], on_exhausted=<span <span class="tok-k">class</span>="tok-s">&quot;repeat&quot;</span>)
+print([repeating.invoke(str(n)).content <span class="tok-k">for</span> n <span class="tok-k">in</span> range(3)])</pre></div>
+<figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">grapharc demo stage1 --model openrouter/anthropic/claude-haiku-4.5
+grapharc demo stage5 --model claude-cli/claude-sonnet-5 \
+                    --reviewer-model openrouter/openai/gpt-4o-mini</pre></figure>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>ScriptedChatModel</code> token counts are estimated (<code>len(text) // 4</code>), not tokenised — good enough to exercise metering paths, useless as a token count.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> <code>Error in MeterCallbackHandler.on_llm_end callback: BudgetExceeded(...)</code> on stderr is expected: LangChain logs callback exceptions on the way out and GraphARC&#x27;s token meter sets <code>raise_error = True</code> so a budget ceiling cannot be swallowed. The cost is one log line per stopped run.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The callback does not see a model invoked on a thread the node started itself (<code>threading.Thread</code> does not inherit context variables — run the target through <code>contextvars.copy_context().run(...)</code>), nor spend a provider never reports.</aside>
+<aside class="edge"><span class="edge-tag">sharp edge</span> The suite&#x27;s own live tests are marked <code>live</code> and deselected by default; <code>pytest -m live</code> is the only way to run them.</aside>
+<footer class="pager-row">
+<a class="pager prev" href="getting-started.html">&larr; Getting started</a><span class="pager-spacer"></span><a class="pager next" href="agents-and-tools.html">Agents & tools &rarr;</a>
+</footer>
+<footer class="colophon">
+  Generated from the repository's README and cookbook (docs/cookbook/01–06) ·
+  <a href="https://github.com/CodeGraphContext/GraphARC">CodeGraphContext/GraphARC</a> · MIT license
+</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var links = document.querySelectorAll('.nav-chapter ul a');
+  var byId = {};
+  links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+  var current = null;
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        var a = byId[e.target.id];
+        if (a) {
+          if (current) current.classList.remove('active');
+          a.classList.add('active');
+          current = a;
+        }
+      }
+    });
+  }, { rootMargin: '0px 0px -70% 0px' });
+  document.querySelectorAll('main h2[id]').forEach(function (h) { obs.observe(h); });
+})();
+</script>
+</body>
+</html>
