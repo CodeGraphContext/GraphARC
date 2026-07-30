@@ -146,13 +146,29 @@ def resolve_edge_policy(policy_path: Path | None, *, tenant: str) -> tuple[Any, 
     return policy, f"{policy_path} (tenant {tenant!r}, {len(policy.rules)} edge rule(s))"
 
 
-def _model_for(spec: str | None) -> tuple[Any, str]:
-    """The scripted planner by default; a real backend when asked for one."""
+def _model_for(spec: str | None, registry_target: str = DEFAULT_REGISTRY) -> tuple[Any, str]:
+    """The scripted planner by default; a real backend when asked for one.
+
+    The scripted replies come from the registry module when it supplies
+    `scripted_planner_replies`, because a script that proposes one registry's
+    kinds against another registry's catalog is rejected every round — the
+    incident replies against the docs registry produced five rounds of
+    `unregistered_node` and a `planning_failed`. The incident module's replies
+    stay the fallback for modules that ship none.
+    """
     if spec is None:
-        from grapharc.examples.plan_incident import scripted_planner_replies
         from grapharc.testing import ScriptedChatModel
 
-        return ScriptedChatModel(responses=scripted_planner_replies()), "scripted"
+        module_name = registry_target.split(":", 1)[0]
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError as exc:
+            raise PlanSetupError(f"--registry {registry_target!r}: {exc}") from exc
+        replies = getattr(module, "scripted_planner_replies", None)
+        if replies is None:
+            from grapharc.examples.plan_incident import scripted_planner_replies as replies
+
+        return ScriptedChatModel(responses=replies()), "scripted"
     from grapharc.gateway import get_model
 
     return get_model(spec), spec
@@ -191,7 +207,7 @@ def plan(
         tenant = settings.resolve("tenant", tenant, "default")
         max_rounds = settings.resolve("max_rounds", max_rounds, 8)
         max_tokens = settings.resolve("max_tokens", max_tokens, 100_000)
-        model, model_description = _model_for(model_spec)
+        model, model_description = _model_for(model_spec, registry_target)
         bundle = resolve_registry(registry_target, model)
         registry, state_schema, writes = bundle.registry, bundle.state_schema, bundle.writes
         edge_policy, policy_description, policy_source = resolve_or_generate_policy(

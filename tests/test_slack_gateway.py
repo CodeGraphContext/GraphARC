@@ -102,6 +102,20 @@ def test_registry_config_and_json_are_refused(tmp_path):
             parse_command(f"run graph.toml {flag}", workdir=tmp_path)
 
 
+def test_plan_registry_admits_only_the_shipped_modules(tmp_path):
+    argv = parse_command(
+        "plan goal --registry grapharc.examples.plan_docs:build_registry",
+        workdir=tmp_path,
+    )
+    assert argv[-1] == "grapharc.examples.plan_docs:build_registry"
+    with pytest.raises(SlackCommandError, match="shipped registries"):
+        parse_command("plan goal --registry os:system", workdir=tmp_path)
+    with pytest.raises(SlackCommandError, match="shipped registries"):
+        parse_command(
+            "plan goal --registry=evil.module:build_registry", workdir=tmp_path
+        )
+
+
 def test_model_is_refused_by_default_and_admitted_on_opt_in(tmp_path):
     with pytest.raises(SlackCommandError, match="paid backend"):
         parse_command("plan 'a goal' --model mock/x", workdir=tmp_path)

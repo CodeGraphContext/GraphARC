@@ -13,7 +13,9 @@ rules, and why each exists:
 - **Flags are allowlisted per subcommand.** `--registry MODULE:ATTR` imports
   an arbitrary module on the host, `--config PATH` swaps the governing file,
   and `--json`/`--no-color` fight the bot's own output handling — none are
-  reachable from Slack.
+  reachable from Slack, with one carve-out: `plan --registry` accepts exactly
+  the registry modules this package ships (`PLAN_REGISTRIES`), because code
+  the wheel itself carries is the operator's, not the requester's.
 - **`--model` is refused unless the operator opted in**, because it reaches a
   paid backend. Without it every allowed command runs the scripted, spend-free
   path; the default answer to "can Slack cost me money?" is no.
@@ -47,10 +49,24 @@ class CommandSpec:
     path_positionals: frozenset[int] = frozenset()
     # value flags that reach a paid backend; admitted only with allow_model
     model_flags: frozenset[str] = frozenset()
+    # flag -> the exact values it may take. How `--registry` stays shut against
+    # arbitrary imports while the registries this package ships stay reachable.
+    choice_flags: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
 _BUDGET = {"--max-tokens": False, "--max-iterations": False, "--max-seconds": False}
 _NAMED_RUN = {"--trace": True, "--run-id": False}
+
+#: The only `--registry` values `plan` accepts from Slack: the two registries
+#: this package ships. The flag stays refused everywhere else — its value is
+#: an arbitrary `module:attr` import, which is exactly what the gate exists to
+#: prevent — but a registry the wheel itself carries is the operator's code.
+PLAN_REGISTRIES = frozenset(
+    {
+        "grapharc.examples.plan_incident:build_registry",
+        "grapharc.examples.plan_docs:build_registry",
+    }
+)
 
 ALLOWED_COMMANDS: dict[str, CommandSpec] = {
     "demo": CommandSpec(
@@ -77,6 +93,7 @@ ALLOWED_COMMANDS: dict[str, CommandSpec] = {
             "--max-tokens": False,
         },
         model_flags=frozenset({"--model"}),
+        choice_flags={"--registry": PLAN_REGISTRIES},
     ),
     "models": CommandSpec(bool_flags=frozenset({"--check"})),
     "agent": CommandSpec(
@@ -188,8 +205,8 @@ def parse_command(
                         "the operator enables it with GRAPHARC_SLACK_ALLOW_MODEL=1"
                     )
                 is_path = False
-            elif flag in spec.value_flags:
-                is_path = spec.value_flags[flag]
+            elif flag in spec.choice_flags or flag in spec.value_flags:
+                is_path = spec.value_flags.get(flag, False)
             else:
                 raise SlackCommandError(f"`{flag}` is not allowed on `{name}` from Slack")
             if eq:
@@ -200,6 +217,11 @@ def parse_command(
                     raise SlackCommandError(f"`{flag}` needs a value")
                 value = rest[index + 1]
                 index += 2
+            if flag in spec.choice_flags and value not in spec.choice_flags[flag]:
+                allowed = ", ".join(f"`{v}`" for v in sorted(spec.choice_flags[flag]))
+                raise SlackCommandError(
+                    f"`{flag}` accepts only the shipped registries from Slack: {allowed}"
+                )
             if is_path:
                 _confined(value, workdir)
             argv.extend([flag, value])
