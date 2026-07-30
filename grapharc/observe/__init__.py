@@ -13,6 +13,8 @@ from grapharc.observe.cost import (
     ThreadCost,
     attribute,
     attribute_thread,
+    by_node,
+    tokens_by_model,
 )
 from grapharc.observe.metrics import RunMetrics, summarize, to_mermaid
 from grapharc.observe.otel import (
@@ -62,6 +64,7 @@ __all__ = [
     "TraceRecorder",
     "attribute",
     "attribute_thread",
+    "by_node",
     "diff_runs",
     "diff_trace",
     "export_run",
@@ -73,4 +76,5 @@ __all__ = [
     "summarize",
     "to_mermaid",
     "to_spans",
+    "tokens_by_model",
 ]
