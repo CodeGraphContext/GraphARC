@@ -108,9 +108,14 @@ otel = [
 api = [
     "anthropic>=0.40",
 ]
+# Imported (lazily) by grapharc/slack/bot.py: the Socket Mode bot that runs the
+# CLI from a Slack workspace. Everything else in grapharc/slack/ is stdlib-only.
+slack = [
+    "slack-bolt>=1.20",
+]
 # Everything above. Self-referential so it cannot drift out of sync.
 all = [
-    "grapharc[api,ladybug,mcp,memory,ollama,openai,openrouter,otel,server]",
+    "grapharc[api,ladybug,mcp,memory,ollama,openai,openrouter,otel,server,slack]",
 ]
 
 [dependency-groups]
