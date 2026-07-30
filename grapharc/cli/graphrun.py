@@ -102,6 +102,9 @@ def run_graph(
     registry_target: str | None = None,
     policy_path: Path | None = None,
     max_tokens: int | None = None,
+    max_iterations: int | None = None,
+    max_seconds: float | None = None,
+    max_concurrency: int | None = None,
     tenant: str | None = None,
     trace_path: Path | None = None,
     run_id: str | None = None,
@@ -132,6 +135,9 @@ def run_graph(
         policy_path = settings.resolve_path("policy", policy_path)
         tenant = settings.resolve("tenant", tenant, "default")
         max_tokens = settings.resolve("max_tokens", max_tokens)
+        max_iterations = settings.resolve("max_iterations", max_iterations)
+        max_seconds = settings.resolve("max_seconds", max_seconds)
+        max_concurrency = settings.resolve("max_concurrency", max_concurrency)
         document = load_topology(Path(graph_path))
         proposal = build_proposal(document)
         bundle = resolve_registry(registry_target)
@@ -154,10 +160,15 @@ def run_graph(
     checker = AdmissionChecker(registry=registry, edge_policy=edge_policy, trace=trace)
 
     # `Budget()` is genuinely unlimited on every dimension, so with no
-    # `--max-tokens` the budget check passes anything. An earlier comment here
-    # claimed the opposite; an adversarial run admitted a 200-node chain whose
-    # worst case was 400,000 tokens. The meter is real only when a ceiling is.
-    meter = BudgetMeter(Budget(max_tokens=max_tokens) if max_tokens else Budget())
+    # ceilings the budget check passes anything. The meter is real only when
+    # at least one dimension is set.
+    budget = Budget(
+        max_tokens=max_tokens,
+        max_iterations=max_iterations,
+        max_seconds=max_seconds,
+        max_concurrency=max_concurrency,
+    )
+    meter = BudgetMeter(budget)
     # D2: the admission event has to carry the run id the operator chose, or
     # `grapharc metrics <trace> <run-id>` finds nothing under that id.
     rid = run_id or uuid.uuid4().hex[:12]
@@ -180,6 +191,9 @@ def run_graph(
         ],
         "run_id": rid,
         "max_tokens": max_tokens,
+        "max_iterations": max_iterations,
+        "max_seconds": max_seconds,
+        "max_concurrency": max_concurrency,
         "trace": str(trace_path),
         **settings.provenance(policy_source=policy_source),
     }

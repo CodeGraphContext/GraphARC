@@ -499,7 +499,7 @@ Re-derived on 2026-07-28 by running each item, not by reading the commit log.
 - **A session turn is synchronous**, and a runner claim is a claim rather than a lease — nothing reclaims a session whose runner died holding it.
 - **A bare model spec resolves to the paid `claude-cli` backend.** `--model mock` does not reach the scripted double; it becomes the model name `mock` on the subscription backend. Only the slash form (`mock/anything`) reaches the double. A mistyped backend *with* a slash is rejected properly, exit 2.
 - **`.env` is found by walking up parent directories; `grapharc.toml` is not.** The config layer refuses an upward search on purpose — a run must not be governed by a file you did not know about. The credential loader predates that decision and still searches upward, so the thing that *spends money* is discovered more eagerly than the thing that *constrains* it.
-- **`grapharc run` has no budget unless you give it one.** `--max-tokens` is the only ceiling; without it the gate's budget dimension is unlimited and admits a topology of any worst-case cost.
+- **`grapharc run` has no budget unless you give it one.** Set any of `--max-tokens`, `--max-iterations`, `--max-seconds`, or `--max-concurrency`; without them each dimension is unlimited and the gate admits a topology of any worst-case cost.
 
 **Verified this pass:** `pytest` → 1,533 passed, 12 deselected (the live ones); `ruff check .` clean; all eight `grapharc demo` stages green, plus `grapharc plan` and `grapharc run`; the wheel builds and imports all 103 submodules in a clean virtualenv with `[all]`. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
 
