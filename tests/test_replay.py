@@ -931,6 +931,14 @@ def test_attribute_thread_sums_across_resumes(trace):
     )
 
 
+def test_cost_helpers_are_exported_from_observe():
+    from grapharc.observe import by_node as exported_by_node
+    from grapharc.observe import tokens_by_model as exported_tokens_by_model
+
+    assert exported_by_node is by_node
+    assert exported_tokens_by_model is tokens_by_model
+
+
 def test_attribute_by_node_ranks_across_every_run(trace):
     trace.event(run_id="r1", graph="demo", node="cheap", phase="start", step=1)
     trace.event(run_id="r1", graph="demo", node="cheap", phase="end", step=1,
