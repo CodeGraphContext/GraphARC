@@ -123,3 +123,41 @@ a.pager:hover { border-color: var(--accent); color: var(--accent); }
   clip: rect(0 0 0 0); }
 main h2 { font-size: 1.15rem; margin: 2.6rem 0 .6rem; }
 main h2::before { content: "## "; color: var(--accent); }
+
+/* quieter sidebar: chapters as small caps, no ## prefix */
+.nav-chapter > a::before { content: ""; }
+.nav-chapter > a { font-size: .72rem; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--ink-soft); font-weight: 700; }
+.nav-chapter > a:hover, .nav-chapter > a.active { color: var(--accent); }
+nav.side li.nav-chapter { margin-bottom: 1.05rem; }
+.nav-chapter ul { margin-top: .3rem; }
+.nav-chapter ul a { font-size: .8rem; line-height: 1.4; padding: .17rem .6rem; }
+
+/* hero */
+.btn-row { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1.4rem 0 1.6rem; }
+.btn { display: inline-block; text-decoration: none; border: 1px solid var(--line);
+  border-radius: 8px; padding: .55rem 1.05rem; font-size: .88rem; color: var(--ink);
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 600; }
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { filter: brightness(1.08); color: #fff; }
+.hero-term { max-width: 34rem; }
+.page-head h1 { font-size: 2.1rem; }
+.page-head { border-bottom: 1px solid var(--line); padding-bottom: 1.6rem; margin-bottom: 2rem; }
+
+/* copy button on code blocks */
+.codeblock, .term { position: relative; }
+.copy-btn { position: absolute; top: .35rem; right: .5rem; border: 1px solid transparent;
+  background: transparent; color: #8f8a82; font: .68rem ui-monospace, Menlo, Consolas, monospace;
+  padding: .2rem .55rem; border-radius: 6px; cursor: pointer; opacity: 0; transition: opacity .15s; }
+.codeblock .copy-btn { color: var(--ink-soft); }
+.codeblock:hover .copy-btn, .term:hover .copy-btn { opacity: 1; }
+.copy-btn:hover { border-color: currentColor; }
+.copy-btn.done { color: var(--gr); opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .copy-btn { transition: none; } }
+
+/* readability */
+main p { line-height: 1.7; }
+main ul { line-height: 1.65; padding-left: 1.3rem; }
+main ul li { margin: .25rem 0; }
+figure { margin: 1rem 0 1.2rem; }

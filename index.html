@@ -14,7 +14,7 @@
   <a class="brand" href="index.html"><b>GraphARC<span class="amp"> docs</span></b><span>a governed agent runtime on LangGraph</span></a>
   <ul>
 <li class="nav-chapter"><a class="active" href="index.html">Overview</a>
-<ul><li><a href="#header-value-proposition">Header / Value proposition</a></li><li><a href="#what-makes-grapharc-different">What makes GraphARC different</a></li><li><a href="#quick-start">Quick Start</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#core-components">Core Components</a></li><li><a href="#what-it-adds-on-top-of-langgraph">What it adds on top of LangGraph</a></li><li><a href="#install">Install</a></li><li><a href="#quickstart-cli-command-list">Quickstart (CLI command list</a></li><li><a href="#the-admission-gate">The admission gate</a></li><li><a href="#configuration-and-the-zero-config-path">Configuration, and the zero-config path</a></li><li><a href="#the-model-gateway">The model gateway</a></li><li><a href="#independent-verification">Independent verification</a></li><li><a href="#tools-and-the-harness">Tools and the harness</a></li><li><a href="#memory">Memory</a></li><li><a href="#sessions-the-http-api-and-policy">Sessions, the HTTP API, and policy</a></li><li><a href="#reading-a-run-afterwards">Reading a run afterwards</a></li><li><a href="#tests-are-gates">Tests are gates</a></li><li><a href="#status-and-limits">Status and limits</a></li><li><a href="#design-lineage-license">Design lineage / License</a></li></ul>
+<ul><li><a href="#what-is-grapharc">What is GraphARC?</a></li><li><a href="#what-makes-grapharc-different">What makes GraphARC different</a></li><li><a href="#quick-start">Quick Start</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#core-components">Core Components</a></li><li><a href="#what-it-adds-on-top-of-langgraph">What it adds on top of LangGraph</a></li><li><a href="#install">Install</a></li><li><a href="#quickstart-cli-command-list">Quickstart (CLI command list</a></li><li><a href="#the-admission-gate">The admission gate</a></li><li><a href="#configuration-and-the-zero-config-path">Configuration, and the zero-config path</a></li><li><a href="#the-model-gateway">The model gateway</a></li><li><a href="#independent-verification">Independent verification</a></li><li><a href="#tools-and-the-harness">Tools and the harness</a></li><li><a href="#memory">Memory</a></li><li><a href="#sessions-the-http-api-and-policy">Sessions, the HTTP API, and policy</a></li><li><a href="#reading-a-run-afterwards">Reading a run afterwards</a></li><li><a href="#tests-are-gates">Tests are gates</a></li><li><a href="#status-and-limits">Status and limits</a></li><li><a href="#design-lineage-license">Design lineage &amp; license</a></li></ul>
 </li>
 <li class="nav-chapter"><a href="getting-started.html">Getting started</a>
 </li>
@@ -40,17 +40,28 @@
   <p class="sub">A graph engineering toolkit on LangGraph: typed state contracts, per-node write permissions, enforced budgets, and JSONL traces that double as replay points. A planner proposes, a deterministic checker admits, and only then does anything execute.</p>
 </header>
 
+<div class="btn-row">
+  <a class="btn primary" href="getting-started.html">Get started &rarr;</a>
+  <a class="btn" href="https://github.com/CodeGraphContext/GraphARC">GitHub</a>
+  <a class="btn" href="https://pypi.org/project/grapharc/">PyPI</a>
+</div>
+<figure class="term hero-term"><figcaption class="term-bar">
+<span class="dot"></span><span class="dot"></span><span class="dot"></span>
+<span class="term-cmd">shell</span></figcaption>
+<pre class="term-body"><span class="tok-p">$ </span><span class="tok-cmd">pip install grapharc</span>
+<span class="tok-p">$ </span><span class="tok-cmd">grapharc demo stage0</span>   <span class="tok-c"># costs nothing, needs no key</span></pre>
+</figure>
 <div class="hero-chips">
   <span class="chip"><b>0.1.1</b> · alpha</span>
-  <span class="chip">pip install grapharc</span>
   <span class="chip">Python ≥ 3.12</span>
-  <span class="chip">MIT</span>
+  <span class="chip">MIT license</span>
+  <span class="chip">built on LangGraph</span>
 </div>
 <div class="card-grid">
 <a class="card" href="getting-started.html"><b>Getting started</b><span>The graph kernel: typed state, declared writes, budgets, traces, fan-out, async.</span></a><a class="card" href="models.html"><b>Models</b><span>The gateway: five backends, one spec grammar, retries, spend metering.</span></a><a class="card" href="agents-and-tools.html"><b>Agents & tools</b><span>The seven core tools, the permission harness, sandboxing, and the agent loop.</span></a><a class="card" href="verification-and-memory.html"><b>Verification & memory</b><span>Deterministic citation anchoring, fail-closed review, claims with provenance.</span></a><a class="card" href="governance.html"><b>Governance</b><span>Propose, admit, materialise: the admission gate, policy documents, the governed loop.</span></a><a class="card" href="serving-and-ops.html"><b>Serving & operations</b><span>Async graphs, sessions, the HTTP API, and reading a run afterwards.</span></a><a class="card" href="roadmap.html"><b>Roadmap</b><span>The live build list — measured status per workstream, and the seams left.</span></a><a class="card" href="contributing.html"><b>Contributing</b><span>Tests, the live-marker rule, PR conventions, and the honesty rule for docs.</span></a>
 </div>
 <h2 id="chapters-note" class="visually-hidden">Chapters</h2>
-<h2 id="header-value-proposition"><a class="anchor" href="#header-value-proposition">Header / Value proposition</a></h2>
+<h2 id="what-is-grapharc"><a class="anchor" href="#what-is-grapharc">What is GraphARC?</a></h2>
 <p>GraphARC is &quot;a governed agent runtime built on LangGraph&quot; for building production-grade multi-agent systems with built-in safety, auditability, and control. It adds a governance layer over LangGraph: a planner <em>proposes</em> a subgraph, a deterministic checker <em>admits</em> it, and only then does anything execute. Every transition is permitted, every loop is bounded, and afterwards you can prove what happened and why it stopped. Status is early days (<code>0.1.1</code>) — the API is not stable yet. Badges: PyPI, Python versions, CI, MIT license.</p>
 <figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">pip install grapharc</pre></figure>
 <aside class="edge"><span class="edge-tag">sharp edge</span> The API is not stable at <code>0.1.1</code>.</aside>
@@ -61,22 +72,22 @@
 <div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.runtime <span class="tok-k">import</span> StateGraph
 <span class="tok-k">from</span> pydantic <span class="tok-k">import</span> BaseModel
 
-<span <span class="tok-k">class</span>="tok-c"># Define your state</span>
+<span class="tok-c"># Define your state</span>
 <span class="tok-k">class</span> MyState(BaseModel):
     messages: list[str]
-    result: str = <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+    result: str = <span class="tok-s">&quot;&quot;</span>
 
-<span <span class="tok-k">class</span>="tok-c"># Create a graph</span>
+<span class="tok-c"># Create a graph</span>
 graph = StateGraph(MyState)
 
-<span <span class="tok-k">class</span>="tok-c"># Add nodes <span class="tok-k">and</span> edges</span>
-graph.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;process&quot;</span>, <span class="tok-k">lambda</span> state: {<span <span class="tok-k">class</span>="tok-s">&quot;result&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;done&quot;</span>})
-graph.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;START&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;process&quot;</span>)
-graph.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;process&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;END&quot;</span>)
+<span class="tok-c"># Add nodes and edges</span>
+graph.add_node(<span class="tok-s">&quot;process&quot;</span>, <span class="tok-k">lambda</span> state: {<span class="tok-s">&quot;result&quot;</span>: <span class="tok-s">&quot;done&quot;</span>})
+graph.add_edge(<span class="tok-s">&quot;START&quot;</span>, <span class="tok-s">&quot;process&quot;</span>)
+graph.add_edge(<span class="tok-s">&quot;process&quot;</span>, <span class="tok-s">&quot;END&quot;</span>)
 
-<span <span class="tok-k">class</span>="tok-c"># Compile <span class="tok-k">and</span> run</span>
+<span class="tok-c"># Compile and run</span>
 compiled = graph.compile()
-result = compiled.invoke({<span <span class="tok-k">class</span>="tok-s">&quot;messages&quot;</span>: [<span <span class="tok-k">class</span>="tok-s">&quot;hello&quot;</span>]})</pre></div>
+result = compiled.invoke({<span class="tok-s">&quot;messages&quot;</span>: [<span class="tok-s">&quot;hello&quot;</span>]})</pre></div>
 <h2 id="architecture"><a class="anchor" href="#architecture">Architecture</a></h2>
 <p>A CLI or HTTP request reaches a planner, which emits a typed proposal; a deterministic admission checker either refuses it with reasons or admits it; only an admitted proposal is materialised and run by the graph kernel, on top of the model, tool and memory planes; everything lands on one JSONL record, and work discovered mid-run re-enters the gate. The amber curve along the top of the diagram is the claim: refusals return as traced reason codes, and work discovered mid-run <strong>re-enters admission</strong> — there is no already-approved path and no cached authorisation. Detailed views live in <code>docs/diagrams/grapharc-architecture.drawio</code> plus five more views generated from <code>architecture.py</code>.</p>
 <h2 id="core-components"><a class="anchor" href="#core-components">Core Components</a></h2>
@@ -96,7 +107,7 @@ result = compiled.invoke({<span <span class="tok-k">class</span>="tok-s">&quot;m
 <aside class="edge"><span class="edge-tag">sharp edge</span> See ROADMAP §12 for known gaps — the HTTP API still runs its own in-process session layer instead of the durable one.</aside>
 <h2 id="what-it-adds-on-top-of-langgraph"><a class="anchor" href="#what-it-adds-on-top-of-langgraph">What it adds on top of LangGraph</a></h2>
 <p>Everything in the table is enforced by the library rather than left to convention, and has a test you can run. Disciplines: write permissions (undeclared write raises <code>WritePermissionError</code>; plain LangGraph applies it and moves on); state isolation (nodes receive <code>state.model_copy(deep=True)</code>, so the returned dict is the only way out of a node); typed state (Pydantic with <code>extra=&quot;forbid&quot;</code>; a write to a nonexistent field fails when the node is added, not when it runs); earned cycles (<code>dag=True</code> rejects conditional and fan-out edges when added, cycles at compile time — Stage 0 before Stage 2); code-only routing (routers are ordinary Python functions over typed state, so model prose cannot steer an edge; <code>Command(goto=…)</code> destinations are validated against the compiled graph); convergence (<code>ProgressGuard</code> returns the first triggered <code>StopReason</code> — target met / no progress / round cap); traces (JSONL <code>start</code>/<code>end</code>/<code>error</code> events; <code>start</code> carries only step identity, <code>end</code> adds state delta, duration and tokens, <code>error</code> adds duration and exception — <code>metrics</code>, <code>viz</code>, <code>replay</code>, <code>diff</code> and the OTel exporter read that same file so the dashboard and the audit trail cannot disagree); fail-closed entry points (<code>.inner.invoke()</code> raises <code>MissingRunContextError</code>); bounded work (per-run <code>Budget</code> of iterations/tokens/seconds/concurrency, with <code>max_seconds</code> delivered as an interrupt <em>into</em> the running node); checked state edits (<code>update_state()</code> rejects unknown fields, type-checks values, and with <code>as_node=</code> applies that node&#x27;s write allowlist); governed topology.</p>
-<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>, answer, writes={<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>})   <span <span class="tok-k">class</span>="tok-c"># undeclared writes <span class="tok-k">raise</span></span></pre></div>
+<div class="codeblock"><div class="code-lang">python</div><pre class="code-body">g.add_node(<span class="tok-s">&quot;answer&quot;</span>, answer, writes={<span class="tok-s">&quot;answer&quot;</span>})   <span class="tok-c"># undeclared writes raise</span></pre></div>
 <aside class="edge"><span class="edge-tag">sharp edge</span> <strong>Budgets</strong> — spend a provider never reports cannot be charged; a model invoked on a thread the node started itself is outside the LangChain callback&#x27;s context; an async exception cannot unwind a thread inside a C call, landing only when that call returns. The deadline still holds at the node boundary: an overrunning node does not get its writes into state.</aside>
 <aside class="edge"><span class="edge-tag">sharp edge</span> <strong>Routing</strong> — <code>add_conditional_edge</code> passes router and mapping straight through to LangGraph; GraphARC does not verify the router&#x27;s return value is a key in the mapping, so a typo is a run-time <code>KeyError</code>.</aside>
 <aside class="edge"><span class="edge-tag">sharp edge</span> <strong>Typing</strong> — write-time validation is built from each field&#x27;s <em>annotation</em>, so <code>Annotated[int, Field(gt=0)]</code> bites, but a state model&#x27;s own <code>@field_validator</code> / <code>@model_validator</code> does not run on a write; the violation surfaces only when a later node rebuilds the model, so one written by the last node before <code>END</code> still reaches the result. The write allowlist is GraphARC&#x27;s; the types are Pydantic&#x27;s.</aside>
@@ -146,16 +157,16 @@ grapharc diff &lt;path&gt; &lt;a&gt; &lt;b&gt;     # what changed between two ru
 
 <span class="tok-k">class</span> State(GraphARCState):
     question: str
-    answer: str = <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+    answer: str = <span class="tok-s">&quot;&quot;</span>
 
 <span class="tok-k">def</span> answer(state: State) -&gt; dict:
-    <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>: f<span <span class="tok-k">class</span>="tok-s">&quot;42 (asked: {state.question})&quot;</span>}
+    <span class="tok-k">return</span> {<span class="tok-s">&quot;answer&quot;</span>: f<span class="tok-s">&quot;42 (asked: {state.question})&quot;</span>}
 
-g = GraphARC(State, name=<span <span class="tok-k">class</span>="tok-s">&quot;demo&quot;</span>, budget=Budget(max_iterations=10))
-g.add_node(<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>, answer, writes={<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>})   <span <span class="tok-k">class</span>="tok-c"># undeclared writes <span class="tok-k">raise</span></span>
-g.add_edge(START, <span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>)
-g.add_edge(<span <span class="tok-k">class</span>="tok-s">&quot;answer&quot;</span>, END)
-print(g.compile().invoke({<span <span class="tok-k">class</span>="tok-s">&quot;question&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;meaning of life&quot;</span>}))</pre></div>
+g = GraphARC(State, name=<span class="tok-s">&quot;demo&quot;</span>, budget=Budget(max_iterations=10))
+g.add_node(<span class="tok-s">&quot;answer&quot;</span>, answer, writes={<span class="tok-s">&quot;answer&quot;</span>})   <span class="tok-c"># undeclared writes raise</span>
+g.add_edge(START, <span class="tok-s">&quot;answer&quot;</span>)
+g.add_edge(<span class="tok-s">&quot;answer&quot;</span>, END)
+print(g.compile().invoke({<span class="tok-s">&quot;question&quot;</span>: <span class="tok-s">&quot;meaning of life&quot;</span>}))</pre></div>
 <aside class="edge"><span class="edge-tag">sharp edge</span> <code>--model</code> works for stage1 through stage6 and the capstone; stage0 is pure code with no model in it.</aside>
 <aside class="edge"><span class="edge-tag">sharp edge</span> <code>grapharc agent</code> needs a tool-calling backend and says so rather than degrading — a scripted model has no <code>bind_tools</code> to drive a tool loop with.</aside>
 <h2 id="the-admission-gate"><a class="anchor" href="#the-admission-gate">The admission gate</a></h2>
@@ -186,42 +197,42 @@ state     : goal=&#x27;investigate the checkout outage&#x27; notes=[&#x27;triage
 
 
 <span class="tok-k">class</span> State(BaseModel):
-    found: str = <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
-    fixed: str = <span <span class="tok-k">class</span>="tok-s">&quot;&quot;</span>
+    found: str = <span class="tok-s">&quot;&quot;</span>
+    fixed: str = <span class="tok-s">&quot;&quot;</span>
 
 
-<span class="tok-k">def</span> factory(spec):                              <span <span class="tok-k">class</span>="tok-c"># bodies come <span class="tok-k">from</span> HERE, never a proposal</span>
+<span class="tok-k">def</span> factory(spec):                              <span class="tok-c"># bodies come from HERE, never a proposal</span>
     <span class="tok-k">def</span> body(state):
-        <span class="tok-k">return</span> {<span <span class="tok-k">class</span>="tok-s">&quot;found&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;cause&quot;</span>} <span class="tok-k">if</span> spec.name == <span <span class="tok-k">class</span>="tok-s">&quot;search&quot;</span> <span class="tok-k">else</span> {<span <span class="tok-k">class</span>="tok-s">&quot;fixed&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;patch&quot;</span>}
+        <span class="tok-k">return</span> {<span class="tok-s">&quot;found&quot;</span>: <span class="tok-s">&quot;cause&quot;</span>} <span class="tok-k">if</span> spec.name == <span class="tok-s">&quot;search&quot;</span> <span class="tok-k">else</span> {<span class="tok-s">&quot;fixed&quot;</span>: <span class="tok-s">&quot;patch&quot;</span>}
     <span class="tok-k">return</span> body
 
 
-registry = NodeRegistry([                        <span <span class="tok-k">class</span>="tok-c"># the kinds a planner may propose</span>
-    NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;search&quot;</span>, factory=factory, worst_case=CostEstimate(tokens=500)),
-    NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;edit&quot;</span>,   factory=factory, worst_case=CostEstimate(tokens=2000)),
-    NodeSpec(name=<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>, factory=factory),
+registry = NodeRegistry([                        <span class="tok-c"># the kinds a planner may propose</span>
+    NodeSpec(name=<span class="tok-s">&quot;search&quot;</span>, factory=factory, worst_case=CostEstimate(tokens=500)),
+    NodeSpec(name=<span class="tok-s">&quot;edit&quot;</span>,   factory=factory, worst_case=CostEstimate(tokens=2000)),
+    NodeSpec(name=<span class="tok-s">&quot;deploy&quot;</span>, factory=factory),
 ]).freeze()
-policy = EdgePolicy(rules=(                      <span <span class="tok-k">class</span>="tok-c"># deny -&gt; ask -&gt; allow, unmatched <span class="tok-k">is</span> deny</span>
-    EdgeRule(action=Decision.DENY, target=<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>),
+policy = EdgePolicy(rules=(                      <span class="tok-c"># deny -&gt; ask -&gt; allow, unmatched is deny</span>
+    EdgeRule(action=Decision.DENY, target=<span class="tok-s">&quot;deploy&quot;</span>),
     EdgeRule(action=Decision.ALLOW),
 ))
 
-plan = &<span <span class="tok-k">class</span>="tok-c">#x27;{<span <span class="tok-k">class</span>="tok-s">&quot;nodes&quot;</span>: [{<span <span class="tok-k">class</span>="tok-s">&quot;name&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;%s&quot;</span>}], <span <span class="tok-k">class</span>="tok-s">&quot;edges&quot;</span>: [{<span <span class="tok-k">class</span>="tok-s">&quot;source&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;__start__&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;target&quot;</span>: <span <span class="tok-k">class</span>="tok-s">&quot;%s&quot;</span>}]}&#x27;</span>
+plan = &<span class="tok-c">#x27;{&quot;nodes&quot;: [{&quot;name&quot;: &quot;%s&quot;}], &quot;edges&quot;: [{&quot;source&quot;: &quot;__start__&quot;, &quot;target&quot;: &quot;%s&quot;}]}&#x27;</span>
 loop = GovernedLoop(
     planner=PlannerNode(
-        ScriptedChatModel(responses=[plan % (<span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>), plan % (<span <span class="tok-k">class</span>="tok-s">&quot;edit&quot;</span>, <span <span class="tok-k">class</span>="tok-s">&quot;edit&quot;</span>)]),
+        ScriptedChatModel(responses=[plan % (<span class="tok-s">&quot;deploy&quot;</span>, <span class="tok-s">&quot;deploy&quot;</span>), plan % (<span class="tok-s">&quot;edit&quot;</span>, <span class="tok-s">&quot;edit&quot;</span>)]),
         catalog=registry.catalog(),
     ),
     checker=AdmissionChecker(registry=registry, edge_policy=policy),
     materializer=Materializer(
         registry=registry, state_schema=State,
-        writes={<span <span class="tok-k">class</span>="tok-s">&quot;search&quot;</span>: {<span <span class="tok-k">class</span>="tok-s">&quot;found&quot;</span>}, <span <span class="tok-k">class</span>="tok-s">&quot;edit&quot;</span>: {<span <span class="tok-k">class</span>="tok-s">&quot;fixed&quot;</span>}, <span <span class="tok-k">class</span>="tok-s">&quot;deploy&quot;</span>: set()},
+        writes={<span class="tok-s">&quot;search&quot;</span>: {<span class="tok-s">&quot;found&quot;</span>}, <span class="tok-s">&quot;edit&quot;</span>: {<span class="tok-s">&quot;fixed&quot;</span>}, <span class="tok-s">&quot;deploy&quot;</span>: set()},
     ),
     budget=Budget(max_tokens=100_000),
     limits=LoopLimits(max_rounds=8),
     goal_reached=<span class="tok-k">lambda</span> s: bool(s.fixed),
 )
-result = loop.run(<span <span class="tok-k">class</span>="tok-s">&quot;find <span class="tok-k">and</span> fix the bug&quot;</span>, State())
+result = loop.run(<span class="tok-s">&quot;find and fix the bug&quot;</span>, State())
 
 print(result.stop.value)
 <span class="tok-k">for</span> record <span class="tok-k">in</span> result.rounds:
@@ -244,17 +255,17 @@ max_rounds = 6</pre></div>
 <p>The primary backend drives the <strong>Claude Code CLI</strong> (<code>claude -p</code>), so GraphARC runs on a Claude subscription with no API key. Because that CLI is a full agent, the adapter invokes it as a pure inference endpoint: every tool disallowed, no settings sources loaded, no CLAUDE.md pickup, prompt via stdin, flags via an argv array — never a shell string. An injected &quot;run this command&quot; has no tool to run it with. A spec is <code>backend/model</code>; <code>grapharc models</code> shows what a spec resolves to. OpenRouter carries routing: model-level <code>fallback_models</code> chains, provider <code>order</code> / <code>sort</code> / <code>max_price</code>, and per-call cost in the usage envelope; every backend reports usage in the same shape with cached input folded into the total. <code>openrouter</code>, <code>openai</code> and <code>ollama</code> share a base class — same tool-calling, streaming, retry policy and envelope — differing only in routing and where a price comes from.</p>
 <div class="codeblock"><div class="code-lang">python</div><pre class="code-body"><span class="tok-k">from</span> grapharc.gateway <span class="tok-k">import</span> get_model
 
-<span <span class="tok-k">class</span>="tok-c"># Subscription, no API key — but text completion only.</span>
-worker = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>)
+<span class="tok-c"># Subscription, no API key — but text completion only.</span>
+worker = get_model(<span class="tok-s">&quot;claude-cli/claude-sonnet-5&quot;</span>)
 
-<span <span class="tok-k">class</span>="tok-c"># OpenRouter: one key <span class="tok-k">for</span> a catalog spanning most vendors, <span class="tok-k">with</span></span>
-<span <span class="tok-k">class</span>="tok-c"># tool-calling, structured output, streaming, <span class="tok-k">and</span> <span class="tok-k">async</span>.</span>
-worker   = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/anthropic/claude-haiku-4.5&quot;</span>)
-reviewer = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;openrouter/openai/gpt-4o-mini&quot;</span>)   <span <span class="tok-k">class</span>="tok-c"># a genuinely different vendor</span>
+<span class="tok-c"># OpenRouter: one key for a catalog spanning most vendors, with</span>
+<span class="tok-c"># tool-calling, structured output, streaming, and async.</span>
+worker   = get_model(<span class="tok-s">&quot;openrouter/anthropic/claude-haiku-4.5&quot;</span>)
+reviewer = get_model(<span class="tok-s">&quot;openrouter/openai/gpt-4o-mini&quot;</span>)   <span class="tok-c"># a genuinely different vendor</span>
 
-<span <span class="tok-k">class</span>="tok-c"># Or go direct: your own OpenAI key, <span class="tok-k">or</span> a model on your own machine.</span>
-reviewer = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;openai/gpt-4o-mini&quot;</span>)              <span <span class="tok-k">class</span>="tok-c"># OPENAI_API_KEY</span>
-local    = get_model(<span <span class="tok-k">class</span>="tok-s">&quot;ollama/llama3.1&quot;</span>)                 <span <span class="tok-k">class</span>="tok-c"># no key, no bill, no egress</span></pre></div>
+<span class="tok-c"># Or go direct: your own OpenAI key, or a model on your own machine.</span>
+reviewer = get_model(<span class="tok-s">&quot;openai/gpt-4o-mini&quot;</span>)              <span class="tok-c"># OPENAI_API_KEY</span>
+local    = get_model(<span class="tok-s">&quot;ollama/llama3.1&quot;</span>)                 <span class="tok-c"># no key, no bill, no egress</span></pre></div>
 <figure class="term"><figcaption class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-cmd">bash</span></figcaption><pre class="term-body">grapharc demo stage5 --model openrouter/anthropic/claude-haiku-4.5 \
                     --reviewer-model openrouter/openai/gpt-4o-mini</pre></figure>
 <p>Retries have a policy, not a loop: three attempts by default, 0.5s initial backoff doubling to a 20s cap, jitter drawn from <code>[0.75, 1]</code> — shrinking rather than centred, so successive delays stay strictly increasing. A timeout, connection reset, 429 or 5xx is transient and re-issued; a 400, 401, 402, 403 or content refusal is a verdict raised on the first attempt; anything unrecognised is treated as deterministic. <code>Retry-After</code> raises the delay but never lowers it, and is itself capped. Cost ceilings are enforced on both sides of a call: a <code>SpendMeter</code> refuses before a call once the ceiling is reached, and after a call charges the cost and <em>then</em> raises if that crossed the line, so overspend is bounded by the single call that crossed it.</p>
@@ -316,7 +327,7 @@ uv run pytest -m live  # real backends: spends money and quota</pre></figure>
 <aside class="edge"><span class="edge-tag">sharp edge</span> A session turn is synchronous, and a runner claim is a claim rather than a lease — nothing reclaims a session whose runner died holding it.</aside>
 <aside class="edge"><span class="edge-tag">sharp edge</span> <strong><code>.env</code> is found by walking up parent directories; <code>grapharc.toml</code> is not.</strong> The thing that <em>spends money</em> is discovered more eagerly than the thing that <em>constrains</em> it.</aside>
 <aside class="edge"><span class="edge-tag">sharp edge</span> <strong><code>grapharc run</code> has no budget unless you give it one</strong> — set <code>--max-tokens</code>, <code>--max-iterations</code>, <code>--max-seconds</code> or <code>--max-concurrency</code>; without them each dimension is unlimited and the gate admits a topology of any worst-case cost.</aside>
-<h2 id="design-lineage-license"><a class="anchor" href="#design-lineage-license">Design lineage / License</a></h2>
+<h2 id="design-lineage-license"><a class="anchor" href="#design-lineage-license">Design lineage &amp; license</a></h2>
 <p>Architecturally <em>inspired by</em> systems studied from public documentation: OpenClaw (policy-before-schema tool gating, file-first state, security post-mortems), Hermes Agent (budgeted tiered memory, ephemeral subagents), Claude Code (advisory-vs-enforced split, subagent context isolation, verification-centered loops), and OpenRouter (routing semantics, budget-scoped accounting). Licensed MIT.</p>
 <footer class="pager-row">
 <span class="pager-spacer"></span><a class="pager next" href="getting-started.html">Getting started &rarr;</a>
@@ -347,6 +358,26 @@ uv run pytest -m live  # real backends: spends money and quota</pre></figure>
     });
   }, { rootMargin: '0px 0px -70% 0px' });
   document.querySelectorAll('main h2[id]').forEach(function (h) { obs.observe(h); });
+
+  document.querySelectorAll('.codeblock, .term').forEach(function (block) {
+    var pre = block.querySelector('pre');
+    if (!pre) return;
+    var btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.type = 'button';
+    btn.textContent = 'copy';
+    btn.addEventListener('click', function () {
+      navigator.clipboard.writeText(pre.innerText).then(function () {
+        btn.textContent = 'copied';
+        btn.classList.add('done');
+        setTimeout(function () {
+          btn.textContent = 'copy';
+          btn.classList.remove('done');
+        }, 1500);
+      });
+    });
+    block.appendChild(btn);
+  });
 })();
 </script>
 </body>

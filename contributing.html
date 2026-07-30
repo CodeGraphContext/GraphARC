@@ -30,7 +30,7 @@
 <li class="nav-chapter"><a href="roadmap.html">Roadmap</a>
 </li>
 <li class="nav-chapter"><a class="active" href="contributing.html">Contributing</a>
-<ul><li><a href="#intro">Intro</a></li><li><a href="#setup">Setup</a></li><li><a href="#running-the-tests">Running the tests</a></li><li><a href="#the-live-marker-rule">The live-marker rule</a></li><li><a href="#writing-a-change-pr-conventions">Writing a change (PR conventions</a></li><li><a href="#the-honesty-rule-for-documentation">The honesty rule for documentation</a></li><li><a href="#packaging-changes">Packaging changes</a></li><li><a href="#releasing">Releasing</a></li></ul>
+<ul><li><a href="#what-this-guide-covers">What this guide covers</a></li><li><a href="#setup">Setup</a></li><li><a href="#running-the-tests">Running the tests</a></li><li><a href="#the-live-marker-rule">The live-marker rule</a></li><li><a href="#writing-a-change-pr-conventions">Writing a change (PR conventions</a></li><li><a href="#the-honesty-rule-for-documentation">The honesty rule for documentation</a></li><li><a href="#packaging-changes">Packaging changes</a></li><li><a href="#releasing">Releasing</a></li></ul>
 </li>
   </ul>
 </nav>
@@ -39,7 +39,7 @@
   <h1>Contributing</h1>
   <p class="sub">Tests, the live-marker rule, PR conventions, and the honesty rule for docs.</p>
 </header>
-<h2 id="intro"><a class="anchor" href="#intro">Intro</a></h2>
+<h2 id="what-this-guide-covers"><a class="anchor" href="#what-this-guide-covers">What this guide covers</a></h2>
 <p>The file covers the three things easiest to get wrong in this repo: how to run the tests, the rule that keeps live tests from spending your money, and the standard the project holds documentation to.</p>
 <h2 id="setup"><a class="anchor" href="#setup">Setup</a></h2>
 <p>The toolchain is uv. <code>uv.lock</code> is committed, so everyone resolves to the same versions. <code>--all-extras</code> matters, because several tests skip themselves when an optional dependency is missing — syncing only the dev group silently shrinks the suite instead of failing.</p>
@@ -107,6 +107,26 @@ cd /tmp &amp;&amp; /tmp/check/bin/python -c &quot;import grapharc, pkgutil, impo
     });
   }, { rootMargin: '0px 0px -70% 0px' });
   document.querySelectorAll('main h2[id]').forEach(function (h) { obs.observe(h); });
+
+  document.querySelectorAll('.codeblock, .term').forEach(function (block) {
+    var pre = block.querySelector('pre');
+    if (!pre) return;
+    var btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.type = 'button';
+    btn.textContent = 'copy';
+    btn.addEventListener('click', function () {
+      navigator.clipboard.writeText(pre.innerText).then(function () {
+        btn.textContent = 'copied';
+        btn.classList.add('done');
+        setTimeout(function () {
+          btn.textContent = 'copy';
+          btn.classList.remove('done');
+        }, 1500);
+      });
+    });
+    block.appendChild(btn);
+  });
 })();
 </script>
 </body>

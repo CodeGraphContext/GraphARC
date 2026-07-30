@@ -113,6 +113,26 @@
     });
   }, { rootMargin: '0px 0px -70% 0px' });
   document.querySelectorAll('main h2[id]').forEach(function (h) { obs.observe(h); });
+
+  document.querySelectorAll('.codeblock, .term').forEach(function (block) {
+    var pre = block.querySelector('pre');
+    if (!pre) return;
+    var btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.type = 'button';
+    btn.textContent = 'copy';
+    btn.addEventListener('click', function () {
+      navigator.clipboard.writeText(pre.innerText).then(function () {
+        btn.textContent = 'copied';
+        btn.classList.add('done');
+        setTimeout(function () {
+          btn.textContent = 'copy';
+          btn.classList.remove('done');
+        }, 1500);
+      });
+    });
+    block.appendChild(btn);
+  });
 })();
 </script>
 </body>
