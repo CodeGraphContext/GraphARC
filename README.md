@@ -129,6 +129,7 @@ pip install 'grapharc[openai]'       # OpenAI and OpenAI-compatible endpoints
 pip install 'grapharc[ollama]'       # a local server
 pip install 'grapharc[server]'       # the FastAPI + SSE HTTP API
 pip install 'grapharc[otel]'         # OpenTelemetry span export
+pip install 'grapharc[slack]'        # run the CLI from Slack — docs/cookbook/07-slack.md
 pip install 'grapharc[all]'          # every one of the above
 ```
 
