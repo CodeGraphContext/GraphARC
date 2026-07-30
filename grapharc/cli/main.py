@@ -313,6 +313,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         trace_path=args.trace,
         run_id=args.run_id,
         max_tokens=args.max_tokens,
+        max_iterations=args.max_iterations,
+        max_seconds=args.max_seconds,
+        max_concurrency=args.max_concurrency,
         check_only=args.check_only,
         config_path=args.config,
         as_json=args.json,
@@ -630,10 +633,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-tokens",
         type=int,
         default=None,
+        metavar="N",
         help=(
             "refuse a topology whose worst case exceeds this many tokens. "
-            "Without it the budget dimension is unlimited and admits anything"
+            "Without it this budget dimension is unlimited"
         ),
+    )
+    run.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        metavar="N",
+        help="stop the run after this many node iterations (unlimited if omitted)",
+    )
+    run.add_argument(
+        "--max-seconds",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="wall-clock run ceiling; interrupts a running node (unlimited if omitted)",
+    )
+    run.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=None,
+        metavar="N",
+        help="max concurrent node executions (unlimited if omitted)",
     )
     run.add_argument(
         "--check-only",
