@@ -4,16 +4,21 @@
 like "summarise the docs in this workspace" gets either an honest negative or
 a hollow success, depending on how vague the goal is. This registry closes
 that gap for one bounded job: **reading documentation under the current
-working directory and reporting what is there.** Three kinds:
+working directory and reporting what is there.** Four kinds:
 
     survey     list the documentation files under cwd
     read       read them and record an excerpt of each
     summarise  one note distilling title + first paragraph per file
+    propose    the model authors a recommendation from what was read
 
-Everything is deterministic operator code. The model still does the
-*planning* — which kinds, in what order, replanning on refusal — but no node
-body contains a model call, so a run with a scripted planner produces real
-file content and a run with `--model` spends tokens only on rounds.
+The first three are deterministic operator code. The model still does the
+*planning* — which kinds, in what order, replanning on refusal — and those
+bodies never call it, so a scripted run produces real file content and spends
+nothing. `propose` is the one deliberate exception: its body hands the notes
+the deterministic kinds collected to the model and records what comes back,
+labelled as the model's. With no real model behind the run it says so in its
+note instead of pretending — a scripted planner cannot author a proposal, and
+the note is honest about which kind of run this was.
 
 The confinement matters more than the capability: bodies read, never write,
 and only under `Path.cwd()` — which, launched from the Slack bot, is the
@@ -97,42 +102,106 @@ def _summarise_body(state: DocsState) -> dict:
     return {"notes": [*state.notes, summary]}
 
 
-_BODIES = {"survey": _survey_body, "read": _read_body, "summarise": _summarise_body}
+def _propose_body_for(model: Any) -> Any:
+    """The one body with a model in it, built per-run so it closes over the
+    run's own backend rather than importing one.
 
+    `model` is whatever drove the planner. A scripted planner's model cannot
+    author anything (invoking it would consume the planner's own scripted
+    replies), so anything without a usable `invoke` — or a call that fails —
+    becomes an honest note instead of an exception: the deterministic notes
+    already in state are worth keeping even when the proposal step cannot run.
+    """
 
-def _factory(build: Any) -> Any:
-    # `build` is the materialiser's NodeBuild: `name` is the instance the
-    # planner chose ("readme_survey"), `kind` is what the registry licensed.
-    # Behaviour keys on the kind; the name is the planner's business.
-    body = _BODIES[build.kind]
+    def body(state: DocsState) -> dict:
+        evidence = "\n".join(state.notes)
+        real = model is not None and not isinstance(model, _scripted_type())
+        if not real:
+            note = (
+                "propose: needs a real model (--model); no proposal was "
+                "authored — the notes above are deterministic reads only"
+            )
+            return {"notes": [*state.notes, note]}
+        try:
+            reply = model.invoke(
+                "You are the propose step of a documentation-review plan. "
+                f"The goal: {state.goal!r}. The evidence collected so far:\n"
+                f"{evidence}\n\n"
+                "Write one concise, concrete recommendation that satisfies "
+                "the goal, grounded only in the evidence above."
+            )
+            content = getattr(reply, "content", reply)
+            note = f"proposal (model-authored): {str(content).strip()[:2000]}"
+        except Exception as exc:  # noqa: BLE001 — a failed proposal is a note, not a crash
+            note = f"propose: model call failed ({exc}); deterministic notes stand"
+        return {"notes": [*state.notes, note]}
+
     body.writes = {"notes"}
     return body
 
 
-WRITES: dict[str, set[str]] = {kind: {"notes"} for kind in _BODIES}
+def _scripted_type() -> type:
+    from grapharc.testing import ScriptedChatModel
+
+    return ScriptedChatModel
 
 
-def build_registry() -> NodeRegistry:
-    """Three read-only kinds. Absence is refusal; there is no write kind to deny."""
+_BODIES = {"survey": _survey_body, "read": _read_body, "summarise": _summarise_body}
+
+
+def _factory_for(model: Any):
+    def factory(build: Any) -> Any:
+        # `build` is the materialiser's NodeBuild: `name` is the instance the
+        # planner chose ("readme_survey"), `kind` is what the registry
+        # licensed. Behaviour keys on the kind; the name is the planner's.
+        if build.kind == "propose":
+            return _propose_body_for(model)
+        body = _BODIES[build.kind]
+        body.writes = {"notes"}
+        return body
+
+    return factory
+
+
+WRITES: dict[str, set[str]] = {kind: {"notes"} for kind in (*_BODIES, "propose")}
+
+
+def build_registry(model: Any = None) -> NodeRegistry:
+    """Three read-only kinds and one that writes what the model recommends.
+
+    Accepting `model` is the CLI's contract: a registry factory with a
+    positional parameter is handed the run's backend (`resolve_registry` in
+    `grapharc.cli.plan`), which is how `propose` speaks with the same model
+    that planned — and stays honest when that model is scripted.
+    """
+    factory = _factory_for(model)
     return NodeRegistry(
         [
             NodeSpec(
                 name="survey",
                 description="list the documentation files under the working directory",
-                factory=_factory,
+                factory=factory,
                 worst_case=CostEstimate(iterations=1, tokens=300),
             ),
             NodeSpec(
                 name="read",
                 description="read each documentation file and record an excerpt",
-                factory=_factory,
+                factory=factory,
                 worst_case=CostEstimate(iterations=1, tokens=1500),
             ),
             NodeSpec(
                 name="summarise",
                 description="distil what was read into one summary note",
-                factory=_factory,
+                factory=factory,
                 worst_case=CostEstimate(iterations=1, tokens=800),
+            ),
+            NodeSpec(
+                name="propose",
+                description=(
+                    "author a recommendation from the collected notes; needs a real model"
+                ),
+                factory=factory,
+                worst_case=CostEstimate(iterations=1, tokens=2500),
             ),
         ]
     )
@@ -144,15 +213,16 @@ def default_edge_policy() -> EdgePolicy:
 
 
 def scripted_planner_replies() -> list[str]:
-    """One reply: survey → read → summarise. Read by `grapharc plan` when no
-    `--model` is given, so the free path exercises the same registry the paid
-    one does. In an empty directory the chain still yields three notes, so the
-    loop's goal check is satisfied either way."""
+    """One reply: survey → read → summarise → propose. Read by `grapharc plan`
+    when no `--model` is given, so the free path exercises the same registry
+    the paid one does — including the `propose` note honestly declining to
+    author without a real model. In an empty directory the chain still yields
+    enough notes for the loop's goal check either way."""
     import json
 
     from grapharc.runtime.graph import END, START
 
-    chain = ["survey", "read", "summarise"]
+    chain = ["survey", "read", "summarise", "propose"]
     endpoints = [START, *chain, END]
     return [
         json.dumps(

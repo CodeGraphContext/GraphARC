@@ -77,11 +77,56 @@ def test_the_cli_scripted_path_uses_this_registrys_replies(docs_dir, capsys):
     assert "A widget that frobs." in printed
 
 
+class _FakeReply:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeModel:
+    """A real-model stand-in: has `invoke`, is not the scripted type."""
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def invoke(self, prompt: str) -> _FakeReply:
+        self.prompts.append(prompt)
+        return _FakeReply("merge 07 and 08 into one Slack page; keep the walkthrough")
+
+
+def test_propose_hands_the_collected_notes_to_the_model(docs_dir):
+    model = _FakeModel()
+    body = plan_docs._propose_body_for(model)
+    state = plan_docs.DocsState(
+        goal="plan a merge", notes=["read README.md: Widget — A widget that frobs."]
+    )
+    notes = body(state)["notes"]
+    assert any("proposal (model-authored): merge 07 and 08" in n for n in notes)
+    assert "A widget that frobs." in model.prompts[0]
+    assert "plan a merge" in model.prompts[0]
+
+
+def test_propose_without_a_real_model_declines_honestly(docs_dir):
+    from grapharc.testing import ScriptedChatModel
+
+    for model in (None, ScriptedChatModel(responses=["{}"])):
+        notes = plan_docs._propose_body_for(model)(plan_docs.DocsState())["notes"]
+        assert any("needs a real model" in n for n in notes)
+
+
+def test_a_failing_model_becomes_a_note_not_a_crash(docs_dir):
+    class Exploding:
+        def invoke(self, prompt):
+            raise RuntimeError("backend fell over")
+
+    notes = plan_docs._propose_body_for(Exploding())(plan_docs.DocsState())["notes"]
+    assert any("model call failed" in n and "backend fell over" in n for n in notes)
+
+
 def test_the_governed_loop_reaches_goal_met_with_substantive_notes(docs_dir, tmp_path):
     # Instance names differ from kinds on purpose: a real planner invents
     # names ("docs_survey" of kind "survey"), and behaviour must key on the
     # kind — this is the shape that catches a factory keyed on the name.
-    chain = ["survey", "read", "summarise"]
+    chain = ["survey", "read", "summarise", "propose"]
     names = [f"docs_{kind}" for kind in chain]
     endpoints = [START, *names, END]
     reply = json.dumps(
@@ -98,7 +143,9 @@ def test_the_governed_loop_reaches_goal_met_with_substantive_notes(docs_dir, tmp
     )
     loop = build_loop(
         ScriptedChatModel(responses=[reply]),
-        registry=plan_docs.build_registry(),
+        # The registry carries a "real" model for `propose` while the planner
+        # stays scripted — the two roles are deliberately separable.
+        registry=plan_docs.build_registry(_FakeModel()),
         state_schema=plan_docs.DocsState,
         writes=plan_docs.WRITES,
         edge_policy=plan_docs.default_edge_policy(),
@@ -109,3 +156,4 @@ def test_the_governed_loop_reaches_goal_met_with_substantive_notes(docs_dir, tmp
     assert result.succeeded
     assert any("summary of 2 file(s)" in note for note in result.state.notes)
     assert any("Widget" in note for note in result.state.notes)
+    assert any("proposal (model-authored):" in note for note in result.state.notes)

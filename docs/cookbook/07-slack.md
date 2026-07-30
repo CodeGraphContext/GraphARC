@@ -121,17 +121,20 @@ The default planning registry is the incident-response demo: its node bodies
 are stubs, so a goal like "summarise the docs here" gets an honest negative
 (or, if phrased vaguely enough, a hollow success). The shipped alternative
 has bodies that really read — `survey` / `read` / `summarise`, read-only,
-confined to the bot's working directory:
+confined to the bot's working directory — plus one kind, `propose`, whose
+body hands what was read to the model and records the recommendation that
+comes back, labelled `proposal (model-authored):`:
 
 ```
-@grapharc plan "summarise the docs in this workspace" --registry grapharc.examples.plan_docs:build_registry --trace docs.jsonl --run-id docs-1
+@grapharc plan "summarise the docs and propose how to merge them" --registry grapharc.examples.plan_docs:build_registry --model claude-cli/claude-sonnet-5 --trace docs.jsonl --run-id docs-1
 ```
 
-Works with the scripted planner (free) and with `--model`; either way the
-notes in the final state carry actual file names, titles and excerpts,
-because the reading is operator code, not model output. `--registry` from
-Slack accepts exactly these two shipped modules and nothing else — the flag's
-general form imports arbitrary code, which stays refused.
+The scripted planner (no `--model`) runs the same chain free: the reading
+notes are identical — file names, titles, excerpts are operator code, not
+model output — and the `propose` note says plainly that authoring needs a
+real model rather than pretending. `--registry` from Slack accepts exactly
+these two shipped modules and nothing else — the flag's general form imports
+arbitrary code, which stays refused.
 
 ## The `agent` opt-in
 
