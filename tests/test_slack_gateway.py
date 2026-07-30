@@ -15,7 +15,7 @@ import pytest
 
 from grapharc.slack.command import SlackCommandError, parse_command, usage_text
 from grapharc.slack.config import SlackBotConfig, SlackConfigError
-from grapharc.slack.format import MAX_FENCE_CHARS, format_result
+from grapharc.slack.format import MAX_FENCE_CHARS, format_result, mermaid_live_url
 from grapharc.slack.runner import CommandResult, run_command
 
 # ---------------------------------------------------------------------------
@@ -145,6 +145,41 @@ def test_a_fence_in_the_output_cannot_break_out():
     )
     body = format_result(result).split("```", 1)[1]
     assert "\n```\n" not in body.rsplit("```", 1)[0]
+
+
+def test_a_successful_viz_gets_a_render_link_and_the_url_round_trips():
+    import base64
+    import json
+    import zlib
+
+    mermaid = 'flowchart TD\n  start((start)) --> n0["triage"]'
+    result = CommandResult(
+        argv=["viz", "t.jsonl", "r1"],
+        exit_code=0,
+        stdout=mermaid + "\n",
+        stderr="",
+        duration_seconds=0.1,
+        timeout_seconds=60,
+    )
+    message = format_result(result)
+    assert "mermaid.live/view#pako:" in message
+
+    packed = mermaid_live_url(mermaid).split("#pako:", 1)[1]
+    decoded = json.loads(zlib.decompress(base64.urlsafe_b64decode(packed)))
+    assert decoded["code"] == mermaid
+
+
+def test_a_failed_or_non_viz_command_gets_no_render_link():
+    for argv, code in ((["viz", "t.jsonl", "r1"], 1), (["trace", "t.jsonl"], 0)):
+        result = CommandResult(
+            argv=argv,
+            exit_code=code,
+            stdout="flowchart TD",
+            stderr="",
+            duration_seconds=0.1,
+            timeout_seconds=60,
+        )
+        assert "mermaid.live" not in format_result(result)
 
 
 # ---------------------------------------------------------------------------
