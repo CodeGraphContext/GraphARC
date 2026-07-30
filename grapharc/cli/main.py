@@ -807,9 +807,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent.add_argument(
         "--executor",
-        choices=("sandbox", "local"),
+        choices=("sandbox", "local", "claude-cli"),
         default="sandbox",
-        help="local runs tools in this process with no confinement (default: sandbox)",
+        help=(
+            "local runs tools in this process with no confinement; claude-cli "
+            "delegates the whole loop to Claude Code's headless agent on your "
+            "subscription (default: sandbox)"
+        ),
     )
     agent.add_argument("--system-prompt", default=None)
     agent.set_defaults(handler=_cmd_agent)

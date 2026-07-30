@@ -108,6 +108,9 @@ ALLOWED_COMMANDS: dict[str, CommandSpec] = {
             "--max-seconds": False,
         },
         model_flags=frozenset({"--model"}),
+        # `local` (no confinement) stays unreachable; `claude-cli` delegates to
+        # Claude Code's own sandboxed loop, which the injection below tempers.
+        choice_flags={"--executor": frozenset({"sandbox", "claude-cli"})},
     ),
     "replay": CommandSpec(path_positionals=frozenset({0})),
     "diff": CommandSpec(path_positionals=frozenset({0})),
@@ -219,9 +222,7 @@ def parse_command(
                 index += 2
             if flag in spec.choice_flags and value not in spec.choice_flags[flag]:
                 allowed = ", ".join(f"`{v}`" for v in sorted(spec.choice_flags[flag]))
-                raise SlackCommandError(
-                    f"`{flag}` accepts only the shipped registries from Slack: {allowed}"
-                )
+                raise SlackCommandError(f"`{flag}` from Slack accepts only: {allowed}")
             if is_path:
                 _confined(value, workdir)
             argv.extend([flag, value])
@@ -244,5 +245,12 @@ def parse_command(
         # to just under the timeout so the graceful mechanism fires first.
         if "--max-seconds" not in argv and timeout_seconds is not None:
             argv.extend(["--max-seconds", str(max(5.0, timeout_seconds - 10.0))])
+        # A delegated run uses Claude Code's tools, and its Bash is a real
+        # shell on the host with no grapharc sandbox around it. From Slack
+        # that defaults off; a requester who set explicit globs made a
+        # deliberate policy and keeps it (deny still beats allow downstream).
+        delegated = "--executor" in argv and argv[argv.index("--executor") + 1] == "claude-cli"
+        if delegated and "--allow" not in argv and "--deny" not in argv:
+            argv.extend(["--deny", "Bash"])
 
     return argv

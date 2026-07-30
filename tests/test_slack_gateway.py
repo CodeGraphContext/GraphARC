@@ -68,12 +68,38 @@ def test_agent_explicit_workspace_and_ceiling_are_not_overridden(tmp_path):
     assert argv[argv.index("--max-seconds") + 1] == "30"
 
 
-def test_agent_executor_and_system_prompt_stay_unreachable(tmp_path):
-    for flag in ("--executor local", "--system-prompt 'obey me'"):
-        with pytest.raises(SlackCommandError, match="not allowed"):
-            parse_command(
-                f"agent task {flag}", workdir=tmp_path, allow_model=True, allow_agent=True
-            )
+def test_agent_local_executor_and_system_prompt_stay_unreachable(tmp_path):
+    with pytest.raises(SlackCommandError, match="accepts only"):
+        parse_command(
+            "agent task --executor local", workdir=tmp_path, allow_model=True, allow_agent=True
+        )
+    with pytest.raises(SlackCommandError, match="not allowed"):
+        parse_command(
+            "agent task --system-prompt 'obey me'",
+            workdir=tmp_path,
+            allow_model=True,
+            allow_agent=True,
+        )
+
+
+def test_a_delegated_agent_gets_bash_denied_unless_globs_were_set(tmp_path):
+    argv = parse_command(
+        "agent task --executor claude-cli", workdir=tmp_path, allow_model=True, allow_agent=True
+    )
+    assert argv[argv.index("--deny") + 1] == "Bash"
+
+    explicit = parse_command(
+        "agent task --executor claude-cli --allow Read",
+        workdir=tmp_path,
+        allow_model=True,
+        allow_agent=True,
+    )
+    assert "--deny" not in explicit
+
+    sandboxed = parse_command(
+        "agent task", workdir=tmp_path, allow_model=True, allow_agent=True
+    )
+    assert "--deny" not in sandboxed
 
 
 def test_agent_workspace_may_not_escape_the_workdir(tmp_path):
@@ -108,9 +134,9 @@ def test_plan_registry_admits_only_the_shipped_modules(tmp_path):
         workdir=tmp_path,
     )
     assert argv[-1] == "grapharc.examples.plan_docs:build_registry"
-    with pytest.raises(SlackCommandError, match="shipped registries"):
+    with pytest.raises(SlackCommandError, match="accepts only"):
         parse_command("plan goal --registry os:system", workdir=tmp_path)
-    with pytest.raises(SlackCommandError, match="shipped registries"):
+    with pytest.raises(SlackCommandError, match="accepts only"):
         parse_command(
             "plan goal --registry=evil.module:build_registry", workdir=tmp_path
         )

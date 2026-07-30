@@ -139,6 +139,28 @@ def run_agent(
     an exhausted budget, an error — exits 1, because a script that ran an agent
     needs to know the task was not finished without parsing the reason first.
     """
+    if executor == "claude-cli":
+        # The whole loop is Claude Code's; nothing below (registry, harness,
+        # gateway model) applies. `--model` semantics shift too: the delegated
+        # run cannot use the openrouter default, so only an explicit
+        # claude-cli/<name> is forwarded.
+        from grapharc.cli.delegate import run_delegated
+
+        return run_delegated(
+            task,
+            model_spec=None if model_spec == DEFAULT_MODEL else model_spec,
+            workspace=workspace,
+            trace_path=trace_path,
+            allow=allow,
+            deny=deny,
+            ask=ask,
+            max_turns=max_turns,
+            max_seconds=max_seconds,
+            system_prompt=system_prompt,
+            run_id=run_id,
+            as_json=as_json,
+        )
+
     from grapharc.harness import AgentConfigError, AgentNode, Harness, LocalExecutor
     from grapharc.harness.agent import DEFAULT_SYSTEM_PROMPT
     from grapharc.observe.trace import TraceRecorder

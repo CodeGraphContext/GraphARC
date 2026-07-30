@@ -164,6 +164,26 @@ What the gate does to every Slack-launched agent, non-negotiably:
 `--allow` / `--deny` tool globs pass through and are repeatable; deny beats
 allow, as in the CLI.
 
+### The delegated executor
+
+`--executor claude-cli` hands the whole task to Claude Code's own headless
+agent on the operator's subscription — no API key, no `bind_tools`, because
+the loop and the tools are Claude Code's, not grapharc's:
+
+```
+@grapharc agent "summarise the markdown here" --executor claude-cli --workspace .
+```
+
+Honest trade, stated plainly: governance is coarser (Claude Code's permission
+model, not grapharc's per-call gate), and the token figure is what the
+sub-agent reports rather than what a meter charged inline. The frame stays
+grapharc's — workspace confined, wall clock enforced from outside, the run
+recorded to the trace. From Slack, tool names are Claude Code's (`Read`,
+`Grep`, `Edit`, `Bash`, …), and a delegated run with no explicit
+`--allow`/`--deny` gets `--deny Bash` injected: an unsandboxed shell on the
+host is not something a bare Slack message should carry. `--executor local`
+stays unreachable from Slack.
+
 ## The honest caveats
 
 - **The bot is alive while the process is.** Laptop lid closed means commands
