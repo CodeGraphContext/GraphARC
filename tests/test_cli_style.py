@@ -22,6 +22,7 @@ import re
 import selectors
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -29,8 +30,9 @@ pytestmark = pytest.mark.skipif(
     not hasattr(os, "openpty"), reason="needs a pty, which Windows has no equivalent for"
 )
 
-# Commands whose human-mode output is styled and deterministic enough to compare.
-# `plan` and `demo` are here because they are the two the docs print verbatim.
+# Commands with styled human-mode output. Exit codes are deliberately not pinned
+# here: `models --check` exits 1 when the host can reach no real provider, which
+# is correct and is what a machine with no credentials does.
 STYLED = [
     pytest.param(["plan", "investigate the checkout outage"], id="plan"),
     pytest.param(["models"], id="models"),
@@ -38,10 +40,21 @@ STYLED = [
     pytest.param(["demo", "stage0"], id="demo-stage0"),
 ]
 
+# The subset whose output is reproducible enough to compare byte-for-byte across
+# two separate invocations. `models --check` is excluded on purpose: it probes the
+# host — a `claude` binary on PATH, a key in the environment, a socket to a local
+# ollama — so two runs are not guaranteed to agree, and comparing them would buy a
+# flake rather than a guarantee. `docs/cookbook/02-models.md` marks that command as
+# varying for the same reason; this follows that judgement rather than contradicting it.
+COMPARABLE = [param for param in STYLED if param.id != "models-check"]
+
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # Each run mints its own scratch directory, so the path is not a property of the
 # output. Normalised rather than excluded, so a *missing* path still fails.
-_TMPDIR = re.compile(r"/tmp/grapharc-[A-Za-z0-9_.-]+")
+# Built from `gettempdir()` rather than a literal "/tmp", because a runner that
+# sets TMPDIR elsewhere would otherwise leave the paths unnormalised and the
+# comparison below would fail for a reason that has nothing to do with styling.
+_TMPDIR = re.compile(re.escape(tempfile.gettempdir()) + r"/grapharc-[A-Za-z0-9_.-]+")
 
 
 def _env(**extra: str) -> dict[str, str]:
@@ -119,14 +132,16 @@ def test_a_terminal_gets_escapes_and_a_pipe_gets_none(args):
     on_pty, pty_code = _on_pty(args)
     out, err, piped_code = _piped(args)
 
-    assert pty_code == 0
-    assert piped_code == 0
+    # Not a fixed value — whether the command *succeeds* is the host's business
+    # (`models --check` exits 1 where no real provider is reachable). What must
+    # hold is that being watched by a terminal does not change the answer.
+    assert pty_code == piped_code, "styling changed the exit code"
     assert _ANSI.search(on_pty), "a terminal received no styling at all"
     assert "\x1b" not in out, "an escape reached piped stdout"
     assert "\x1b" not in err, "an escape reached piped stderr"
 
 
-@pytest.mark.parametrize("args", STYLED)
+@pytest.mark.parametrize("args", COMPARABLE)
 def test_stripping_the_escapes_reproduces_the_piped_output_exactly(args):
     """The property the byte-compared doc pages depend on.
 
