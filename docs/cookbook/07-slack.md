@@ -33,6 +33,11 @@ Output is the CLI's piped-mode bytes in a code fence. stdout in the bot is a
 pipe, so by the CLI's own contract there is no colour to strip and the bytes
 match what `grapharc … | cat` prints on the host.
 
+A successful `viz` reply carries one extra line: a *render this diagram* link.
+The whole diagram is zlib-compressed into the URL fragment, which a browser
+never sends to any server — mermaid.live's JavaScript renders it locally, so
+following the link ships the diagram to no one.
+
 ## Slack app setup (once, ~5 minutes)
 
 1. <https://api.slack.com/apps> → **Create New App** → *From a manifest*, pick

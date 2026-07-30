@@ -13,7 +13,10 @@ announced, never silent — the reader must know they are not seeing everything.
 
 from __future__ import annotations
 
+import base64
+import json
 import shlex
+import zlib
 
 from grapharc.slack.runner import CommandResult
 
@@ -37,6 +40,19 @@ def _truncate(body: str) -> tuple[str, int]:
     if len(body) <= MAX_FENCE_CHARS:
         return body, 0
     return body[:MAX_FENCE_CHARS], len(body) - MAX_FENCE_CHARS
+
+
+def mermaid_live_url(code: str) -> str:
+    """A mermaid.live link with the whole diagram compressed into the fragment.
+
+    The editor's `#pako:` form: zlib-deflated JSON, base64url. Everything after
+    the `#` is a URL fragment, which a browser never sends to the server — the
+    site's JavaScript renders the diagram locally, so following the link ships
+    the diagram to no one.
+    """
+    payload = json.dumps({"code": code, "mermaid": {"theme": "default"}})
+    packed = base64.urlsafe_b64encode(zlib.compress(payload.encode())).decode()
+    return f"https://mermaid.live/view#pako:{packed}"
 
 
 def format_result(result: CommandResult) -> str:
@@ -64,4 +80,8 @@ def format_result(result: CommandResult) -> str:
             parts.append(f"_…{cut} more characters not shown._")
     if len(parts) == 1:
         parts.append("_(no output)_")
+    # `viz` prints raw Mermaid, which Slack shows as text. One extra line makes
+    # it a diagram: a link that renders it in the browser, locally.
+    if result.argv[:1] == ["viz"] and result.exit_code == 0 and result.stdout.strip():
+        parts.append(f"<{mermaid_live_url(result.stdout.strip())}|render this diagram>")
     return "\n".join(parts)
