@@ -1376,6 +1376,48 @@ def test_run_can_be_given_a_token_ceiling(tmp_path, capsys):
     assert "over_token_budget" in [r["code"] for r in bounded["rejections"]]
 
 
+
+
+def test_run_budget_flags_reach_json_payload(tmp_path, capsys):
+    """All four Budget dimensions are settable from `grapharc run` (#5)."""
+    graph = _write_graph(tmp_path, _LEGAL_GRAPH)
+    code, payload, _ = call_json(
+        [
+            "run",
+            str(graph),
+            "--check-only",
+            "--trace",
+            str(tmp_path / "t.jsonl"),
+            "--max-tokens",
+            "5000",
+            "--max-iterations",
+            "12",
+            "--max-seconds",
+            "3.5",
+            "--max-concurrency",
+            "2",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert payload["max_tokens"] == 5000
+    assert payload["max_iterations"] == 12
+    assert payload["max_seconds"] == 3.5
+    assert payload["max_concurrency"] == 2
+
+
+def test_run_unset_budget_flags_stay_unlimited_in_json(tmp_path, capsys):
+    graph = _write_graph(tmp_path, _LEGAL_GRAPH)
+    code, payload, _ = call_json(
+        ["run", str(graph), "--check-only", "--trace", str(tmp_path / "t.jsonl")],
+        capsys,
+    )
+    assert code == 0
+    assert payload["max_tokens"] is None
+    assert payload["max_iterations"] is None
+    assert payload["max_seconds"] is None
+    assert payload["max_concurrency"] is None
+
 def test_viz_answers_an_unknown_run_id_as_a_document(tmp_path, capsys):
     """Every other reading command did; `viz` let `ReplayError` out raw."""
     graph = _write_graph(tmp_path, _LEGAL_GRAPH)

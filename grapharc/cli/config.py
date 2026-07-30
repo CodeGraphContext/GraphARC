@@ -55,6 +55,9 @@ KEYS: dict[str, type] = {
     "memory": str,
     "max_rounds": int,
     "max_tokens": int,
+    "max_iterations": int,
+    "max_seconds": float,
+    "max_concurrency": int,
 }
 
 
