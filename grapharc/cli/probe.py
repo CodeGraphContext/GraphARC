@@ -18,6 +18,14 @@ import importlib.util
 import shutil
 from typing import Any
 
+from grapharc.cli import style
+
+#: The three columns every row prints, in characters. Constants, not measurements
+#: of the terminal: `tests/test_cli.py` asserts on `"bedrock      unprobed"`, and
+#: the page in `docs/cookbook/02-models.md` shows this table verbatim.
+BACKEND_COLUMN = 12
+MARK_COLUMN = 9
+
 # A backend that is a test double rather than a provider. `--check` exits
 # non-zero when nothing real is usable, and `mock` being always-usable must not
 # make an unconfigured machine look ready.
@@ -172,15 +180,28 @@ def any_provider_usable(results: list[dict[str, Any]]) -> bool:
 
 
 def render(results: list[dict[str, Any]]) -> list[str]:
+    """The table `grapharc models --check` prints.
+
+    On a terminal the mark column carries the verdict — green usable, red
+    unusable, amber for a backend nobody wrote a probe for — which is the one
+    thing a reader is scanning this table for. The columns are the same width
+    either way, and the credential line stays indented under its own row.
+    """
     lines = []
     for r in results:
         mark = {True: "usable", False: "unusable", None: "unprobed"}[r["usable"]]
-        lines.append(f"{r['backend']:<12} {mark:<9} {r['detail']}")
+        lines.append(
+            f"{style.cell(r['backend'], BACKEND_COLUMN, tint=style.accent)} "
+            f"{style.cell(mark, MARK_COLUMN, tint=style.tint_for(r['usable']))} "
+            f"{r['detail']}"
+        )
         if r["credential"]:
-            lines.append(f"{'':<12} {'':<9} credential: {r['credential']}")
+            indent = " " * (BACKEND_COLUMN + 1 + MARK_COLUMN + 1)
+            lines.append(f"{indent}{style.dim('credential:')} {r['credential']}")
     lines.append("")
-    lines.append("local probe only — no provider was contacted, so a configured key")
-    lines.append("is not a validated one.")
+    # The caveat, not the answer: dim, so the table above it reads first.
+    lines.append(style.dim("local probe only — no provider was contacted, so a configured key"))
+    lines.append(style.dim("is not a validated one."))
     return lines
 
 

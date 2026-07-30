@@ -13,11 +13,12 @@ running node; read its docstring for what that does and does not guarantee.
 
 from __future__ import annotations
 
+import contextvars
 import ctypes
 import signal
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -71,7 +72,7 @@ def _call_key(source: Any) -> Any:
 
 
 class _MeteredCalls:
-    """The model calls the usage callback charged on one thread, by identity.
+    """The model calls the usage callback charged in one node scope, by identity.
 
     Not a count of tokens: a re-report is recognised because it names the same
     call, never because it happens to be the same number of tokens.
@@ -101,6 +102,30 @@ class _MeteredCalls:
         return True
 
 
+class _NodeScope:
+    """One node execution's re-report ledger and its own share of the spend.
+
+    `tokens` exists because the run's meter is shared: subtracting a
+    before/after reading off it attributed every *sibling's* concurrent spend to
+    whichever fan-out worker happened to be running at the time. This counts only
+    the charges made inside this scope, so the same work costs the same whether
+    it runs in parallel or one at a time.
+    """
+
+    __slots__ = ("ledger", "tokens")
+
+    def __init__(self) -> None:
+        self.ledger = _MeteredCalls()
+        self.tokens = 0
+
+
+# The node scope a re-report may claim a metered call from, as (meter, scope).
+# Context-scoped rather than thread-scoped: see `BudgetMeter.automatic_scope`.
+_METERED_SCOPE: contextvars.ContextVar[tuple[Any, _NodeScope] | None] = (
+    contextvars.ContextVar("grapharc_metered_scope", default=None)
+)
+
+
 class BudgetMeter:
     """Thread-safe per-run usage accountant.
 
@@ -116,7 +141,6 @@ class BudgetMeter:
         self._iterations = 0
         self._tokens = 0
         self._started_at = time.monotonic()
-        self._metered: dict[int, _MeteredCalls] = {}
 
     def charge_iteration(self, n: int = 1) -> None:
         with self._lock:
@@ -142,39 +166,80 @@ class BudgetMeter:
         run early and is visible in `snapshot()`; under-reporting is invisible
         and arrives on the bill. Pass `source=` to be exact.
 
-        Two shipped callers still charge an unnamed integer for a call the
-        callback already metered — `grapharc.testing.charge_usage` and
-        `AgentNode._charge_tokens` — so a node using either pays twice. Both
-        hold the message: `charge_tokens(total, source=message)` fixes them, and
-        keeps working when they run outside a graph, where nothing metered the
-        call and the charge must land.
+        All three shipped re-reporters now name their source — `testing.
+        charge_usage`, `AgentNode._charge_tokens` and `planner.proposal._charge`
+        each pass `source=message` — so none of them pays twice, and each still
+        works outside a graph, where nothing metered the call and the charge must
+        land.
+
+        What the source is matched against is a *node scope*, not a thread; see
+        `automatic_scope` for why that distinction was load-bearing.
         """
         with self._lock:
-            metered = self._metered.get(threading.get_ident())
+            scope = self._current_scope()
             if automatic:
                 self._tokens += n
-                if metered is not None and source is not None:
-                    metered.record(source)
+                self._attribute(scope, n)
+                if scope is not None and source is not None:
+                    scope.ledger.record(source)
                 return
-            if source is not None and metered is not None and metered.claim(source):
+            if source is not None and scope is not None and scope.ledger.claim(source):
                 return
             self._tokens += n
+            self._attribute(scope, n)
+
+    @staticmethod
+    def _attribute(scope: _NodeScope | None, n: int) -> None:
+        """Credit `n` to the node scope that spent it. Only charges that actually
+        landed on the run total get here, so a dropped re-report is not counted."""
+        if scope is not None:
+            scope.tokens += n
+
+    def _current_scope(self) -> _NodeScope | None:
+        """This node execution's scope, or None outside any. Caller holds the lock."""
+        entry = _METERED_SCOPE.get()
+        # The meter is part of the key so a scope opened by one meter — the
+        # planner runs a sub-meter inside the run's — cannot lend its scope to
+        # a charge made against another.
+        return entry[1] if entry is not None and entry[0] is self else None
+
+    def scope_tokens(self) -> int | None:
+        """Tokens charged inside the current node scope, or None outside one.
+
+        What a single node execution actually spent, as opposed to how the run's
+        shared total moved while it happened to be running.
+        """
+        with self._lock:
+            scope = self._current_scope()
+            return None if scope is None else scope.tokens
 
     @contextmanager
     def automatic_scope(self) -> Iterator[None]:
         """Bound the window in which a metered call may be re-reported for free.
 
-        Scoped per thread and opened once per node, so a re-report in one node
-        can never claim a call metered by another.
+        Scoped to the calling *context* and opened once per node, so a re-report
+        in one node can never claim a call metered by another.
+
+        A `contextvars` scope rather than a thread-keyed one, because the runtime's
+        usage callback does not always run on the thread the node body runs on.
+        `on_llm_end` is sync, so under `ainvoke`/`astream` LangChain dispatches it
+        to a worker thread while the body stays on the event loop. Keyed by thread
+        ident, the automatic charge then found no ledger, never recorded the call,
+        and the node's *named* re-report — the documented free path — was charged a
+        second time: every `async def` node using `charge_usage`, `AgentNode.
+        _charge_tokens` or `planner.proposal._charge` reported double its real
+        spend and hit `max_tokens` at half its declared allowance. LangChain copies
+        the context across that hop, so the callback and the body share one ledger.
+
+        Contexts also nest properly. `reset(token)` restores an enclosing scope's
+        ledger, where popping a thread-keyed entry discarded it — so an inner scope
+        used to make the outer node's remaining re-reports pay twice.
         """
-        ident = threading.get_ident()
-        with self._lock:
-            self._metered[ident] = _MeteredCalls()
+        token = _METERED_SCOPE.set((self, _NodeScope()))
         try:
             yield
         finally:
-            with self._lock:
-                self._metered.pop(ident, None)
+            _METERED_SCOPE.reset(token)
 
     @property
     def iterations(self) -> int:
@@ -255,6 +320,15 @@ _SIGNAL_SLOT = threading.Lock()
 # node alive; the cost while a node is being torn down is one timer per 50ms.
 _REARM_SECONDS = 0.05
 
+# The longest delay both mechanisms can actually be armed with. `setitimer`
+# raises `OverflowError` past the platform's `time_t` (~2**31 seconds), and
+# `threading.Timer` accepts a larger value but crashes its own thread once the
+# underlying `wait` exceeds `threading.TIMEOUT_MAX`. A `max_seconds` beyond this
+# is ~68 years, which no process reaches, so clamping the *armed delay* costs no
+# enforcement: the deadline is still computed from the meter, and the guard's
+# exit-time check still refuses a node that overran.
+_MAX_ARMABLE_SECONDS = min(2.0**31 - 1, threading.TIMEOUT_MAX)
+
 
 def _async_raise(thread_id: int, exc: type[BaseException] | None) -> None:
     """Queue `exc` in another thread, or clear a queued one when `exc` is None."""
@@ -329,18 +403,29 @@ def deadline_guard(meter: BudgetMeter, *, what: str) -> Iterator[None]:
     state: dict[str, Any] = {"armed": True, "fired": False, "timer": None}
     lock = threading.Lock()
     thread_id = threading.get_ident()
-    use_signal = _signal_slot_available() and _SIGNAL_SLOT.acquire(blocking=False)
+    # What the timers are armed with, as opposed to what the deadline *is*.
+    armable = min(remaining, _MAX_ARMABLE_SECONDS)
 
-    if use_signal:
+    def arm_signal() -> Callable[[], None] | None:
+        """Arm SIGALRM and return its disarm, or return None to use mechanism 2.
+
+        Arming is undone on failure rather than left half-done. `setitimer`
+        rejects a `remaining` beyond the platform's `time_t` — `float("inf")`,
+        or a plausible "effectively unlimited" like `1e10` — and it raises
+        *after* the handler is installed and the slot is taken. Letting that
+        propagate leaked both for the life of the process: every later guard
+        found the slot held and silently degraded to mechanism 2, which cannot
+        unwind a blocking syscall, and a stray SIGALRM anywhere in the program
+        would raise `NodeDeadlineExceeded` citing a finished run's meter.
+        """
+        if not (_signal_slot_available() and _SIGNAL_SLOT.acquire(blocking=False)):
+            return None
 
         def on_alarm(signum: int, frame: object) -> None:
             state["fired"] = True
             raise NodeDeadlineExceeded(detail())
 
         previous_handler = signal.signal(signal.SIGALRM, on_alarm)
-        # The third argument is the repeat interval: the kernel re-arms the
-        # alarm for us, so a swallowed SIGALRM is followed by another one.
-        signal.setitimer(signal.ITIMER_REAL, remaining, _REARM_SECONDS)
 
         def disarm() -> None:
             # An alarm landing mid-disarm raises out of `setitimer`, so the
@@ -350,6 +435,20 @@ def deadline_guard(meter: BudgetMeter, *, what: str) -> Iterator[None]:
             finally:
                 signal.signal(signal.SIGALRM, previous_handler)
                 _SIGNAL_SLOT.release()
+
+        try:
+            # The third argument is the repeat interval: the kernel re-arms the
+            # alarm for us, so a swallowed SIGALRM is followed by another one.
+            signal.setitimer(signal.ITIMER_REAL, armable, _REARM_SECONDS)
+        except (OverflowError, OSError, ValueError):
+            disarm()
+            return None
+        return disarm
+
+    disarm_signal = arm_signal()
+
+    if disarm_signal is not None:
+        disarm = disarm_signal
     else:
 
         def fire() -> None:
@@ -371,7 +470,7 @@ def deadline_guard(meter: BudgetMeter, *, what: str) -> Iterator[None]:
             timer.start()
 
         with lock:
-            rearm(remaining)
+            rearm(armable)
 
         def disarm() -> None:
             with lock:

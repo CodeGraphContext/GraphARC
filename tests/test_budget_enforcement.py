@@ -12,7 +12,9 @@ counts swallowed charges that were real, which is the direction that costs
 money.
 """
 
+import asyncio
 import operator
+import signal
 import threading
 import time
 from typing import Annotated
@@ -155,6 +157,73 @@ def test_hand_metering_with_charge_usage_stays_legal_but_stops_double_counting()
 
     assert plain.last_run.meter.tokens > 0
     assert legacy.last_run.meter.tokens == plain.last_run.meter.tokens
+
+
+async def _auto_plus_manual(state, ctx: RunContext):
+    message = await ScriptedChatModel(responses=["a scripted reply of some length"]).ainvoke(
+        "hello"
+    )
+    charge_usage(ctx, message)
+    return {"ok": True}
+
+
+def test_an_async_node_re_reporting_a_metered_call_does_not_pay_twice():
+    """The same gate as the sync case above, on the async path.
+
+    `on_llm_end` is sync, so under `ainvoke` LangChain dispatches it to a worker
+    thread while the body stays on the event loop. A thread-keyed ledger found
+    nothing there, never recorded the call, and charged the node's named
+    re-report a second time — so every `async def` node using the shipped
+    `charge_usage` reported double its real spend.
+    """
+
+    async def auto_only(state):
+        await ScriptedChatModel(responses=["a scripted reply of some length"]).ainvoke("hello")
+        return {"ok": True}
+
+    plain = _single_node_graph(auto_only, writes={"ok"})
+    asyncio.run(plain.ainvoke({}))
+    legacy = _single_node_graph(_auto_plus_manual, writes={"ok"})
+    asyncio.run(legacy.ainvoke({}))
+
+    assert plain.last_run.meter.tokens > 0
+    assert legacy.last_run.meter.tokens == plain.last_run.meter.tokens
+
+
+def test_an_async_node_stays_within_a_token_ceiling_its_real_spend_fits():
+    """Double-charging did not just misreport — it halved the usable allowance.
+
+    The ceiling is one token above the call's real cost, so it accommodates the
+    real spend and nothing like twice it.
+    """
+
+    async def auto_only(state):
+        await ScriptedChatModel(responses=["a scripted reply of some length"]).ainvoke("hello")
+        return {"ok": True}
+
+    measure = _single_node_graph(auto_only, writes={"ok"})
+    asyncio.run(measure.ainvoke({}))
+    real_spend = measure.last_run.meter.tokens
+    assert real_spend > 0
+
+    compiled = _single_node_graph(
+        _auto_plus_manual, writes={"ok"}, budget=Budget(max_tokens=real_spend + 1)
+    )
+    asyncio.run(compiled.ainvoke({}))
+    assert compiled.last_run.meter.tokens == real_spend
+
+
+def test_a_nested_automatic_scope_restores_the_enclosing_one():
+    """Popping a thread-keyed entry discarded the outer node's ledger, so its
+    remaining re-reports paid twice. A context scope restores it."""
+    meter = BudgetMeter(Budget())
+    call = object()
+    with meter.automatic_scope():
+        meter.charge_tokens(100, automatic=True, source=call)
+        with meter.automatic_scope():
+            meter.charge_tokens(50, automatic=True, source=object())
+        meter.charge_tokens(100, source=call)  # a re-report, still free
+    assert meter.tokens == 150
 
 
 def test_a_manual_charge_the_callback_never_saw_still_counts():
@@ -518,6 +587,33 @@ def test_deadline_guard_refuses_to_start_work_past_the_deadline():
     with pytest.raises(NodeDeadlineExceeded, match="max_seconds"):
         with deadline_guard(meter, what="node 'n'"):
             pytest.fail("the guard let a node start after the budget was spent")
+
+
+@pytest.mark.parametrize("unreachable", [float("inf"), 1e10])
+def test_an_unreachable_max_seconds_does_not_disable_the_next_run(unreachable):
+    """A `max_seconds` past the platform's `time_t` used to poison the process.
+
+    `setitimer` raises `OverflowError` *after* the SIGALRM handler is installed
+    and the process-wide slot is taken, and both were left that way — so every
+    later guard found the slot held and silently fell back to the async-exception
+    mechanism, which cannot unwind a blocking syscall. The 0.2s deadline below
+    then took the full 2s sleep to be noticed.
+    """
+
+    def slow(state):
+        time.sleep(2.0)
+        return {"ok": True}
+
+    # An unreachable ceiling must not fire, and must not leave a trap behind.
+    _single_node_graph(slow, writes={"ok"}, budget=Budget(max_seconds=unreachable)).invoke({})
+
+    started = time.monotonic()
+    with pytest.raises(NodeDeadlineExceeded, match="max_seconds"):
+        _single_node_graph(slow, writes={"ok"}, budget=Budget(max_seconds=0.2)).invoke({})
+    assert time.monotonic() - started < 1.0, "SIGALRM was still poisoned"
+
+    if hasattr(signal, "SIGALRM"):
+        assert signal.getsignal(signal.SIGALRM) in (signal.SIG_DFL, signal.SIG_IGN)
 
 
 def test_a_deadline_exceeded_is_a_budget_exceeded():

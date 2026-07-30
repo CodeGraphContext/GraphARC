@@ -13,6 +13,12 @@ is missing, a file does not exist, a model spec names no backend).
 Reading commands (`trace`, `metrics`, `viz`, `diff`) all read the same JSONL the
 runtime writes, so the metrics and the audit trail cannot disagree: there is
 only one record.
+
+Human output is coloured only when stdout is an interactive terminal, and the
+colour is the *only* difference: same lines, same words, same column widths. So
+`grapharc … | grep`, a captured log and the transcripts printed in `README.md`
+all keep the bytes they had before `grapharc.cli.style` existed. `--no-color`,
+`NO_COLOR` and `--json` each turn it off.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from grapharc import __version__
 # `grapharc.cli.agent` is safe to import here: it pulls in nothing but the
 # stdlib and this package. Every component it *drives* — the toolset, the
 # gateway, the harness — it imports inside the command.
+from grapharc.cli import style
 from grapharc.cli.agent import (
     DEFAULT_MAX_SECONDS,
     DEFAULT_MAX_TOKENS,
@@ -296,8 +303,8 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         "trace": str(trace_path),
         "result": result,
     }
-    lines = [f"{key}: {value}" for key, value in result.items()]
-    lines += ["", f"trace: {trace_path}"]
+    lines = style.kv_block((str(key), str(value)) for key, value in result.items())
+    lines += ["", style.kv("trace", str(trace_path), tint=style.accent)]
     emit(payload, lines, as_json=args.json)
     return EXIT_OK
 
@@ -357,6 +364,7 @@ def _cmd_models(args: argparse.Namespace) -> int:
         usable = any_provider_usable(results)
         emit(
             {"ok": usable, "command": "models", "check": True, "backends": results},
+            # Styled by `probe.render`, which owns the three-column layout.
             render(results),
             as_json=args.json,
         )
@@ -376,7 +384,7 @@ def _cmd_models(args: argparse.Namespace) -> int:
             return fail(str(exc), as_json=args.json, command="models", spec=args.spec)
         emit(
             {"ok": True, "command": "models", **resolved},
-            [f"{key}: {value}" for key, value in resolved.items()],
+            style.kv_block((str(key), str(value)) for key, value in resolved.items()),
             as_json=args.json,
         )
         return EXIT_OK
@@ -403,16 +411,22 @@ def _cmd_models(args: argparse.Namespace) -> int:
         "ollama_base_url": ollama_base_url(),
         "examples": examples,
     }
+    # A redacted key is left the default colour on purpose: highlighting the one
+    # field on the page that is a fingerprint of a secret invites reading it out.
     lines = [
-        f"backends: {', '.join(BACKENDS)}",
-        f"openrouter key: {redact(openrouter_api_key())}",
-        f"openai key: {redact(openai_api_key())}",
-        f"ollama url: {ollama_base_url()}",
+        style.kv("backends", ", ".join(BACKENDS)),
+        style.kv("openrouter key", redact(openrouter_api_key())),
+        style.kv("openai key", redact(openai_api_key())),
+        style.kv("ollama url", ollama_base_url(), tint=style.accent),
         "",
-        "examples:",
-        *[f"  {spec:<38}  {note}" for spec, note in examples.items()],
+        style.heading("examples:"),
+        *[
+            f"  {style.cell(spec, 38, tint=style.accent)}  {style.dim(note)}"
+            for spec, note in examples.items()
+        ],
         "",
-        "grapharc models --check  probes which of these this machine can use",
+        style.accent("grapharc models --check")
+        + style.dim("  probes which of these this machine can use"),
     ]
     emit(payload, lines, as_json=args.json)
     return EXIT_OK
@@ -475,11 +489,19 @@ def _cmd_trace(args: argparse.Namespace) -> int:
         "count": len(events),
         "events": [e.model_dump(exclude_none=True) for e in events],
     }
+    # `[  3] act                  end    Δ{'candidate': 1}` — the step counter and
+    # the phase are scaffolding, the node name and the state delta are the reason
+    # anyone reads a trace, and `!` is the only thing that ever needs finding in a
+    # thousand lines. Columns are unchanged; the colour is the index.
     lines = []
     for event in events:
-        delta = f" Δ{event.state_delta}" if event.state_delta else ""
-        err = f" !{event.error}" if event.error else ""
-        lines.append(f"[{event.step:>3}] {event.node:<20} {event.phase:<6}{delta}{err}")
+        delta = f" {style.accent('Δ')}{event.state_delta}" if event.state_delta else ""
+        failed = f" {style.err(f'!{event.error}')}" if event.error else ""
+        lines.append(
+            f"{style.dim(f'[{event.step:>3}]')} "
+            f"{style.cell(event.node, 20, tint=style.accent)} "
+            f"{style.cell(event.phase, 6, tint=style.dim)}{delta}{failed}"
+        )
     emit(payload, lines, as_json=args.json)
     return EXIT_OK
 
@@ -499,7 +521,7 @@ def _cmd_metrics(args: argparse.Namespace) -> int:
     data = metrics.model_dump()
     emit(
         {"ok": True, "command": "metrics", **data},
-        [f"{key}: {value}" for key, value in data.items()],
+        style.kv_block((str(key), str(value)) for key, value in data.items()),
         as_json=args.json,
     )
     return EXIT_OK
@@ -524,6 +546,9 @@ def _cmd_viz(args: argparse.Namespace) -> int:
             "run_id": args.run_id,
             "mermaid": mermaid,
         },
+        # Deliberately unstyled, on a terminal too. This output exists to be
+        # pasted into a Mermaid renderer; a box around it or an escape sequence
+        # inside it would make the one thing the command is for stop working.
         [mermaid],
         as_json=args.json,
     )
@@ -543,6 +568,20 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--json", action="store_true", help="print one JSON document instead of text"
+    )
+    # On `common` rather than the top level, for the same reason `--json` is: the
+    # position a shell user reaches for is after the arguments. Declaring it in
+    # both places would not work anyway — the subparser's default would overwrite
+    # a value given before the subcommand, in the one namespace they share.
+    #
+    # Colour is off whenever stdout is not a terminal, so this is only ever needed
+    # to *keep* it off somewhere `isatty()` says yes and the reader disagrees: a
+    # tty being recorded, a pager that shows escapes, a screen reader. `NO_COLOR`
+    # in the environment does the same thing for every run at once.
+    common.add_argument(
+        "--no-color",
+        action="store_true",
+        help="never colour the output, even when stdout is a terminal (see also NO_COLOR)",
     )
     # `--config` belongs only to the commands that resolve settings. It used to
     # live on `common`, so every command accepted it and nine silently ignored
@@ -827,6 +866,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # `--json` disables colour too, belt and braces: a JSON run has no human
+    # reader, and `tests/test_cli.py` requires that exactly one document reaches
+    # stdout and nothing at all reaches stderr. Turning styling off at the source
+    # means no future call site can leak an escape sequence into a payload.
+    style.configure(no_color=args.no_color or args.json)
     if args.command == "models" and args.check and args.spec:
         return fail(
             "`models --check` probes the configured backends and `models <spec>` "

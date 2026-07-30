@@ -76,6 +76,11 @@ class MeterCallbackHandler(BaseCallbackHandler):
         # `observe.cost` keeps recorded and estimated figures apart.
         self.cost_usd: float | None = None
         self.models: list[str] = []
+        # This node execution's own token spend, stamped by `charging` when the
+        # scope closes. Read from the meter's node scope rather than differenced
+        # off the run total, which credited a fan-out worker with whatever its
+        # siblings spent while it was running.
+        self.tokens = 0
 
     def _record_price(self, response: LLMResult) -> None:
         """Accumulate the price a backend reported through `llm_output`.
@@ -129,12 +134,19 @@ def charging(meter: BudgetMeter) -> Iterator[MeterCallbackHandler]:
 
     Also opens the meter's automatic scope, so a call metered here can be
     re-reported by hand inside this block — and only inside it.
+
+    On the way out it stamps the scope's token tally onto the handler. Callers
+    read `handler.tokens` after the block has closed — the node wrapper reports
+    it on the node's `end` event — and by then the scope itself is gone.
     """
     handler = MeterCallbackHandler(meter)
     token = _ACTIVE_HANDLER.set(handler)
     try:
         with meter.automatic_scope():
-            yield handler
+            try:
+                yield handler
+            finally:
+                handler.tokens = meter.scope_tokens() or 0
     finally:
         _ACTIVE_HANDLER.reset(token)
 

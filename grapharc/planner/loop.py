@@ -248,6 +248,10 @@ class _Execution(NamedTuple):
     materialization_error: str = ""
     execution_error: str = ""
     hard_stop: LoopStop | None = None
+    # The sub-run's iteration count, so the round can report what it spent.
+    # `_charge_back` folds this into the run's meter either way; carrying it here
+    # is what lets `RoundRecord.iterations` hold a figure instead of always 0.
+    iterations: int = 0
 
     @property
     def failure(self) -> str:
@@ -482,6 +486,7 @@ class GovernedLoop:
                 execution_error=attempt.execution_error,
                 executed=attempt.executed,
                 progressed=progressed,
+                iterations=attempt.iterations,
             )
 
         if stop is None:
@@ -593,15 +598,22 @@ class GovernedLoop:
                 budget=budget,
             )
         except BudgetExceeded as exc:
-            self._charge_back(compiled, meter)
+            iterations = self._charge_back(compiled, meter)
             return _Execution(
-                state=state, execution_error=exc.reason, hard_stop=LoopStop.BUDGET_EXHAUSTED
+                state=state,
+                execution_error=exc.reason,
+                hard_stop=LoopStop.BUDGET_EXHAUSTED,
+                iterations=iterations,
             )
         except Exception as exc:  # noqa: BLE001 - a failed subgraph is a replanning input
-            self._charge_back(compiled, meter)
-            return _Execution(state=state, execution_error=f"raised {exc!r}")
-        self._charge_back(compiled, meter)
-        return _Execution(executed=True, state=self._initial_state(raw))
+            iterations = self._charge_back(compiled, meter)
+            return _Execution(
+                state=state, execution_error=f"raised {exc!r}", iterations=iterations
+            )
+        iterations = self._charge_back(compiled, meter)
+        return _Execution(
+            executed=True, state=self._initial_state(raw), iterations=iterations
+        )
 
     def _round_budget(self, meter: BudgetMeter) -> Budget:
         """This round's ceiling: exactly what the run has left, per dimension.
@@ -618,18 +630,21 @@ class GovernedLoop:
         )
 
     @staticmethod
-    def _charge_back(compiled: Any, meter: BudgetMeter) -> None:
+    def _charge_back(compiled: Any, meter: BudgetMeter) -> int:
         """Fold the round's spend into the run's meter, whether or not it finished.
 
         The sub-run's meter is a separate accountant with its own ceiling; the
         loop's meter never saw those calls, so this charge is new spend rather
         than a re-report and is counted unnamed on purpose.
+
+        Returns the sub-run's iteration count, for the round to record.
         """
         sub = getattr(compiled, "last_run", None)
         if sub is None:
-            return
+            return 0
         meter.charge_tokens(sub.meter.tokens)
         meter.charge_iteration(sub.meter.iterations)
+        return sub.meter.iterations
 
     # -- recording ------------------------------------------------------------
 
@@ -648,8 +663,14 @@ class GovernedLoop:
             ctx,
             node=f"{self.name}:round{record.round}",
             phase="round",
-            duration_ms=record.duration_ms,
-            tokens=record.tokens,
+            # No `tokens=` and no `duration_ms=`: a round is an *envelope*, not a
+            # measurement. Its tokens are the planner's, already reported by the
+            # `plan` event, and its duration encloses that plan plus every node
+            # the round executed. `metrics`, `cost` and `replay` sum node totals
+            # *plus* every event they cannot place inside a node — and `round` is
+            # one of those — so reporting either here counted the same spend
+            # twice. `RoundRecord` still carries both for callers reading the
+            # returned `LoopResult`; what changes is only what lands on the trace.
             state_delta={
                 "round": record.round,
                 "proposal_id": record.proposal.proposal_id if record.proposal else "",
@@ -660,6 +681,12 @@ class GovernedLoop:
                 "executed": record.executed,
                 "progressed": record.progressed,
                 "stop": stop.value if stop is not None else "",
+                # The envelope's own figures, under names no reader sums. What a
+                # round spent stays answerable from the file; what it spent is
+                # just no longer added to the totals a second time.
+                "round_tokens": record.tokens,
+                "round_iterations": record.iterations,
+                "round_duration_ms": round(record.duration_ms, 2),
             },
             error=problem or None,
         )

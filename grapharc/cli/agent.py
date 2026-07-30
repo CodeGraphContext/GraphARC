@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from grapharc.cli import optional
+from grapharc.cli import optional, style
 from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit, fail
 
 # Entry points accepted from `grapharc.tools`, in preference order: a registrar
@@ -241,24 +241,62 @@ def run_agent(
         "refused": len(result.refused),
     }
 
+    width = style.LABEL_WIDTH
+    note = f"  {style.dim(f'({result.note})')}" if result.note else ""
+
+    def count(number: int) -> str:
+        """A count, red once it is not zero.
+
+        Zero refusals is not news; one is the reason to read the tool-call rows
+        underneath it. The digits are the same either way when colour is off.
+        """
+        return style.err(str(number)) if number else str(number)
+
     lines = [
-        f"task      : {task}",
-        f"model     : {model_spec}",
-        f"workspace : {workspace}",
-        f"tools     : {', '.join(visible) or '(none visible under this policy)'}",
-        f"policy    : allow={allow} ask={ask} deny={deny}",
+        style.kv("task", task, width=width),
+        style.kv("model", model_spec, width=width, tint=style.accent),
+        style.kv("workspace", str(workspace), width=width, tint=style.accent),
+        style.kv(
+            "tools",
+            ", ".join(visible) or "(none visible under this policy)",
+            width=width,
+        ),
+        style.kv(
+            "policy",
+            f"{style.dim('allow=')}{allow} {style.dim('ask=')}{ask} {style.dim('deny=')}{deny}",
+            width=width,
+        ),
         "",
-        f"stopped   : {reason}{f'  ({result.note})' if result.note else ''}",
-        f"turns     : {result.iterations}   tool calls: {len(result.tool_calls)}   "
-        f"denied: {len(result.denied)}   refused: {len(result.refused)}",
-        f"tokens    : {meter.tokens:,}",
+        style.kv(
+            "stopped",
+            f"{(style.ok if met else style.warn)(reason)}{note}",
+            width=width,
+        ),
+        style.kv(
+            "turns",
+            f"{result.iterations}   {style.dim('tool calls:')} {len(result.tool_calls)}   "
+            f"{style.dim('denied:')} {count(len(result.denied))}   "
+            f"{style.dim('refused:')} {count(len(result.refused))}",
+            width=width,
+        ),
+        style.kv("tokens", f"{meter.tokens:,}", width=width),
     ]
     for call in result.tool_calls:
-        suffix = f" [{call.refused_by}]" if call.refused_by else ""
-        lines.append(f"   {call.status.value:<8} {call.tool}{suffix}")
+        suffix = f" {style.dim(f'[{call.refused_by}]')}" if call.refused_by else ""
+        # `ToolCallStatus` is ok / denied / error; anything a later version adds
+        # lands on amber rather than being quietly called a success.
+        verdict = {"ok": True, "denied": False, "error": False}.get(call.status.value)
+        lines.append(
+            f"   {style.cell(call.status.value, 8, tint=style.tint_for(verdict))} "
+            f"{style.accent(call.tool)}{suffix}"
+        )
     lines.append("")
-    lines.append(f"answer    : {result.output}" if met else f"partial   : {result.partial_output}")
-    lines.append(f"trace     : {trace_path}")
+    lines.append(
+        style.kv("answer", str(result.output), width=width)
+        if met
+        else style.kv("partial", str(result.partial_output), width=width, tint=style.dim)
+    )
+    lines.append(style.kv("trace", str(trace_path), width=width, tint=style.accent))
 
     emit(payload, lines, as_json=as_json)
     return EXIT_OK if met else EXIT_FAILED

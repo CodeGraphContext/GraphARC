@@ -163,7 +163,16 @@ def build_loop(
     # the same object, and a node body could otherwise widen it between rounds.
     registry.freeze()
     return GovernedLoop(
-        planner=PlannerNode(model, name="incident", catalog=registry.catalog()),
+        # The planner and the materializer get the recorder too. Without it the
+        # run's own trace held only `admission`/`round`/`stop`: no `plan` event
+        # saying what was proposed and what it cost, and — because the built
+        # subgraph inherits the materializer's recorder — no `start`/`end` pair
+        # for any node the loop actually executed. README's "the executed nodes'
+        # own start/end pairs" was true of a hand-wired loop and false of the
+        # shipped one, which is the one `grapharc plan` drives.
+        planner=PlannerNode(
+            model, name="incident", catalog=registry.catalog(), trace=trace
+        ),
         checker=AdmissionChecker(
             registry=registry,
             edge_policy=edge_policy or default_edge_policy(),
@@ -173,6 +182,7 @@ def build_loop(
             registry=registry,
             state_schema=state_schema or IncidentState,
             writes=writes if writes is not None else WRITES,
+            trace=trace,
         ),
         budget=budget,
         limits=limits,
