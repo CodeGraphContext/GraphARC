@@ -25,6 +25,7 @@ an afterthought. The defaults:
 | `demo`, `run`, `plan`, `models`, `replay`, `diff`, `trace`, `metrics`, `viz` | `serve` |
 | Paths that resolve inside the bot's working directory | Any path that escapes it (`trace ../../.env` is refused before a process spawns) |
 | The budget, policy and trace flags each command already has | `--registry` (imports an arbitrary module), `--config`, `--json`, `--no-color` |
+| `plan --registry`, for exactly the two registries the package ships | any other `--registry` value |
 | `agent`, only behind the double opt-in below | `--model` / `--reviewer-model`, unless the operator opts in |
 
 With `--model` off, every reachable command runs the scripted, spend-free
@@ -113,6 +114,24 @@ The bot reads tokens from the process environment only. The `.env`
 upward-directory search that the model gateway performs is deliberately not
 used here: a bot that a whole workspace can drive must not discover
 credentials in a file the operator did not point it at.
+
+## A `plan` that reads
+
+The default planning registry is the incident-response demo: its node bodies
+are stubs, so a goal like "summarise the docs here" gets an honest negative
+(or, if phrased vaguely enough, a hollow success). The shipped alternative
+has bodies that really read — `survey` / `read` / `summarise`, read-only,
+confined to the bot's working directory:
+
+```
+@grapharc plan "summarise the docs in this workspace" --registry grapharc.examples.plan_docs:build_registry --trace docs.jsonl --run-id docs-1
+```
+
+Works with the scripted planner (free) and with `--model`; either way the
+notes in the final state carry actual file names, titles and excerpts,
+because the reading is operator code, not model output. `--registry` from
+Slack accepts exactly these two shipped modules and nothing else — the flag's
+general form imports arbitrary code, which stays refused.
 
 ## The `agent` opt-in
 
