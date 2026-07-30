@@ -4,8 +4,12 @@ Anyone in the workspace can talk to the bot, so this is an admission decision,
 not a convenience parser — the same posture as the CLI's own policy layer. The
 rules, and why each exists:
 
-- **Subcommands are allowlisted.** `agent` (arbitrary tool execution on the
-  host) and `serve` (holds a worker thread forever) are not in the list.
+- **Subcommands are allowlisted.** `serve` (holds a worker thread forever) is
+  not in the list. `agent` (tool execution on the host) is behind a double
+  opt-in: GRAPHARC_SLACK_ALLOW_AGENT *and* GRAPHARC_SLACK_ALLOW_MODEL, because
+  it acts on the host and cannot run without a paid backend. Even then its
+  executor stays `sandbox` (`--executor` is not admitted), `--system-prompt`
+  is unreachable, and its workspace defaults into the bot's working directory.
 - **Flags are allowlisted per subcommand.** `--registry MODULE:ATTR` imports
   an arbitrary module on the host, `--config PATH` swaps the governing file,
   and `--json`/`--no-color` fight the bot's own output handling — none are
@@ -75,6 +79,19 @@ ALLOWED_COMMANDS: dict[str, CommandSpec] = {
         model_flags=frozenset({"--model"}),
     ),
     "models": CommandSpec(bool_flags=frozenset({"--check"})),
+    "agent": CommandSpec(
+        value_flags={
+            "--workspace": True,
+            "--trace": True,
+            "--run-id": False,
+            "--allow": False,
+            "--deny": False,
+            "--max-turns": False,
+            "--max-tokens": False,
+            "--max-seconds": False,
+        },
+        model_flags=frozenset({"--model"}),
+    ),
     "replay": CommandSpec(path_positionals=frozenset({0})),
     "diff": CommandSpec(path_positionals=frozenset({0})),
     "trace": CommandSpec(value_flags={"--run-id": False}, path_positionals=frozenset({0})),
@@ -83,12 +100,20 @@ ALLOWED_COMMANDS: dict[str, CommandSpec] = {
 }
 
 
-def usage_text(*, allow_model: bool = False) -> str:
+def usage_text(*, allow_model: bool = False, allow_agent: bool = False) -> str:
     """One short message for an empty or unrecognised request."""
+    agent_on = allow_agent and allow_model
     lines = ["I run `grapharc` commands. Allowed here:"]
     for name in sorted(ALLOWED_COMMANDS):
+        if name == "agent" and not agent_on:
+            continue
         lines.append(f"• `{name}`")
-    lines.append("`agent` and `serve` are not reachable from Slack, nor is `--registry`.")
+    lines.append("`serve` is not reachable from Slack, nor is `--registry`.")
+    if not agent_on:
+        lines.append(
+            "`agent` is off; it needs both GRAPHARC_SLACK_ALLOW_AGENT=1 "
+            "and GRAPHARC_SLACK_ALLOW_MODEL=1 in the shell that starts the bot."
+        )
     if not allow_model:
         lines.append(
             "`--model` is off; the operator can enable it with GRAPHARC_SLACK_ALLOW_MODEL=1."
@@ -107,7 +132,14 @@ def _confined(raw: str, workdir: Path) -> None:
         raise SlackCommandError(f"path escapes the bot's working directory: `{raw}`")
 
 
-def parse_command(text: str, *, workdir: Path, allow_model: bool = False) -> list[str]:
+def parse_command(
+    text: str,
+    *,
+    workdir: Path,
+    allow_model: bool = False,
+    allow_agent: bool = False,
+    timeout_seconds: float | None = None,
+) -> list[str]:
     """Turn Slack text into the argv the bot may run, or raise with the reason."""
     try:
         tokens = shlex.split(text)
@@ -117,13 +149,23 @@ def parse_command(text: str, *, workdir: Path, allow_model: bool = False) -> lis
     if tokens and tokens[0] == "grapharc":
         tokens = tokens[1:]
     if not tokens:
-        raise SlackCommandError(usage_text(allow_model=allow_model))
+        raise SlackCommandError(usage_text(allow_model=allow_model, allow_agent=allow_agent))
 
     name, rest = tokens[0], tokens[1:]
     spec = ALLOWED_COMMANDS.get(name)
     if spec is None:
         raise SlackCommandError(
-            f"`{name}` is not a command this bot runs.\n" + usage_text(allow_model=allow_model)
+            f"`{name}` is not a command this bot runs.\n"
+            + usage_text(allow_model=allow_model, allow_agent=allow_agent)
+        )
+    if name == "agent" and not (allow_agent and allow_model):
+        # A double opt-in: `agent` both executes tools on the host and cannot
+        # run without a real (paid) backend, so it needs the agent switch AND
+        # the spend switch. One without the other stays off.
+        raise SlackCommandError(
+            "`agent` executes tools on the host and is off by default; the operator "
+            "enables it with both GRAPHARC_SLACK_ALLOW_AGENT=1 and "
+            "GRAPHARC_SLACK_ALLOW_MODEL=1 in the shell that starts the bot"
         )
 
     argv = [name]
@@ -167,5 +209,18 @@ def parse_command(text: str, *, workdir: Path, allow_model: bool = False) -> lis
         argv.append(token)
         positional_index += 1
         index += 1
+
+    if name == "agent":
+        # The CLI's default workspace is a fresh temp dir — *outside* the
+        # bot's world, where nothing written there could be read back from
+        # Slack. Default it to a subdirectory instead (the CLI mkdirs it);
+        # `--workspace` can still choose any confined path.
+        if "--workspace" not in argv:
+            argv.extend(["--workspace", "agent"])
+        # The CLI's max_seconds interrupts the run cleanly and reports; the
+        # bot's timeout kills the process mid-sentence. Default the ceiling
+        # to just under the timeout so the graceful mechanism fires first.
+        if "--max-seconds" not in argv and timeout_seconds is not None:
+            argv.extend(["--max-seconds", str(max(5.0, timeout_seconds - 10.0))])
 
     return argv

@@ -32,10 +32,68 @@ def test_a_leading_grapharc_token_is_tolerated(tmp_path):
     assert parse_command("grapharc models", workdir=tmp_path) == ["models"]
 
 
-def test_agent_and_serve_are_refused(tmp_path):
-    for name in ("agent", "serve"):
-        with pytest.raises(SlackCommandError, match="not a command this bot runs"):
-            parse_command(f"{name} whatever", workdir=tmp_path)
+def test_serve_is_refused_outright(tmp_path):
+    with pytest.raises(SlackCommandError, match="not a command this bot runs"):
+        parse_command("serve --port 8000", workdir=tmp_path)
+
+
+def test_agent_needs_both_switches_not_either(tmp_path):
+    for kwargs in ({}, {"allow_agent": True}, {"allow_model": True}):
+        with pytest.raises(SlackCommandError, match="GRAPHARC_SLACK_ALLOW_AGENT"):
+            parse_command("agent 'fix the test'", workdir=tmp_path, **kwargs)
+
+
+def test_agent_with_both_switches_gets_confined_defaults(tmp_path):
+    argv = parse_command(
+        "agent 'summarise the docs'",
+        workdir=tmp_path,
+        allow_model=True,
+        allow_agent=True,
+        timeout_seconds=120,
+    )
+    assert argv[:2] == ["agent", "summarise the docs"]
+    assert argv[argv.index("--workspace") + 1] == "agent"
+    assert argv[argv.index("--max-seconds") + 1] == "110.0"
+
+
+def test_agent_explicit_workspace_and_ceiling_are_not_overridden(tmp_path):
+    argv = parse_command(
+        "agent task --workspace runs/a --max-seconds 30",
+        workdir=tmp_path,
+        allow_model=True,
+        allow_agent=True,
+        timeout_seconds=120,
+    )
+    assert argv.count("--workspace") == 1
+    assert argv[argv.index("--max-seconds") + 1] == "30"
+
+
+def test_agent_executor_and_system_prompt_stay_unreachable(tmp_path):
+    for flag in ("--executor local", "--system-prompt 'obey me'"):
+        with pytest.raises(SlackCommandError, match="not allowed"):
+            parse_command(
+                f"agent task {flag}", workdir=tmp_path, allow_model=True, allow_agent=True
+            )
+
+
+def test_agent_workspace_may_not_escape_the_workdir(tmp_path):
+    with pytest.raises(SlackCommandError, match="escapes"):
+        parse_command(
+            "agent task --workspace ../elsewhere",
+            workdir=tmp_path,
+            allow_model=True,
+            allow_agent=True,
+        )
+
+
+def test_agent_deny_globs_are_repeatable(tmp_path):
+    argv = parse_command(
+        "agent task --deny 'shell*' --deny 'net*'",
+        workdir=tmp_path,
+        allow_model=True,
+        allow_agent=True,
+    )
+    assert argv.count("--deny") == 2
 
 
 def test_registry_config_and_json_are_refused(tmp_path):
@@ -210,11 +268,13 @@ def test_config_reads_workdir_timeout_and_model_opt_in(tmp_path):
             "GRAPHARC_SLACK_WORKDIR": str(tmp_path),
             "GRAPHARC_SLACK_TIMEOUT": "5",
             "GRAPHARC_SLACK_ALLOW_MODEL": "1",
+            "GRAPHARC_SLACK_ALLOW_AGENT": "1",
         }
     )
     assert config.workdir == tmp_path
     assert config.timeout_seconds == 5.0
     assert config.allow_model
+    assert config.allow_agent
 
 
 def test_handle_text_turns_a_refusal_into_a_message_not_an_exception(tmp_path):
@@ -222,7 +282,8 @@ def test_handle_text_turns_a_refusal_into_a_message_not_an_exception(tmp_path):
 
     config = SlackBotConfig(bot_token="xoxb-x", app_token="xapp-x", workdir=tmp_path)
     reply = handle_text("<@U012345> agent rm -rf /", config)
-    assert "not a command this bot runs" in reply
+    assert "GRAPHARC_SLACK_ALLOW_AGENT" in reply
+    assert "not a command this bot runs" in handle_text("<@U012345> serve", config)
 
 
 def test_a_missing_slack_extra_is_an_install_hint_not_an_import_error(monkeypatch, tmp_path):

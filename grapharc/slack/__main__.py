@@ -27,7 +27,8 @@ def main() -> int:
         print(
             f"grapharc slack bot: workdir {config.workdir}, "
             f"timeout {config.timeout_seconds:.0f}s, "
-            f"model flags {'on' if config.allow_model else 'off'}",
+            f"model flags {'on' if config.allow_model else 'off'}, "
+            f"agent {'on' if config.allow_agent and config.allow_model else 'off'}",
             file=sys.stderr,
         )
         serve(config)

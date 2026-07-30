@@ -21,10 +21,11 @@ Only `bot.py` needs the `slack` extra, and it imports it lazily — every other
 module (and this package) is stdlib-only, so a wheel without the extra still
 imports.
 
-The gate's default is deliberately spend-free: `agent` and `serve` are refused,
-`--model` is refused unless the operator opts in, and every path argument must
-resolve inside the bot's working directory. Anyone in the workspace can talk
-to the bot; the gate is what makes that safe to allow.
+The gate's default is deliberately spend-free: `serve` is refused, `agent` and
+`--model` are refused unless the operator opts in (`agent` needs two switches:
+it acts on the host *and* it spends), and every path argument must resolve
+inside the bot's working directory. Anyone in the workspace can talk to the
+bot; the gate is what makes that safe to allow.
 """
 
 from grapharc.slack.command import (
