@@ -40,7 +40,7 @@ from grapharc.observe.replay import (
     replay,
     replay_thread,
 )
-from grapharc.observe.trace import TraceEvent, TraceRecorder, load_events
+from grapharc.observe.trace import TraceEvent, TraceReadError, TraceRecorder, load_events
 
 __all__ = [
     "ListSpanExporter",
@@ -61,6 +61,7 @@ __all__ = [
     "SpanExporter",
     "ThreadCost",
     "TraceEvent",
+    "TraceReadError",
     "TraceRecorder",
     "attribute",
     "attribute_thread",
