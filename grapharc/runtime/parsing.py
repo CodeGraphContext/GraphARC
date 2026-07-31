@@ -50,7 +50,8 @@ def _span_from(text: str, start: int) -> str | None:
 
 
 def _balanced_spans(text: str) -> list[str]:
-    """Every balanced {...} or [...] region, longest first.
+    """Every balanced {...} or [...] region: objects longest-first, then arrays
+    longest-first.
 
     Every opener is tried, not just the first one in the text. Taking only the
     first meant any bracket in the model's *prose* hijacked the span and the real
@@ -59,17 +60,23 @@ def _balanced_spans(text: str) -> list[str]:
     `Analysis (note [1]): {"supported": false}` yielded a perfectly valid `[1]`,
     substituting a fabricated value for the model's actual answer.
 
-    Longest first is what makes the ranking safe. It prefers a complete structure
-    over both a prose fragment that happens to parse and a nested piece of the
-    answer itself, so `{"claims": [{...}]}` returns the whole object rather than
-    the inner list.
+    Length alone was not sufficient to make the ranking safe. It does prefer a
+    complete structure over a nested piece of the answer itself — `{"claims":
+    [{...}]}` returns the whole object rather than the inner list — but a prose
+    fragment *longer* than the answer still won: a citation list like
+    `[101, 205, 309, ...]` outranked the real `{"supported": false}` verdict.
+    Prose brackets are square (`[1]`, `[lines 3-5]`, citation lists) while the
+    model's answer is a top-level object for every shipped caller, so object
+    spans rank ahead of array spans, each group longest-first. An array-only
+    reply still parses whole or fenced before any span is tried, so top-level
+    arrays remain reachable.
     """
     spans = [
         span
         for i, ch in enumerate(text)
         if ch in "{[" and (span := _span_from(text, i)) is not None
     ]
-    return sorted(spans, key=len, reverse=True)
+    return sorted(spans, key=lambda span: (span[0] != "{", -len(span)))
 
 
 def extract_json(content: Any) -> Any | None:
