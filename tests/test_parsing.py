@@ -67,6 +67,26 @@ def test_a_prose_bracket_is_never_substituted_for_the_answer():
     assert extract_json(reply) == {"supported": False, "reason": "negated"}
 
 
+@pytest.mark.parametrize("supported", [False, True])
+def test_a_long_prose_bracket_does_not_outrank_the_answer(supported):
+    """Length-only ranking let a citation list *longer* than the verdict win, so
+    the model's actual answer was never returned. Objects rank ahead of arrays:
+    prose brackets are square, and every shipped caller expects an object."""
+    verdict = "false" if supported is False else "true"
+    reply = (
+        "Verified against source lines [101, 205, 309, 412, 518, 622, 733, 848]: "
+        f'{{"supported": {verdict}}}'
+    )
+    assert extract_json(reply) == {"supported": supported}
+
+
+def test_an_array_answer_survives_a_brace_in_the_prose():
+    """Ranking objects first must not strand array answers: `figure{2}` does not
+    parse, so the balanced-span fallback still reaches the unfenced array."""
+    reply = "Matching ids, see figure{2}: [101, 205, 309]"
+    assert extract_json(reply) == [101, 205, 309]
+
+
 def test_the_outermost_structure_wins_over_a_nested_piece_of_it():
     reply = 'Verdict: {"claims": [{"text": "a"}], "n": 1}'
     assert extract_json(reply) == {"claims": [{"text": "a"}], "n": 1}
