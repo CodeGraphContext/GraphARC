@@ -161,6 +161,59 @@ def test_a_bool_is_not_accepted_where_a_count_belongs(tmp_path):
         load(path)
 
 
+def test_a_non_coercible_env_value_names_the_variable(monkeypatch):
+    """The file layer already names this mistake; the env layer used to let it
+    escape as a raw ValueError. An exported variable is invisible on the
+    command line, which is exactly why the error must say which one it was."""
+    monkeypatch.setenv("GRAPHARC_MAX_TOKENS", "unlimited")
+
+    with pytest.raises(ConfigError, match="GRAPHARC_MAX_TOKENS must be int, got 'unlimited'"):
+        Settings().resolve("max_tokens", None)
+
+
+def test_run_under_a_bad_env_value_fails_as_one_document(tmp_path, monkeypatch, capsys):
+    """The `--json` contract, held even for this failure: exit 2, one parseable
+    document on stdout, nothing on stderr. It used to be exit 1, an empty
+    stdout and a traceback — a CI gate read that as "topology refused"."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GRAPHARC_MAX_TOKENS", "unlimited")
+    graph = tmp_path / "graph.json"
+    graph.write_text(
+        json.dumps(
+            {
+                "nodes": [{"name": "triage"}],
+                "edges": [
+                    {"source": "__start__", "target": "triage"},
+                    {"source": "triage", "target": "__end__"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    code = main(["run", str(graph), "--check-only", "--json"])
+    out, err = capsys.readouterr()
+    payload = json.loads(out)
+
+    assert code == 2
+    assert payload["ok"] is False
+    assert "GRAPHARC_MAX_TOKENS must be int, got 'unlimited'" in payload["error"]
+    assert err == ""
+
+
+def test_plan_reports_the_env_error_not_a_planner_one(tmp_path, monkeypatch, capsys):
+    """The broad handler used to relabel this "could not build the plan:
+    invalid literal…" — pointing the reader at the model, not their shell."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GRAPHARC_MAX_ROUNDS", "abc")
+
+    code, payload = _plan_payload(capsys)
+
+    assert code == 2
+    assert "GRAPHARC_MAX_ROUNDS must be int, got 'abc'" in payload["error"]
+    assert "could not build the plan" not in payload["error"]
+
+
 def test_an_explicit_config_that_does_not_exist_is_an_error(tmp_path):
     with pytest.raises(ConfigError, match="no such file"):
         load(tmp_path / "absent.toml")
