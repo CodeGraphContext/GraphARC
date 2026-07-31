@@ -417,7 +417,7 @@ Claims carry provenance — source, observation time, and the run that produced 
 
 **Contradiction detection reports; it never resolves.** A new claim sharing a normalized (subject, predicate) with a stored one and differing in object is flagged. That is a structural test: it will not relate "is fast" to "is slow", will not match a rephrased object, and *will* flag a legitimately multi-valued predicate as disagreement. Auto-superseding on a detected conflict would delete half a multi-valued fact inside the one subsystem whose promise is that facts are never destroyed, so a caller supersedes on purpose or not at all.
 
-The limit to know: **the in-process store is still the default.** `grapharc demo stage6` and `grapharc demo capstone` keep claims in a dict for the life of the process unless you pass `--memory PATH`, which hands them the `SQLiteMemoryStore` — verified to survive across two separate interpreters, not just two calls in one. In-process stays the default so a plain run writes nothing you did not ask for. `pyproject.toml` also declares a `memory` extra for Neo4j that has no implementation behind it.
+The limit to know: **the in-process store is still the default.** `grapharc demo stage6` and `grapharc demo capstone` keep claims in a dict for the life of the process unless you pass `--memory PATH`, which hands them the `SQLiteMemoryStore` — verified to survive across two separate interpreters, not just two calls in one. In-process stays the default so a plain run writes nothing you did not ask for. The durable stores that exist are `SQLiteMemoryStore` (no extra needed) and `LadybugMemoryStore` (the `ladybug` extra); there is no extra beyond those.
 
 ## Sessions, the HTTP API, and policy
 
