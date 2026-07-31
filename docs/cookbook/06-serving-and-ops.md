@@ -11,11 +11,16 @@ re-runs each one and byte-compares it against the output block underneath. No
 live model is called anywhere in this file; the one snippet that would need a
 key says so and was not run.
 
-The `console` transcripts are the exception, and it is worth naming rather than
-leaving to be discovered: they were produced by running the commands shown, but
-the test only pairs ```python blocks, so nothing re-checks them on every commit.
-Treat a console block as a record of one real run rather than as a guarantee
-about the current tree.
+The `console` transcripts are held to the same standard, marked the way
+`02-models.md` marks its own. `<!-- verified: cli -->` above a transcript means
+every command in it is re-run on every commit and byte-compared — run ids are
+random and durations are wall-clock, so the test maps the former and masks the
+latter, and every other character has to match. `<!-- verified: cli varies -->`
+means every command is re-run and must succeed, but the output describes one
+machine — `serve` binds a port, `models --check` probes the host — so its bytes
+are the record of one real run rather than a guarantee about yours. The one
+`agent` invocation always needs a live model; it is marked
+`<!-- needs-credentials -->` and nothing here claims to have run it.
 
 Three things to know before you start:
 
@@ -1241,9 +1246,12 @@ REGISTRY = GraphRegistry({"qa": build_qa})
 ```
 
 Then, in a shell. This transcript is a real one: the ids and timestamps differ
-per run, and the only editing is the `...` marking where a long JSON body was
-cut — nothing was reworded.
+per run, and the only editing is the `...` marking where a timestamp or a long
+JSON body was cut, plus the session view re-indented for reading — nothing was
+reworded. The test re-runs every command here against a fresh server and
+requires each to succeed; the bytes below are one run's.
 
+<!-- verified: cli varies -->
 ```console
 $ PYTHONPATH=. grapharc serve --registry mygraphs:REGISTRY --port 8124
 serving grapharc.server on http://127.0.0.1:8124
@@ -1251,18 +1259,18 @@ graphs   : qa
 ctrl-c to stop
 
 $ curl -s localhost:8124/healthz
-{"status":"ok","version":"0.1.0","graphs":["qa"]}
+{"status":"ok","version":"0.1.1","graphs":["qa"]}
 
 $ curl -s -X POST localhost:8124/sessions -H 'content-type: application/json' \
       -d '{"graph":"qa","input":{"question":"how do budgets work?"}}'
-{"id":"38231fa41b8b4dad","graph":"qa","thread_id":"38231fa41b8b4dad","status":"queued", ...}
+{"id":"bf5ca55bff7b480f","graph":"qa","thread_id":"bf5ca55bff7b480f","status":"queued", ...}
 
-$ curl -s localhost:8124/sessions/38231fa41b8b4dad
+$ curl -s localhost:8124/sessions/bf5ca55bff7b480f
 {
-    "id": "38231fa41b8b4dad",
+    "id": "bf5ca55bff7b480f",
     "graph": "qa",
     "status": "succeeded",
-    "run_id": "f3f2554b3959",
+    "run_id": "0d9dce7f61c4",
     "result": {
         "question": "how do budgets work?",
         "answer": "Budgets cap iterations, tokens and time."
@@ -1271,9 +1279,9 @@ $ curl -s localhost:8124/sessions/38231fa41b8b4dad
     ...
 }
 
-$ curl -s localhost:8124/sessions/38231fa41b8b4dad/trace
-{"ts": "...", "run_id": "f3f2554b3959", "graph": "qa", "node": "answer", "phase": "start", "step": 1}
-{"ts": "...", "run_id": "f3f2554b3959", "graph": "qa", "node": "answer", "phase": "end", "step": 1, "state_delta": {"answer": "Budgets cap iterations, tokens and time."}, "duration_ms": 0.91, "tokens": 15}
+$ curl -s localhost:8124/sessions/bf5ca55bff7b480f/trace
+{"ts": "...", "run_id": "0d9dce7f61c4", "thread_id": "bf5ca55bff7b480f", "attempt": 1, "graph": "qa", "node": "answer", "phase": "start", "step": 1}
+{"ts": "...", "run_id": "0d9dce7f61c4", "thread_id": "bf5ca55bff7b480f", "attempt": 1, "graph": "qa", "node": "answer", "phase": "end", "step": 1, "state_delta": {"answer": "Budgets cap iterations, tokens and time."}, "duration_ms": 1.0288769999533542, "tokens": 15}
 ```
 
 The banner is printed *before* the server blocks, so a script watching stdout
@@ -1579,8 +1587,11 @@ Exit codes are part of the interface: `0` did the job, `1` ran and the answer
 was negative (two runs differed, a run id had no events, no backend was usable),
 `2` could not run at all (missing file, missing component, unknown model spec).
 
-A whole session, verbatim:
+A whole session, verbatim (run ids are random per run and durations are
+wall-clock; the test maps the former, masks the latter, and byte-compares every
+other character):
 
+<!-- verified: cli -->
 ```console
 $ grapharc demo stage1 --trace trace.jsonl
 ...
@@ -1612,6 +1623,8 @@ duration_ms: 0.68
 attempts: 1
 termination_reason: target_met
 per_node: {'start': 1, 'plan': 2, 'act': 2, 'verify': 2, 'finish_target_met': 1}
+events: 16
+per_phase: {'start': 8, 'end': 8}
 
 $ grapharc viz trace.jsonl 2a47f18064b7
 flowchart TD
@@ -1625,6 +1638,7 @@ flowchart TD
   n6["verify"] --> n7["finish_target_met"]
 
 $ grapharc replay trace.jsonl 2a47f18064b7 | tail -4
+        pending = []
     8 ok  finish_target_met (0.0ms)
         termination_reason = 'target_met'
   8 nodes · 81 tokens · stopped: target_met
@@ -1642,6 +1656,7 @@ Everything downstream (`metrics`, `viz`, `replay`, `diff`) wants that id.
 
 `--json` on any of them, and on failures too:
 
+<!-- verified: cli -->
 ```console
 $ grapharc metrics trace.jsonl 2a47f18064b7 --json
 {
@@ -1655,7 +1670,18 @@ $ grapharc metrics trace.jsonl 2a47f18064b7 --json
   "duration_ms": 0.75,
   "attempts": 1,
   "termination_reason": "target_met",
-  "per_node": {"start": 1, "plan": 2, "act": 2, "verify": 2, "finish_target_met": 1}
+  "per_node": {
+    "start": 1,
+    "plan": 2,
+    "act": 2,
+    "verify": 2,
+    "finish_target_met": 1
+  },
+  "events": 16,
+  "per_phase": {
+    "start": 8,
+    "end": 8
+  }
 }
 
 $ grapharc metrics nope.jsonl abc --json; echo "exit $?"
@@ -1669,12 +1695,18 @@ exit 2
 
 `grapharc models` needs no credentials to answer what a spec *resolves* to:
 
+<!-- verified: cli -->
 ```console
 $ grapharc models openrouter/anthropic/claude-haiku-4.5
 spec: openrouter/anthropic/claude-haiku-4.5
 backend: openrouter
 model: anthropic/claude-haiku-4.5
+```
 
+`--check` reports the machine it is run on:
+
+<!-- verified: cli varies -->
+```console
 $ grapharc models --check
 claude-cli   usable    'claude' on PATH at /home/you/.local/bin/claude
                        credential: claude subscription login (no API key)
@@ -1699,6 +1731,7 @@ count.
 `grapharc agent` is the one command in this list that always needs a model, so
 there is no scripted form of it and nothing here claims to have run it:
 
+<!-- needs-credentials -->
 ```console
 $ grapharc agent "summarise README.md" --workspace ./work --max-turns 6 --json
 ```

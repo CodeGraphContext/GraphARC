@@ -6,6 +6,20 @@ printed. This file enforces that mechanically rather than by review: each
 follows it. A snippet that stops working — or an output block someone tidied by
 hand — fails here with a diff.
 
+The ```console transcripts are held to the same standard, marked the way
+`tests/test_cookbook_models.py` marks its page's:
+
+    <!-- verified: cli -->        every command re-run through a real shell and
+                                  byte-compared (run ids mapped, wall clock masked)
+    <!-- verified: cli varies -->  every command re-run and required to succeed;
+                                  the output describes one machine, not compared
+    <!-- needs-credentials -->    never executed — needs a live model
+
+An unmarked transcript fails the suite, so a future edit cannot quietly put an
+unverified command on the page. The transcripts once rotted exactly that way:
+`/healthz` showed version 0.1.0 against an 0.1.1 tree, and `grapharc metrics`
+had grown two fields the page did not show.
+
 Three things are deliberately not left to the differ:
 
 - **Non-deterministic fields are normalised, not ignored.** Approval request
@@ -34,10 +48,17 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
+import os
 import re
+import shlex
+import shutil
+import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import time
 import types
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -47,6 +68,7 @@ from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from grapharc import __version__
 from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.graph import (
     END,
@@ -183,6 +205,325 @@ def test_no_snippet_reaches_a_live_backend():
         assert "get_model(" not in snippet["code"]
         assert "ClaudeCodeCLIChatModel" not in snippet["code"]
         assert "OpenRouter" not in snippet["code"]
+
+
+# -- the console transcripts --------------------------------------------------
+
+_MARKER = re.compile(r"^<!--\s*(.*?)\s*-->$")
+_CLI_MARKERS = {"verified: cli", "verified: cli varies", "needs-credentials"}
+#: A run id as the CLI prints it — 12 hex digits, fresh per run.
+_RUN_ID = re.compile(r"\b[0-9a-f]{12}\b")
+
+
+def _console_blocks() -> list[dict]:
+    """Console transcripts in order, each carrying the marker comment above it."""
+    lines = DOC.read_text(encoding="utf-8").splitlines()
+    transcripts: list[dict] = []
+    for lang, body, line in _blocks():
+        if lang != "console":
+            continue
+        marker = None
+        for above in reversed(lines[: line - 1]):
+            if above.strip():
+                found = _MARKER.match(above.strip())
+                marker = found.group(1) if found else None
+                break
+        transcripts.append({"body": body, "line": line, "marker": marker})
+    return transcripts
+
+
+def _steps(body: str) -> list[tuple[str, str]]:
+    """(command, expected output) pairs; a trailing backslash continues a command."""
+    raw: list[tuple[list[str], list[str]]] = []
+    continuing = False
+    for line in body.splitlines():
+        if continuing:
+            raw[-1][0].append(line)
+            continuing = line.endswith("\\")
+        elif line.startswith("$ "):
+            raw.append(([line[2:]], []))
+            continuing = line.endswith("\\")
+        elif raw:
+            raw[-1][1].append(line)
+    return [("\n".join(cmd), "\n".join(out).strip("\n")) for cmd, out in raw]
+
+
+CONSOLE = _console_blocks()
+_CLI_EXACT = [b for b in CONSOLE if b["marker"] == "verified: cli"]
+_CLI_VARIES = [
+    b for b in CONSOLE
+    if b["marker"] == "verified: cli varies" and "grapharc serve" not in b["body"]
+]
+_CLI_SERVE = [
+    b for b in CONSOLE
+    if b["marker"] == "verified: cli varies" and "grapharc serve" in b["body"]
+]
+_CLI_UNRUN = [b for b in CONSOLE if b["marker"] == "needs-credentials"]
+
+#: Run ids the exact transcripts quote, in order of first appearance. They are
+#: random per run, so before anything is compared each is remapped to the id
+#: the re-run actually produced — same order, because the trace file appends.
+_DOC_RUN_IDS = [
+    match.group(0)
+    for block in _CLI_EXACT
+    for match in _RUN_ID.finditer(block["body"])
+]
+_DOC_RUN_IDS = list(dict.fromkeys(_DOC_RUN_IDS))
+
+_CONSOLE_NORMALISERS = (
+    # `duration_ms: 0.68` / `"duration_ms": 0.75,` — measured wall clock
+    (re.compile(r'(duration_ms"?: )\d+\.\d+'), r"\1<t>"),
+    # `8 ok  finish_target_met (0.0ms)` — replay's measured wall clock
+    (re.compile(r"\(\d+\.\d+ms"), "(<t>ms"),
+)
+
+
+def _normalise_console(text: str) -> str:
+    """Wall-clock spans masked; line ends rstripped, because `grapharc trace`
+    pads its columns with trailing spaces and markdown files carry none."""
+    for pattern, replacement in _CONSOLE_NORMALISERS:
+        text = pattern.sub(replacement, text)
+    return "\n".join(line.rstrip() for line in text.splitlines()).strip("\n")
+
+
+def _substituted(text: str, mapping: dict[str, str]) -> str:
+    for placeholder, real in mapping.items():
+        text = text.replace(placeholder, real)
+    return text
+
+
+def _grapharc_on_path(bindir: Path) -> dict[str, str]:
+    """An env whose `grapharc` is this interpreter's, wherever pytest runs from."""
+    bindir.mkdir(parents=True, exist_ok=True)
+    shim = bindir / "grapharc"
+    shim.write_text(
+        f'#!/usr/bin/env bash\nexec "{sys.executable}" -m grapharc.cli.main "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    env = dict(os.environ)
+    env["PATH"] = f"{bindir}{os.pathsep}{env.get('PATH', '')}"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def _run_console(command: str, workdir: Path, env: dict[str, str]):
+    """Run one transcript command through a real shell, the way a reader would.
+
+    Unlike the python snippets these need a shell: the transcripts use pipes
+    (`| jq`, `| head`), an env-var prefix and `$?`. The script is the page's
+    own text, not anything a caller supplies.
+    """
+    return subprocess.run(  # noqa: S603 — fixed argv; the script is the doc's own text
+        ["bash", "-c", command],
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        timeout=180,
+    )
+
+
+def _actual_run_ids(workdir: Path) -> list[str]:
+    """Run ids in the session's trace file, in order of first appearance."""
+    path = workdir / "trace.jsonl"  # the name every transcript command uses
+    ids: list[str] = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            run_id = json.loads(line)["run_id"]
+            if run_id not in ids:
+                ids.append(run_id)
+    return ids
+
+
+_EXACT_STEPS = [
+    (block["line"], index)
+    for block in _CLI_EXACT
+    for index in range(len(_steps(block["body"])))
+]
+
+
+@pytest.fixture(scope="module")
+def console_session(tmp_path_factory):
+    """Every exact transcript's commands, run once, in order, in one directory.
+
+    The transcripts are one shell session: the `--json` block reads the trace
+    file the tour wrote, and the diff command names a run id that only exists
+    because an earlier command was redirected to `/dev/null`. So the commands
+    run in document order and share a directory, and the run-id map is refreshed
+    from the trace file before and after each one.
+    """
+    if shutil.which("jq") is None:
+        pytest.skip("the transcript pipes through jq, which is not on PATH")
+    workdir = tmp_path_factory.mktemp("console-session")
+    env = _grapharc_on_path(workdir / "bin")
+    results: dict[tuple[int, int], dict] = {}
+    for block in _CLI_EXACT:
+        for index, (command, expected) in enumerate(_steps(block["body"])):
+            mapping = dict(zip(_DOC_RUN_IDS, _actual_run_ids(workdir), strict=False))
+            proc = _run_console(_substituted(command, mapping), workdir, env)
+            mapping = dict(zip(_DOC_RUN_IDS, _actual_run_ids(workdir), strict=False))
+            results[(block["line"], index)] = {
+                "command": command,
+                "expected": _substituted(expected, mapping),
+                "proc": proc,
+            }
+    return results
+
+
+def test_every_console_transcript_is_marked():
+    """An unmarked transcript would be an unverified claim on the page."""
+    unmarked = [b["line"] for b in CONSOLE if b["marker"] not in _CLI_MARKERS]
+    assert not unmarked, f"add a marker comment above the ```console block(s) at {unmarked}"
+
+
+def test_the_console_gate_selects_what_the_page_promises():
+    """Guards against a parser change that silently selects nothing."""
+    assert len(_CLI_EXACT) == 3  # the CLI tour, `--json`, `models <spec>`
+    assert len(_CLI_SERVE) == 1
+    assert len(_CLI_VARIES) == 1  # `models --check`
+    assert len(_CLI_UNRUN) == 1  # `grapharc agent`
+    assert len(_EXACT_STEPS) >= 10
+
+
+def test_console_transcripts_only_launch_the_grapharc_cli_and_curl():
+    """Pipes to jq/head/tail only shape output; nothing else gets executed."""
+    for block in CONSOLE:
+        for command, _ in _steps(block["body"]):
+            first = next(
+                token
+                for token in shlex.split(command.replace("\\\n", " "), comments=True)
+                if "=" not in token  # skip env-var prefixes like PYTHONPATH=.
+            )
+            assert first in {"grapharc", "curl"}, command
+
+
+def test_the_unrun_transcript_is_the_agent_command_and_shows_no_output():
+    """A command nobody ran must not display output it never printed."""
+    (block,) = _CLI_UNRUN
+    ((command, output),) = _steps(block["body"])
+    assert command.startswith("grapharc agent ")
+    assert output == ""
+
+
+def test_the_health_version_the_serve_transcript_shows_is_the_real_one():
+    """This line once rotted — 0.1.0 on the page against an 0.1.1 tree — and it
+    sits in a varies-marked transcript the differ does not reach, so it is
+    pinned to the package version by name."""
+    expected = f'{{"status":"ok","version":"{__version__}","graphs":["qa"]}}'
+    assert expected in DOC.read_text(encoding="utf-8")
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize(
+    ("line", "index"), _EXACT_STEPS, ids=[f"line{li}-step{i}" for li, i in _EXACT_STEPS]
+)
+def test_console_command_prints_exactly_what_the_page_shows(console_session, line, index):
+    step = console_session[(line, index)]
+    proc = step["proc"]
+    assert proc.returncode == 0, f"$ {step['command']}\n{proc.stdout}{proc.stderr}"
+    printed = _normalise_console(proc.stdout)
+    expected = _normalise_console(step["expected"])
+    if expected.startswith("...\n"):
+        # The page elides the head of this output; the tail is still exact.
+        assert printed.endswith(expected[4:]), f"$ {step['command']}\n{proc.stdout}"
+    else:
+        assert printed == expected, f"$ {step['command']}\n{proc.stdout}"
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize(
+    ("line", "index"),
+    [(b["line"], i) for b in _CLI_VARIES for i in range(len(_steps(b["body"])))],
+)
+def test_console_command_with_machine_dependent_output_still_runs(line, index, tmp_path):
+    """`models --check` reports this machine — and exits 1 when no real backend
+    is usable here — so only its shape is asserted, as in 02-models.md."""
+    block = next(b for b in _CLI_VARIES if b["line"] == line)
+    command, _ = _steps(block["body"])[index]
+    proc = _run_console(command, tmp_path, _grapharc_on_path(tmp_path / "bin"))
+    assert "Traceback" not in proc.stderr, proc.stderr
+    assert proc.stdout.strip()
+
+
+@pytest.mark.timeout(180)
+def test_the_serve_transcript_runs_against_a_real_server(tmp_path):
+    """The `serve` transcript, replayed end to end.
+
+    The registry module is the page's own `mygraphs.py`, the server is started
+    with the page's own command (on a free port — 8124 is nobody's to claim in
+    a test suite), and every curl in the block must succeed against it. The
+    outputs are machine-dependent — ids, timestamps, durations — so they are
+    not byte-compared; the banner and the `/healthz` body are deterministic and
+    are.
+    """
+    if shutil.which("curl") is None:
+        pytest.skip("the transcript uses curl, which is not on PATH")
+    (block,) = _CLI_SERVE
+    serve_step, health_step, post_step, get_step, trace_step = _steps(block["body"])
+    assert serve_step[0].startswith("PYTHONPATH=. grapharc serve ")
+
+    (tmp_path / "mygraphs.py").write_text(UNPAIRED[0]["code"], encoding="utf-8")
+    env = _grapharc_on_path(tmp_path / "bin")
+    env["PYTHONUNBUFFERED"] = "1"  # the banner has to cross the pipe before the block
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        mapping = {"8124": str(probe.getsockname()[1])}
+
+    server = subprocess.Popen(  # noqa: S603 — fixed argv; the script is the doc's own text
+        ["bash", "-c", _substituted(serve_step[0], mapping)],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,  # uvicorn's own request log
+        stdin=subprocess.DEVNULL,
+    )
+    try:
+        banner = [server.stdout.readline().rstrip("\n") for _ in range(3)]
+        assert banner == _substituted(serve_step[1], mapping).splitlines()
+
+        # The banner is printed *before* the server binds — the page says so —
+        # so retry the first curl until the socket opens.
+        deadline = time.monotonic() + 30
+        while True:
+            health = _run_console(_substituted(health_step[0], mapping), tmp_path, env)
+            if health.returncode == 0 and health.stdout:
+                break
+            assert time.monotonic() < deadline, "the server never came up"
+            time.sleep(0.05)
+        assert health.stdout == health_step[1]
+
+        created = _run_console(_substituted(post_step[0], mapping), tmp_path, env)
+        assert created.returncode == 0, created.stderr
+        body = json.loads(created.stdout)
+        assert (body["graph"], body["status"]) == ("qa", "queued")
+        # The page's session id came from *its* run; map it to this run's.
+        mapping[json.loads(post_step[1].removesuffix(", ...}") + "}")["id"]] = body["id"]
+
+        # Watch GET /sessions/{id} until the run lands, as the page's reader did.
+        deadline = time.monotonic() + 30
+        while True:
+            view = _run_console(_substituted(get_step[0], mapping), tmp_path, env)
+            assert view.returncode == 0, view.stderr
+            if json.loads(view.stdout)["status"] in ("succeeded", "failed", "interrupted"):
+                break
+            assert time.monotonic() < deadline, "the session never reached a terminal status"
+            time.sleep(0.05)
+        assert json.loads(view.stdout)["status"] == "succeeded"
+
+        trace = _run_console(_substituted(trace_step[0], mapping), tmp_path, env)
+        assert trace.returncode == 0, trace.stderr
+        phases = [json.loads(line)["phase"] for line in trace.stdout.splitlines()]
+        assert phases == ["start", "end"], trace.stdout
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server.kill()
 
 
 # -- the claims, pinned independently of the printed output -------------------
