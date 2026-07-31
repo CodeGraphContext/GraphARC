@@ -43,6 +43,7 @@ from grapharc.session.errors import (
     SessionBusy,
     SessionExistsError,
     SessionTerminated,
+    ThreadInUseError,
     UnknownSessionError,
 )
 from grapharc.session.events import EventKind, SessionEvent
@@ -316,9 +317,30 @@ class SessionStore:
         thread_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> SessionRecord:
-        """Record a new session. The graph's checkpoint thread defaults to the id."""
+        """Record a new session. The graph's checkpoint thread defaults to the id.
+
+        A checkpoint thread belongs to exactly one session: a `thread_id`
+        another session already holds is refused with `ThreadInUseError`,
+        checked and inserted under one write lock so two creates racing on one
+        thread cannot both land. Ids are unique, so the default path — thread
+        id equals session id — can never collide on a fresh id.
+        """
         now = _now()
+        thread = thread_id or session_id
         with self._transaction() as conn:
+            # Under BEGIN IMMEDIATE, so check-then-insert is one atomic claim.
+            # A second session on an existing thread would resume the first
+            # one's checkpointed boundary with a record carrying no holds, and
+            # a gated node the first session is holding would run unapproved —
+            # `interrupt_before` does not re-fire for a boundary it has
+            # already stopped at.
+            holder = conn.execute(
+                "SELECT id FROM sessions WHERE thread_id = ?", (thread,)
+            ).fetchone()
+            # A holder with this very id is an id reuse, not a thread theft:
+            # the insert below refuses it as `SessionExistsError`.
+            if holder is not None and holder["id"] != session_id:
+                raise ThreadInUseError(thread, holder["id"])
             try:
                 conn.execute(
                     "INSERT INTO sessions (id, graph, thread_id, status, created_at, "
@@ -326,7 +348,7 @@ class SessionStore:
                     (
                         session_id,
                         graph,
-                        thread_id or session_id,
+                        thread,
                         SessionStatus.CREATED.value,
                         now,
                         now,
@@ -334,8 +356,9 @@ class SessionStore:
                     ),
                 )
             except sqlite3.IntegrityError as exc:
-                # Reusing an id would silently attach a new session to another
-                # session's checkpoint thread.
+                # Same guarantee, id column: a checkpoint thread belongs to
+                # exactly one session, and reusing an id would silently attach
+                # a new session to another session's checkpoint thread.
                 raise SessionExistsError(
                     f"session {session_id!r} already exists in {self.path}"
                 ) from exc
