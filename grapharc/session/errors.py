@@ -21,6 +21,23 @@ class SessionExistsError(SessionError):
     """A session with that id is already recorded in this store."""
 
 
+class ThreadInUseError(SessionError):
+    """The checkpoint thread already belongs to another session in this store.
+
+    A checkpoint thread belongs to exactly one session. A second session on the
+    same thread would resume the first one's checkpointed boundary with a fresh
+    record carrying no holds — and a gated node the first session is holding
+    would run with no approval ever given.
+    """
+
+    def __init__(self, thread_id: str, session_id: str) -> None:
+        super().__init__(
+            f"thread {thread_id!r} already belongs to session {session_id!r}"
+        )
+        self.thread_id = thread_id
+        self.session_id = session_id
+
+
 class UnknownGraphError(SessionError):
     """The session names a graph this process has not registered.
 
@@ -92,6 +109,7 @@ __all__ = [
     "SessionError",
     "SessionExistsError",
     "SessionTerminated",
+    "ThreadInUseError",
     "UnknownGraphError",
     "UnknownSessionError",
 ]

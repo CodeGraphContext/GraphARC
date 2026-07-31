@@ -48,6 +48,7 @@ from grapharc.session import (
     SessionStatus,
     SessionStore,
     SessionTerminated,
+    ThreadInUseError,
     UnknownGraphError,
     UnknownSessionError,
     decision_in,
@@ -250,6 +251,44 @@ def test_reusing_a_session_id_is_refused(manager):
     with pytest.raises(SessionExistsError, match="taken"):
         manager.create(GRAPH_NAME, session_id="taken")
     assert len(manager.list()) == 1
+
+
+def test_reusing_another_sessions_thread_is_refused(manager):
+    """A checkpoint thread belongs to exactly one session, explicit ids included."""
+    manager.create(GRAPH_NAME, session_id="first", thread_id="shared")
+
+    with pytest.raises(ThreadInUseError) as caught:
+        manager.create(GRAPH_NAME, session_id="second", thread_id="shared")
+    # The error names both sides, so a caller can find the session it collided with.
+    assert caught.value.thread_id == "shared"
+    assert caught.value.session_id == "first"
+
+    # The refusal is atomic: no session row, no transition row left behind.
+    assert [r.id for r in manager.list()] == ["first"]
+    assert manager.store.get("second") is None
+    assert manager.store.history("second") == []
+
+
+def test_a_second_session_on_one_thread_cannot_run_a_held_gated_node(manager):
+    """Regression for the approval-gate bypass a shared thread used to open.
+
+    A second session on the first one's thread got a fresh record with no
+    holds, resumed the checkpointed boundary, and — `interrupt_before` does
+    not re-fire for a boundary it has already stopped at — ran the gated node
+    with no approval ever given, while the first session's record still said
+    the hold was open. The refusal at `create()` is what closes it.
+    """
+    a = manager.create(GRAPH_NAME, session_id="a", thread_id="shared-thread")
+    a.run()
+    assert a.status is SessionStatus.AWAITING_APPROVAL
+    assert [h.node for h in a.record.pending_approvals] == [APPROVAL_NODE]
+
+    with pytest.raises(ThreadInUseError, match="shared-thread"):
+        manager.create(GRAPH_NAME, session_id="b", thread_id="shared-thread")
+
+    # The gated node never ran, and the first session's hold is still the truth.
+    assert APPROVAL_NODE not in a.state()["log"]
+    assert a.status is SessionStatus.AWAITING_APPROVAL
 
 
 def test_a_session_terminated_mid_turn_is_reported_not_resurrected(manager, registry):

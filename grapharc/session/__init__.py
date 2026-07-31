@@ -23,6 +23,7 @@ from grapharc.session.errors import (
     SessionError,
     SessionExistsError,
     SessionTerminated,
+    ThreadInUseError,
     UnknownGraphError,
     UnknownSessionError,
 )
@@ -68,6 +69,7 @@ __all__ = [
     "SessionStore",
     "SessionTerminated",
     "StatusChange",
+    "ThreadInUseError",
     "TurnResult",
     "UnknownGraphError",
     "UnknownSessionError",
