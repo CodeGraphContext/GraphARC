@@ -82,7 +82,16 @@ class Settings:
         env = os.environ.get(f"{ENV_PREFIX}{key.upper()}")
         if env:
             self.sources[key] = "env"
-            return KEYS.get(key, str)(env)
+            want = KEYS.get(key, str)
+            # Same named error the file layer raises for a mistyped value. An
+            # exported variable is invisible on the command line, which is
+            # exactly why the message must say which one it was.
+            try:
+                return want(env)
+            except ValueError as exc:
+                raise ConfigError(
+                    f"{ENV_PREFIX}{key.upper()} must be {want.__name__}, got {env!r}"
+                ) from exc
         if key in self.values:
             self.sources[key] = "config"
             return self.values[key]
