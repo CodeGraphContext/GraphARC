@@ -384,7 +384,8 @@ Everything here works and nothing calls it.
 - [x] **8.7 — Hand a durable store to the shipped graphs.** `grapharc run
       --memory PATH` gives `stage6` and `capstone` the `SQLiteMemoryStore`; the
       in-process one remains the default so a plain run stays hermetic. The
-      `memory` extra still names Neo4j with nothing importing it.
+      `memory` extra that named Neo4j with nothing importing it was removed;
+      a Neo4j-backed store would bring its own extra with it.
 
 ## 9. Triggers & surfaces — `[~] ~55%`
 

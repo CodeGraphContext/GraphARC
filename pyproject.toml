@@ -85,11 +85,6 @@ server = [
 mcp = [
     "mcp>=1.2",
 ]
-# Neo4j-backed claim store (ROADMAP 8.x). Nothing imports `neo4j` today; the
-# durable store that does exist is SQLite-backed and needs no extra.
-memory = [
-    "neo4j>=5.20",
-]
 # LadybugDB-backed claim store — grapharc/memory/ladybug_store.py imports this
 # one, unlike the `memory` extra above. The distribution is `real-ladybug`, not
 # `ladybug`: the latter name belongs to Ladybug Tools, an unrelated
@@ -115,7 +110,7 @@ slack = [
 ]
 # Everything above. Self-referential so it cannot drift out of sync.
 all = [
-    "grapharc[api,ladybug,mcp,memory,ollama,openai,openrouter,otel,server,slack]",
+    "grapharc[api,ladybug,mcp,ollama,openai,openrouter,otel,server,slack]",
 ]
 
 [dependency-groups]

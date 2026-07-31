@@ -365,7 +365,6 @@ all = [
     { name = "fastapi" },
     { name = "langchain-openai" },
     { name = "mcp" },
-    { name = "neo4j" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
@@ -381,9 +380,6 @@ ladybug = [
 ]
 mcp = [
     { name = "mcp" },
-]
-memory = [
-    { name = "neo4j" },
 ]
 ollama = [
     { name = "langchain-openai" },
@@ -420,7 +416,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", marker = "extra == 'api'", specifier = ">=0.40" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115" },
-    { name = "grapharc", extras = ["api", "ladybug", "mcp", "memory", "ollama", "openai", "openrouter", "otel", "server", "slack"], marker = "extra == 'all'" },
+    { name = "grapharc", extras = ["api", "ladybug", "mcp", "ollama", "openai", "openrouter", "otel", "server", "slack"], marker = "extra == 'all'" },
     { name = "langchain-core", specifier = ">=0.3" },
     { name = "langchain-openai", marker = "extra == 'ollama'", specifier = ">=0.2" },
     { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=0.2" },
@@ -428,7 +424,6 @@ requires-dist = [
     { name = "langgraph", specifier = ">=0.4" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=2.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
-    { name = "neo4j", marker = "extra == 'memory'", specifier = ">=5.20" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.27" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.27" },
@@ -437,7 +432,7 @@ requires-dist = [
     { name = "slack-bolt", marker = "extra == 'slack'", specifier = ">=1.20" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.32" },
 ]
-provides-extras = ["openrouter", "openai", "ollama", "server", "mcp", "memory", "ladybug", "otel", "api", "slack", "all"]
+provides-extras = ["openrouter", "openai", "ollama", "server", "mcp", "ladybug", "otel", "api", "slack", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -795,18 +790,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/6e/77/9450b8f251a13affb6281997d0523c4615f8a8b35d0b21ff30db3a5aac9d/mcp-1.28.1.tar.gz", hash = "sha256:d51e36a5f5644faea4f85ea649bfffa6bc6c26770d42798ad6a3de3d2ba69683", size = 638501, upload-time = "2026-06-26T12:57:29.093Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e2/5e/d118fce19f87a2e7d8101c35c8ae0ec289098a4df0ff244cec23e415aca0/mcp-1.28.1-py3-none-any.whl", hash = "sha256:2726bca5e7193f61c5dde8b12500a6de2d9acf6d1a1c0be9e8c2e706437991df", size = 222620, upload-time = "2026-06-26T12:57:27.218Z" },
-]
-
-[[package]]
-name = "neo4j"
-version = "6.2.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pytz" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ce/f4/aaa4ac19adae4b01bc742b63afd2672a77e7351566f02721e713e4b863ee/neo4j-6.2.0.tar.gz", hash = "sha256:e1e246b65b572bd8ea97f9e0e721b7d40a5ce53e53d0007c29aef63e4f9124d9", size = 241459, upload-time = "2026-05-04T07:35:41.428Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e6/cf/1c3795866cefaac6e648d4e98c373cafd97810f6e317c307371007ab4abb/neo4j-6.2.0-py3-none-any.whl", hash = "sha256:b87abdd13a5cc2e3bd51026926c2f20ac38fa3febe98c340520dce19e97388d0", size = 327824, upload-time = "2026-05-04T07:35:39.604Z" },
 ]
 
 [[package]]
@@ -1227,15 +1210,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/5b/42/55c32bb9b12693c092ad250a0e82edb5b31ddeda6eb772de5f308b3804ad/python_multipart-0.0.32.tar.gz", hash = "sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e", size = 46881, upload-time = "2026-06-04T16:18:58.647Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl", hash = "sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23", size = 30042, upload-time = "2026-06-04T16:18:57.319Z" },
-]
-
-[[package]]
-name = "pytz"
-version = "2026.3.post1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fb/48/fb042503b6ca6cd271261dc559fd6432f7d8c713153e9ec5c591af4dfc1c/pytz-2026.3.post1.tar.gz", hash = "sha256:2211d3fcf9a797d3405cac96ac7f61d80e6a644f72a3309607282fe8a2010c5d", size = 319745, upload-time = "2026-07-25T15:12:07.385Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0f/7b/39c34ca613b0b198cb866466651b26b045e2009864c5183c979a3b83f383/pytz-2026.3.post1-py2.py3-none-any.whl", hash = "sha256:dd95840dd199baea12d9cc096a1d452caa6596a1c1e4b5f3dbd1541855d5e815", size = 508283, upload-time = "2026-07-25T15:12:05.782Z" },
 ]
 
 [[package]]
