@@ -47,7 +47,7 @@ from grapharc.cli.agent import (
 from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit, fail
 from grapharc.observe.metrics import summarize, to_mermaid
 from grapharc.observe.replay import ReplayError
-from grapharc.observe.trace import TraceRecorder
+from grapharc.observe.trace import TraceReadError, TraceRecorder
 
 EXAMPLES = (
     "stage0",
@@ -480,7 +480,13 @@ def _cmd_trace(args: argparse.Namespace) -> int:
     recorder = _existing_trace(args.path, command="trace", as_json=args.json)
     if isinstance(recorder, int):
         return recorder
-    events = recorder.read_events(args.run_id)
+    try:
+        events = recorder.read_events(args.run_id)
+    except TraceReadError as exc:
+        # A bad line — a truncated write, a hand edit — is the "unreadable
+        # trace" the exit-code contract names, not a traceback. Same for
+        # `metrics` and `viz` below: all three read this file.
+        return fail(str(exc), as_json=args.json, command="trace")
     payload: dict[str, Any] = {
         "ok": True,
         "command": "trace",
@@ -510,7 +516,10 @@ def _cmd_metrics(args: argparse.Namespace) -> int:
     recorder = _existing_trace(args.path, command="metrics", as_json=args.json)
     if isinstance(recorder, int):
         return recorder
-    metrics = summarize(recorder, args.run_id)
+    try:
+        metrics = summarize(recorder, args.run_id)
+    except TraceReadError as exc:
+        return fail(str(exc), as_json=args.json, command="metrics")
     if metrics is None:
         return fail(
             f"no events for run {args.run_id!r} in {args.path}",
@@ -533,6 +542,8 @@ def _cmd_viz(args: argparse.Namespace) -> int:
         return recorder
     try:
         mermaid = to_mermaid(recorder, args.run_id)
+    except TraceReadError as exc:
+        return fail(str(exc), as_json=args.json, command="viz")
     except ReplayError as exc:
         # Every other reading command answers this as a document; `viz` used to
         # let it out as a traceback with empty stdout, which breaks the CLI's own

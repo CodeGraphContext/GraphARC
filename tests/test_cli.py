@@ -336,6 +336,43 @@ def test_viz_renders_the_executed_path(two_runs, capsys):
     assert "load" in payload["mermaid"]
 
 
+# Every reading command, with the arguments it needs beyond the path. `metrics`
+# and `viz` never reach the run id: the file refuses before any run is looked up.
+READERS = [["trace"], ["metrics", "r1"], ["viz", "r1"]]
+
+
+def _bad_trace(tmp_path) -> Path:
+    """A trace whose second line is not an event — a process killed mid-write."""
+    trace = TraceRecorder(tmp_path / "bad.jsonl")
+    trace.event(run_id="r1", graph="g", node="load", phase="start", step=1)
+    with trace.path.open("a", encoding="utf-8") as f:
+        f.write('{"not": "a trace event"}\n')
+    return trace.path
+
+
+@pytest.mark.parametrize("argv", READERS, ids=lambda argv: argv[0])
+def test_a_malformed_trace_is_a_report_not_a_traceback(argv, tmp_path, capsys):
+    """The contract in `output.py` names "an unreadable trace" as exit 2."""
+    bad = _bad_trace(tmp_path)
+    code, out, err = call([argv[0], str(bad), *argv[1:]], capsys)
+    assert code == 2
+    assert out == ""
+    assert f"error: unreadable trace file: {bad}: line 2 is not a trace event\n" == err
+
+
+@pytest.mark.parametrize("argv", READERS, ids=lambda argv: argv[0])
+def test_a_malformed_trace_fails_as_one_json_document(argv, tmp_path, capsys):
+    bad = _bad_trace(tmp_path)
+    code, payload, err = call_json([argv[0], str(bad), *argv[1:]], capsys)
+    assert code == 2
+    assert payload == {
+        "ok": False,
+        "command": argv[0],
+        "error": f"unreadable trace file: {bad}: line 2 is not a trace event",
+    }
+    assert err == ""
+
+
 # -- models -------------------------------------------------------------------
 
 
