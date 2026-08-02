@@ -11,6 +11,10 @@ Build production-grade multi-agent systems with built-in safety, auditability, a
 
 **Status:** Early days (`0.1.2`) — the API is not stable yet. `pip install grapharc` — see [Install](#install).
 
+![One English question is decomposed by a local model into a nine-node graph — four parallel evidence pulls fanning out of START, a correlate join, a hypothesis fork, and a final report — shown live in the browser: the proposed graph waits grey for human approval, then each node turns amber while it runs and green when it is done.](docs/media/grapharc-decompose.gif)
+
+*One question in, a governed graph out: a local model proposes the topology, the admission gate and a human approval decide, and the live view shows every node run — amber while executing, green when done. ([full-quality mp4](docs/media/grapharc-decompose.mp4))*
+
 ### What makes GraphARC different
 
 - **Admission gate**: All runtime topology changes go through deterministic approval before execution
