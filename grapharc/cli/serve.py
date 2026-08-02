@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from pathlib import Path
 from typing import Any
 
 from grapharc.cli import optional, style
@@ -65,6 +66,8 @@ def serve(
     port: int = 8000,
     log_level: str = "info",
     registry_target: str | None = None,
+    live_root: str | None = None,
+    live_token: str | None = None,
     as_json: bool = False,
 ) -> int:
     try:
@@ -74,8 +77,20 @@ def serve(
     except optional.Unavailable as exc:
         return fail(str(exc), as_json=as_json, command="serve")
 
+    if live_root is not None and not Path(live_root).is_dir():
+        return fail(
+            f"--live-root is not a directory: {live_root}", as_json=as_json, command="serve"
+        )
+
+    kwargs: dict[str, Any] = {}
+    if registry is not None:
+        kwargs["registry"] = registry
+    if live_root is not None:
+        kwargs["live_root"] = live_root
+        if live_token:
+            kwargs["live_token"] = live_token
     try:
-        app = create_app(registry=registry) if registry is not None else create_app()
+        app = create_app(**kwargs)
     except Exception as exc:  # noqa: BLE001 — a config error, reported as one
         return fail(f"could not build the app: {exc}", as_json=as_json, command="serve")
 
@@ -97,6 +112,7 @@ def serve(
         "log_level": log_level,
         "registry": registry_target,
         "graphs": names,
+        "live_root": live_root,
     }
     graphs = (
         ", ".join(names)
@@ -111,6 +127,28 @@ def serve(
         style.kv("graphs", graphs, width=LABEL_WIDTH, tint=None if names else style.warn),
         style.dim("ctrl-c to stop"),
     ]
+    # The three lines above are printed verbatim in the cookbook; anything the
+    # live view adds appears only when the operator asked for it.
+    if live_root is not None:
+        lines.insert(
+            1,
+            style.kv(
+                "live view",
+                f"http://{host}:{port}/live  (root: {live_root})",
+                width=LABEL_WIDTH,
+            ),
+        )
+        if host not in ("127.0.0.1", "localhost"):
+            lines.insert(
+                2,
+                style.kv(
+                    "warning",
+                    "binding beyond loopback exposes run telemetry; put a tunnel "
+                    "(Tailscale/cloudflared) or --live-token in front",
+                    width=LABEL_WIDTH,
+                    tint=style.warn,
+                ),
+            )
     # Printed *and flushed* before the server blocks: a caller watching stdout for
     # the URL would otherwise wait for the process to exit to learn it. Nothing
     # here is buffered, deferred, or drawn on a timer for the same reason.

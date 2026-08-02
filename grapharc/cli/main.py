@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -343,8 +344,16 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         max_rounds=args.max_rounds,
         max_tokens=args.max_tokens,
         config_path=args.config,
+        approve=args.approve,
+        approval_timeout=args.approval_timeout,
         as_json=args.json,
     )
+
+
+def _cmd_approve(args: argparse.Namespace) -> int:
+    from grapharc.cli.approve import approve
+
+    return approve(args.path, deny=args.deny, as_json=args.json)
 
 
 def _cmd_models(args: argparse.Namespace) -> int:
@@ -460,6 +469,8 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         port=args.port,
         log_level=args.log_level,
         registry_target=args.registry,
+        live_root=args.live_root,
+        live_token=args.live_token,
         as_json=args.json,
     )
 
@@ -746,7 +757,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-tokens", type=int, default=None,
         help="run token ceiling across every round (default: 100000)",
     )
+    plan.add_argument(
+        "--approve",
+        action="store_true",
+        help="pause each admitted round until `grapharc approve` answers next to the trace",
+    )
+    plan.add_argument(
+        "--approval-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="how long --approve waits before the round counts as unapproved (default: 300)",
+    )
     plan.set_defaults(handler=_cmd_plan)
+
+    ap = sub.add_parser(
+        "approve",
+        parents=[common],
+        help="answer a plan run waiting on its approval gate",
+    )
+    ap.add_argument("path", type=Path, help="the paused run's trace file (or its directory)")
+    ap.add_argument("--deny", action="store_true", help="refuse the plan instead of approving it")
+    ap.set_defaults(handler=_cmd_approve)
 
     agent = sub.add_parser(
         "agent", parents=[common], help="run an agent node against a task with the core tools"
@@ -827,6 +859,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="MODULE:ATTR",
         help="graph registry to serve; without one the app starts with no graphs",
+    )
+    serve.add_argument(
+        "--live-root",
+        default=None,
+        metavar="PATH",
+        help="also serve a read-only live view of the trace files under PATH at /live",
+    )
+    serve.add_argument(
+        "--live-token",
+        default=os.environ.get("GRAPHARC_LIVE_TOKEN") or None,
+        metavar="TOKEN",
+        help="require this token on every /live request (default: GRAPHARC_LIVE_TOKEN)",
     )
     serve.set_defaults(handler=_cmd_serve)
 

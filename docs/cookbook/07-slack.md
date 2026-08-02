@@ -109,11 +109,79 @@ Configuration is environment-only, read once at startup:
 | `GRAPHARC_SLACK_ALLOW_MODEL` | off | `1` admits `--model`/`--reviewer-model` |
 | `GRAPHARC_SLACK_ALLOW_AGENT` | off | `1` admits `agent` — only together with `ALLOW_MODEL` |
 | `GRAPHARC_SLACK_COMMAND` | `/grapharc` | the slash command to answer to |
+| `GRAPHARC_SLACK_LIVE` | on | `0` turns off the live-edited status message |
+| `GRAPHARC_SLACK_LIVE_INTERVAL` | `2.5` | seconds between two edits of the status message |
+| `GRAPHARC_SLACK_LIVE_URL` | unset | base URL of a `grapharc serve --live-root` the requester can reach; posts a "watch live" link |
 
 The bot reads tokens from the process environment only. The `.env`
 upward-directory search that the model gateway performs is deliberately not
 used here: a bot that a whole workspace can drive must not discover
 credentials in a file the operator did not point it at.
+
+## Live progress
+
+A command that traces (`demo`, `run`, `plan`, `agent`) is narrated while it
+runs. The gate gives every such command a trace path the bot knows — a unique
+`slack-runs/<stamp>/trace.jsonl` under the working directory, unless the
+request named its own `--trace` — and the bot tails that file from a side
+thread while the subprocess runs. What you see in Slack is one status message,
+edited in place every couple of seconds:
+
+```
+`grapharc run pipeline.toml --trace slack-runs/…/trace.jsonl` — running (14s)
+✓ ingest  312ms
+✓ extract  1.8s  1543 tok
+✗ verify  err: citation not found
+▸ report  running…
+6 events · 2/4 nodes done · 1543 tok
+<current diagram>
+```
+
+The `current diagram` link is the same mermaid.live fragment URL `viz` gets —
+the diagram is compressed into the URL itself and shipped to no one — and it is
+refreshed on every edit, so mid-run it renders the path *so far*. When the
+command finishes, the status message is edited one last time into the same
+final result the bot has always posted.
+
+Everything about this path is best-effort by construction. If the bot cannot
+post the status message (it is not in the channel, the API errored), the whole
+live layer steps aside and you get today's single blocking reply; if a mid-run
+edit fails, the narration goes quiet; and if the *final* edit fails, the result
+is posted as an ordinary reply instead. A broken live view can cost you the
+narration, never the answer. One visibility note: for a slash command the
+status message is posted to the channel (a `respond()`-style reply would allow
+only five updates), so a live run is visible to everyone in it — the mention
+path threads it under your message as before.
+
+Because the trace now lands inside the working directory, the run is also
+inspectable afterwards from Slack itself: `/grapharc metrics
+slack-runs/<stamp>/trace.jsonl <run-id>`, `viz` for the finished diagram,
+`replay` for the reconstruction. The `slack-runs/` directories are the audit
+trail and are never cleaned up automatically; prune them like any other logs.
+
+## Watching it live in a browser
+
+The status message is text. For the actual diagram redrawing itself as nodes
+run, pair the bot with the live view server on the same machine:
+
+```bash
+grapharc serve --live-root "$GRAPHARC_SLACK_WORKDIR" --port 8300
+export GRAPHARC_SLACK_LIVE_URL=https://laptop.tailnet.ts.net:8300
+python -m grapharc.slack
+```
+
+With the URL configured, the bot's first status message includes
+`watch live: <url>/live/view?trace=slack-runs/…` — a page that renders the
+Mermaid diagram and the run's numbers and updates itself over SSE as the trace
+file grows. `/live` lists every trace under the root. The server is read-only,
+confines every requested path inside the root, and never serves `state_delta`
+contents — what the page shows is what `viz` and `metrics` already show.
+
+Reachability is deliberately your problem, not the bot's: the bot never opens
+a port (that is the whole point of Socket Mode), and `serve` still binds
+loopback by default. Put a tailnet or tunnel (Tailscale, cloudflared) in front
+for the person on the phone, and add `--live-token` if the URL is guessable.
+Details in [06-serving-and-ops.md](06-serving-and-ops.md).
 
 ## A `plan` that reads
 
@@ -189,9 +257,9 @@ stays unreachable from Slack.
 - **The bot is alive while the process is.** Laptop lid closed means commands
   from a phone go unanswered — Slack shows the slash command timing out, and
   nothing queues. The same script runs unchanged on any always-on box.
-- **Slack's three-second ack.** The bot acks immediately ("running …") and
-  posts the result when the command finishes; the timeout bounds how long
-  that can be.
+- **Slack's three-second ack.** The bot acks immediately ("running …"), then
+  narrates a tracing command through the live status message and lands the
+  result there when it finishes; the timeout bounds how long that can be.
 - **The workspace is the trust boundary.** The gate stops path escapes,
   module imports and spend, but anyone in the workspace can run every allowed
   command against every file in the working directory. Give the bot a

@@ -157,6 +157,8 @@ grapharc demo stage6        # memory: provenance, supersession, recall
 grapharc demo capstone      # all of the above in one research agent
 
 grapharc plan "look into the outage"   # governed loop: propose -> admit -> execute -> replan
+grapharc plan "..." --approve          # park each admitted round until a human answers
+grapharc approve <trace>               # answer a parked run (--deny to refuse)
 grapharc run graph.json                # a topology you wrote, through the same gate
 grapharc run graph.json --check-only   # admission as a linter; executes nothing
 
@@ -167,14 +169,14 @@ python -m grapharc.slack         # the same commands from Slack (needs the `slac
 grapharc models                  # what a model spec resolves to
 grapharc trace <path>            # pretty-print a run trace
 grapharc metrics <path> <run-id> # tokens, retries, termination reason, per-node counts
-grapharc viz <path> <run-id>     # Mermaid diagram of the executed path
+grapharc viz <path> <run-id>     # Mermaid diagram: the declared graph, execution status overlaid
 grapharc replay <path> <run-id>  # reconstruct a run from its trace
 grapharc diff <path> <a> <b>     # what changed between two runs
 ```
 
-Eleven commands, and every one of them takes `--json` — in JSON mode the failure is the document rather than a line on stderr. Exit codes are part of the interface: `0` did the job, `1` ran and the answer was negative (an agent stopped short, a run id had no events, two runs differed), `2` could not run at all.
+Twelve commands, and every one of them takes `--json` — in JSON mode the failure is the document rather than a line on stderr. Exit codes are part of the interface: `0` did the job, `1` ran and the answer was negative (an agent stopped short, a run id had no events, two runs differed), `2` could not run at all.
 
-The Slack bot puts most of these commands one `/grapharc …` away from a phone, behind an allowlisting gate that keeps the default spend at zero — setup in [docs/cookbook/07-slack.md](docs/cookbook/07-slack.md), and a command-by-command session, refusals included, in [docs/cookbook/08-slack-walkthrough.md](docs/cookbook/08-slack-walkthrough.md).
+The Slack bot puts most of these commands one `/grapharc …` away from a phone, behind an allowlisting gate that keeps the default spend at zero — setup in [docs/cookbook/07-slack.md](docs/cookbook/07-slack.md), and a command-by-command session, refusals included, in [docs/cookbook/08-slack-walkthrough.md](docs/cookbook/08-slack-walkthrough.md). A tracing command run from Slack is narrated live — one status message edited in place as nodes run, with a refreshed diagram link — and `grapharc serve --live-root` adds a browser page that redraws the orchestration graph in real time over SSE.
 
 The `run` stages use scripted models by default, so they cost nothing and produce the same trace every time. Add `--model` to run one against a real backend — that works for stage1 through stage6 and the capstone; stage0 is pure code with no model in it. `grapharc agent` is the exception: it needs a tool-calling backend and says so rather than degrading, because a scripted model has no `bind_tools` to drive a tool loop with.
 

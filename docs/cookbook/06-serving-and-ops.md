@@ -1068,8 +1068,8 @@ status : succeeded
 answer : Budgets cap iterations, tokens and time.
 usage  : 1.0 iterations, 15.0 tokens
 event  : False recorded: this runtime does not deliver 'message' events into a running graph (ROADMAP §6.4 event queue / §6.5 approval node)
-frames : ['event: trace', 'event: trace', 'event: status', 'event: done']
-trace  : ['start', 'end']
+frames : ['event: trace', 'event: trace', 'event: trace', 'event: status', 'event: done']
+trace  : ['topology', 'start', 'end']
 ```
 
 The routes:
@@ -1280,6 +1280,7 @@ $ curl -s localhost:8124/sessions/bf5ca55bff7b480f
 }
 
 $ curl -s localhost:8124/sessions/bf5ca55bff7b480f/trace
+{"ts": "...", "run_id": "0d9dce7f61c4", "thread_id": "bf5ca55bff7b480f", "attempt": 1, "graph": "qa", "node": "topology", "phase": "topology", "step": 0, "state_delta": {"nodes": ["answer"], "edges": [["__start__", "answer", "static"], ["answer", "__end__", "static"]]}}
 {"ts": "...", "run_id": "0d9dce7f61c4", "thread_id": "bf5ca55bff7b480f", "attempt": 1, "graph": "qa", "node": "answer", "phase": "start", "step": 1}
 {"ts": "...", "run_id": "0d9dce7f61c4", "thread_id": "bf5ca55bff7b480f", "attempt": 1, "graph": "qa", "node": "answer", "phase": "end", "step": 1, "state_delta": {"answer": "Budgets cap iterations, tokens and time."}, "duration_ms": 1.0288769999533542, "tokens": 15}
 ```
@@ -1301,6 +1302,45 @@ model = get_model("claude-cli/claude-sonnet-5")
 **This snippet was not executed** — it needs a paid API key or a Claude
 subscription. `grapharc models --check` tells you which backends this machine
 could use, without contacting any provider.
+
+---
+
+## How do I watch a run live in a browser?
+
+`grapharc serve --live-root PATH` mounts a read-only live view at `/live` over
+the trace files under `PATH` — including files other processes are appending
+right now. Traces are append-only JSONL written line-at-a-time under a lock,
+so a reader that stops at the last complete newline (`TailRecorder`, in
+`grapharc.observe.trace`) can follow a run another process is executing;
+that is exactly what the view does.
+
+`GET /live` lists every `*.jsonl` under the root, newest first.
+`GET /live/view?trace=REL` is the page: it opens
+`GET /live/api/stream?trace=REL` (server-sent events) and receives a fresh
+`snapshot` — the run's Mermaid diagram, `metrics`-style numbers, cost, and
+status — each time the file grows. The server recomputes the snapshot;
+the page only renders it. Add `&run=ID` to pin one run in a file that holds
+several; without it the view follows the newest.
+
+This composes with the Slack bot, which gives every tracing command a trace
+path under its working directory: run `grapharc serve --live-root` over that
+same directory, set `GRAPHARC_SLACK_LIVE_URL`, and the bot posts a
+"watch live" link when a run starts — the walkthrough is in
+[07-slack.md](07-slack.md). It also composes with this page's own server
+sessions: point `--live-root` at the session root and each
+`<session>/trace.jsonl` gets a page.
+
+The posture is the same as everything else in `grapharc.observe`: the view is
+derived from the trace file and nothing else, and it is read-only. Requested
+paths are confined inside the root (escapes are 404s), and `state_delta`
+contents — arbitrary node writes — are never serialized into any live
+response; the exposure is what `viz` already prints. The bind stays
+`127.0.0.1` unless you say otherwise; binding wider prints a warning, because
+reachability is meant to come from a tunnel or tailnet in front, optionally
+with `--live-token TOKEN` (or `GRAPHARC_LIVE_TOKEN`) required on every
+`/live` request. The diagram renders with mermaid.js from a pinned CDN; with
+no CDN reachable the page falls back to the raw Mermaid source plus the same
+mermaid.live fragment link the Slack bot posts.
 
 ---
 
@@ -1529,8 +1569,16 @@ total    17 tok  complete: True
 metrics : 2 nodes, 17 tokens, {'draft': 1, 'polish': 1}
 
 flowchart TD
+  n0["draft"]
+  n1["polish"]
   start((start)) --> n0["draft"]
   n0["draft"] --> n1["polish"]
+  n1["polish"] --> fin((end))
+  classDef done fill:#d3f2d3,stroke:#2f7d32
+  classDef running fill:#fff3cd,stroke:#b8860b
+  classDef pending fill:#eeeeee,stroke:#999999,color:#666666
+  classDef errored fill:#f8d7da,stroke:#b02a37
+  class n0,n1 done
 ```
 
 `RunCost.tokens` and `RunMetrics.tokens` agree by construction — both count the
@@ -1553,10 +1601,15 @@ a cost report and an audit trail that disagree are worse than either alone.
   spend, reported as `tokens_before_error` — kept out of the total so the total
   keeps matching `metrics`.
 
-`to_mermaid` renders the *executed* path, keyed by `(node, step)`, so parallel
-instances of a fan-out worker are distinct boxes rather than one box with a
-self-loop the graph never had. Paste it into any Markdown renderer that speaks
-Mermaid.
+`to_mermaid` renders the graph's *declared topology* — the `topology` event every
+run now writes — with execution status overlaid per node: `done`, `running`,
+`errored`, or still `pending`. Branches not taken stay on the diagram in grey,
+conditional routes draw dotted, and a multi-round planner run gets one cluster
+per admitted round. A trace with no topology event (an `AgentNode` driven with
+no enclosing graph, or a file written before the event existed) falls back to
+the executed path in event order, keyed by `(node, step)` so parallel instances
+of a fan-out worker are distinct boxes. Paste either form into any Markdown
+renderer that speaks Mermaid.
 
 `attribute_thread(trace, thread_id)` is the same for a whole session across
 resumes, and `by_node(trace)` ranks every node in a file by cost.
@@ -1565,7 +1618,7 @@ resumes, and `by_node(trace)` ranks every node in a file by cost.
 
 ## The CLI tour
 
-Eleven commands. Every one takes `--json`, which prints the same payload as one
+Twelve commands. Every one takes `--json`, which prints the same payload as one
 document on stdout — including failures, which become the document rather than a
 line on stderr.
 
@@ -1573,7 +1626,8 @@ line on stderr.
 | --- | --- |
 | `grapharc demo <example>` | run a built-in example graph (`stage0`…`stage6`, `capstone`) |
 | `grapharc run <graph.json>` | run a topology you wrote, through the admission gate; `--check-only` lints it |
-| `grapharc plan <goal>` | governed loop: propose → admit → execute → replan |
+| `grapharc plan <goal>` | governed loop: propose → admit → execute → replan; `--approve` parks each admitted round for a human |
+| `grapharc approve <trace>` | answer a plan run waiting on its approval gate (`--deny` to refuse) |
 | `grapharc agent <task>` | run an agent node with the core tools against a task |
 | `grapharc serve` | run the HTTP API |
 | `grapharc models [spec]` | what a spec resolves to; `--check` probes this machine |
@@ -1606,12 +1660,12 @@ $ grapharc trace trace.jsonl --json | jq -r '.events[0].run_id'
 2a47f18064b7
 
 $ grapharc trace trace.jsonl --run-id 2a47f18064b7 | head -6
+[  0] topology             topology Δ{'nodes': ['start', 'plan', 'act', 'verify', 'finish_target_met', 'finish_max_iterations', 'finish_no_progress'], 'edges': [['__start__', 'start', 'static'], ['start', 'plan', 'static'], ['plan', 'act', 'static'], ['act', 'verify', 'static'], ['finish_target_met', '__end__', 'static'], ['finish_max_iterations', '__end__', 'static'], ['finish_no_progress', '__end__', 'static'], ['verify', 'plan', 'conditional'], ['verify', 'finish_target_met', 'conditional'], ['verify', 'finish_max_iterations', 'conditional'], ['verify', 'finish_no_progress', 'conditional']]}
 [  1] start                start
 [  1] start                end    Δ{'pending': ['budgets', 'verifier']}
 [  2] plan                 start
 [  2] plan                 end    Δ{'proposal': 'budgets', 'round': 1}
 [  3] act                  start
-[  3] act                  end    Δ{'candidate': 1}
 
 $ grapharc metrics trace.jsonl 2a47f18064b7
 run_id: 2a47f18064b7
@@ -1623,19 +1677,35 @@ duration_ms: 0.68
 attempts: 1
 termination_reason: target_met
 per_node: {'start': 1, 'plan': 2, 'act': 2, 'verify': 2, 'finish_target_met': 1}
-events: 16
-per_phase: {'start': 8, 'end': 8}
+events: 17
+per_phase: {'topology': 1, 'start': 8, 'end': 8}
 
 $ grapharc viz trace.jsonl 2a47f18064b7
 flowchart TD
+  n0["start"]
+  n1["plan"]
+  n2["act"]
+  n3["verify"]
+  n4["finish_target_met"]
+  n5["finish_max_iterations"]
+  n6["finish_no_progress"]
   start((start)) --> n0["start"]
   n0["start"] --> n1["plan"]
   n1["plan"] --> n2["act"]
   n2["act"] --> n3["verify"]
-  n3["verify"] --> n4["plan"]
-  n4["plan"] --> n5["act"]
-  n5["act"] --> n6["verify"]
-  n6["verify"] --> n7["finish_target_met"]
+  n4["finish_target_met"] --> fin((end))
+  n5["finish_max_iterations"] --> fin((end))
+  n6["finish_no_progress"] --> fin((end))
+  n3["verify"] -.-> n1["plan"]
+  n3["verify"] -.-> n4["finish_target_met"]
+  n3["verify"] -.-> n5["finish_max_iterations"]
+  n3["verify"] -.-> n6["finish_no_progress"]
+  classDef done fill:#d3f2d3,stroke:#2f7d32
+  classDef running fill:#fff3cd,stroke:#b8860b
+  classDef pending fill:#eeeeee,stroke:#999999,color:#666666
+  classDef errored fill:#f8d7da,stroke:#b02a37
+  class n0,n1,n2,n3,n4 done
+  class n5,n6 pending
 
 $ grapharc replay trace.jsonl 2a47f18064b7 | tail -4
         pending = []
@@ -1677,8 +1747,9 @@ $ grapharc metrics trace.jsonl 2a47f18064b7 --json
     "verify": 2,
     "finish_target_met": 1
   },
-  "events": 16,
+  "events": 17,
   "per_phase": {
+    "topology": 1,
     "start": 8,
     "end": 8
   }

@@ -132,8 +132,8 @@ async def test_an_async_node_writes_start_and_end_trace_events(trace):
 
     await _graph(work, writes={"a"}, trace=trace).ainvoke({}, run_id="r-trace")
     phases = [(e.node, e.phase) for e in trace.read_events("r-trace")]
-    assert phases == [("n", "start"), ("n", "end")]
-    end = trace.read_events("r-trace")[1]
+    assert phases == [("topology", "topology"), ("n", "start"), ("n", "end")]
+    end = trace.read_events("r-trace")[2]
     assert end.state_delta == {"a": 3}
     assert end.duration_ms is not None
 
@@ -590,7 +590,7 @@ def test_a_swallowed_goto_is_an_error_the_trace_records(trace):
     errors = [e for e in trace.read_events("r-goto") if e.phase == "error"]
     assert errors and "ghost" in errors[0].error
     # And the run stopped there: `landing` never opened a trace event.
-    assert {e.node for e in trace.read_events("r-goto")} == {"router"}
+    assert {e.node for e in trace.read_events("r-goto")} == {"topology", "router"}
 
 
 def test_a_send_naming_a_node_the_graph_does_not_have_raises():

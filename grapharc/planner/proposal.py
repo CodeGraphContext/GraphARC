@@ -268,6 +268,21 @@ DEFAULT_PLANNER_SYSTEM_PROMPT = (
     "re-proposing a refused node under a different name is a wasted turn.\n"
     f"Edge endpoints must be nodes you proposed, or the literals {START!r} "
     f"(graph entry) and {END!r} (graph exit).\n"
+    # These three were the structural mistakes real models actually made, over
+    # and over: naming a node with the entry literal, proposing a set of nodes
+    # with nothing leading in from it, and leaving a node no edge reaches. Each
+    # was refused with a correct reason the model then had to infer the rule
+    # from; stating the rule up front is cheaper than three wasted rounds.
+    f"{START!r} and {END!r} are the graph's own entry and exit. Never use "
+    "either as a node `name` — they are endpoints you connect to, not steps "
+    "you declare.\n"
+    f"Exactly one thing must be true of every proposal you make: there is an "
+    f"edge from {START!r} to the first node, and every other node is reachable "
+    f"by following edges from there. A node nothing leads to would never run.\n"
+    f"Give the last node an edge to {END!r}.\n"
+    "Nodes that should run at the same time all take an edge from the same "
+    "predecessor; nodes that must wait for several others all take an edge "
+    "into the same successor. That is how you express parallelism and joins.\n"
     "Leave `subgraph` unset on every node.\n"
     "Propose no nodes at all when there is no further work to do.\n"
     "Admission is deterministic code, not a conversation: arguing with a "
@@ -275,6 +290,36 @@ DEFAULT_PLANNER_SYSTEM_PROMPT = (
 )
 
 _NO_CATALOG = "(no catalog supplied; the admission registry decides what is allowed)"
+
+
+#: Exception *names* that mean "the backend was not reached", matched by name
+#: so this module needs no provider SDK imported to recognise them. Substrings
+#: on purpose: every provider spells its own (`APIConnectionError`,
+#: `APITimeoutError`, `AuthenticationError`, `RateLimitError`…), and they all
+#: share the property that matters — another turn cannot fix them.
+_UNREACHABLE_MARKERS = (
+    "connectionerror",
+    "connecterror",
+    "connectionrefused",
+    "timeout",
+    "authentication",
+    "permissiondenied",
+    "ratelimit",
+    "insufficient",
+    "quota",
+    "serviceunavailable",
+)
+
+
+def _is_unreachable(exc: BaseException) -> bool:
+    """Whether the backend refused or could not be reached at all.
+
+    A model that answered badly is a planning problem; a socket that would not
+    open is not. Only the latter makes retrying pointless, so only the latter
+    is reported as unreachable.
+    """
+    name = type(exc).__name__.lower()
+    return any(marker in name for marker in _UNREACHABLE_MARKERS)
 
 
 def _catalog_text(catalog: Mapping[str, str] | Sequence[str] | None) -> str:
@@ -314,6 +359,12 @@ class PlanningOutcome(BaseModel):
     # have different failure modes and an audit should not have to guess.
     structured: bool = False
     tokens: int = 0
+    # True when the backend could not be reached or refused the call outright
+    # (connection refused, auth, quota). A driver must not treat this as "the
+    # model gave a bad answer": rephrasing cannot reach a server that is down,
+    # so a replanning loop would just re-dial a dead socket until its patience
+    # ran out and then report a *planning* failure for an infrastructure one.
+    unreachable: bool = False
 
     @property
     def ok(self) -> bool:
@@ -418,6 +469,7 @@ class PlannerNode:
         raw_message: BaseMessage | None = None
         proposal: Subgraph | None = None
         error = ""
+        unreachable = False
         try:
             if structured:
                 envelope = runnable.invoke(messages)
@@ -438,6 +490,7 @@ class PlannerNode:
             error = f"proposal did not validate: {_first_validation_error(exc)}"
         except Exception as exc:  # noqa: BLE001 — a bad turn is an outcome, not a crash
             error = f"planner model call failed: {exc!r}"
+            unreachable = _is_unreachable(exc)
 
         raw_text = _message_text(raw_message) if raw_message is not None else ""
         tokens = self._charge(ctx, raw_message)
@@ -463,7 +516,12 @@ class PlannerNode:
             error=error or None,
         )
         return PlanningOutcome(
-            proposal=proposal, error=error, raw=raw_text, structured=structured, tokens=tokens
+            proposal=proposal,
+            error=error,
+            raw=raw_text,
+            structured=structured,
+            tokens=tokens,
+            unreachable=unreachable and proposal is None,
         )
 
     # -- internals ------------------------------------------------------------

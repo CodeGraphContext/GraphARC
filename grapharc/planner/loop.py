@@ -107,7 +107,7 @@ from grapharc.planner.admission import (
 from grapharc.planner.materialize import MaterializationError, Materializer
 from grapharc.planner.proposal import PlanningOutcome, Subgraph
 from grapharc.runtime.budget import Budget, BudgetExceeded, BudgetMeter
-from grapharc.runtime.graph import RunContext
+from grapharc.runtime.graph import RunContext, topology_delta
 
 
 class LoopStop(StrEnum):
@@ -134,6 +134,12 @@ class LoopStop(StrEnum):
     PLANNING_FAILED = "planning_failed"
     EXECUTION_FAILED = "execution_failed"
     HUMAN_STOPPED = "human_stopped"
+    # A configured approval gate said no — or nobody answered it in time.
+    # Distinct reasons on purpose: a denial is a decision, a timeout is the
+    # absence of one, and an operator reading the trace should not have to
+    # guess which happened.
+    APPROVAL_DENIED = "approval_denied"
+    APPROVAL_TIMEOUT = "approval_timeout"
 
 
 # Stops that mean the run did what it was asked, for the trace's `error` field:
@@ -291,6 +297,7 @@ class GovernedLoop:
         progress: Callable[[Any], Any] | None = None,
         checkpointer: Any = None,
         parent_depth: int = 0,
+        approval: Callable[[Subgraph, AdmissionResult], str] | None = None,
     ) -> None:
         self.planner = planner
         self.checker = checker
@@ -312,6 +319,12 @@ class GovernedLoop:
         if parent_depth < 0:
             raise ValueError(f"parent_depth must be >= 0, got {parent_depth}")
         self.parent_depth = parent_depth
+        # A human gate between admission and execution. Called with each
+        # admitted round's proposal and verdict; must return "approved",
+        # "denied" or "timeout", and may block while a human decides. The wait
+        # charges nothing — thinking time is not the run's spend. None means
+        # what it always meant: admission is the only gate.
+        self.approval = approval
         self._halt = threading.Event()
         self._halt_reason = ""
 
@@ -355,6 +368,12 @@ class GovernedLoop:
         current = self._initial_state(state)
         rounds: list[RoundRecord] = []
         feedback = ""
+        # Every rejection so far, not just the last: a model shown only round
+        # N-1's refusal re-proposes round N-2's mistake with no way to notice
+        # the pattern, and can exhaust max_consecutive_rejections repeating
+        # itself. Bounded (the last few) because the text lands verbatim in
+        # the planner's prompt every round.
+        rejection_log: list[str] = []
         note = ""
         rejected_in_a_row = 0
         unplanned_in_a_row = 0
@@ -398,6 +417,16 @@ class GovernedLoop:
                 break
             feedback = ""
 
+            if getattr(outcome, "unreachable", False):
+                # The backend was not reached. Replanning re-dials the same
+                # dead socket, so the loop would spend its whole planning
+                # allowance discovering that and then report a *planning*
+                # failure for an infrastructure one. Stop on the first.
+                stop = LoopStop.PLANNING_FAILED
+                detail = f"the planner's backend could not be reached: {outcome.error}"
+                close(planner_error=outcome.error, tokens=outcome.tokens)
+                break
+
             if not outcome.ok or outcome.proposal is None:
                 unplanned_in_a_row += 1
                 note = (
@@ -422,7 +451,8 @@ class GovernedLoop:
 
             if not verdict.admitted:
                 rejected_in_a_row += 1
-                feedback = verdict.feedback()
+                rejection_log.append(f"Round {round_number}:\n{verdict.feedback()}")
+                feedback = "\n\n".join(rejection_log[-3:])
                 if rejected_in_a_row >= self.limits.max_consecutive_rejections:
                     stop = LoopStop.ADMISSION_REFUSED
                     detail = (
@@ -589,6 +619,56 @@ class GovernedLoop:
         except MaterializationError as exc:
             return _Execution(state=state, materialization_error=f"could not be built: {exc}")
 
+        if self.trace is not None:
+            # The admitted round's shape, on disk *before* anything executes —
+            # what an approval gate shows, and what a live view greys in as
+            # "planned" while nodes are still pending. Same graph name as the
+            # kernel's own topology event at invoke, so readers dedupe the two.
+            self.trace.event(
+                run_id=ctx.run_id,
+                thread_id=ctx.thread_id,
+                attempt=ctx.attempt,
+                graph=compiled.arc.name,
+                node="topology",
+                phase="topology",
+                step=0,
+                state_delta={
+                    **topology_delta(compiled.arc),
+                    "round": round_number,
+                    "proposal_id": proposal.proposal_id,
+                    "fingerprint": proposal.fingerprint(),
+                },
+            )
+
+        if self.approval is not None:
+            parked = time.monotonic()
+            decision = self._request_approval(proposal, verdict, ctx, round_number)
+            # The wait charges nothing, seconds included: `elapsed_seconds` is
+            # wall clock from run() start, and without this credit a human who
+            # took longer than `max_seconds` to say yes handed the round a
+            # negative budget — approved, then dead before its first node.
+            meter.credit_seconds(time.monotonic() - parked)
+            if self._halt.is_set():
+                # An emergency stop issued while parked must win over any
+                # decision that raced it — a halted loop must not execute.
+                return _Execution(
+                    state=state,
+                    execution_error=self._halt_reason
+                    or "halted while awaiting approval",
+                    hard_stop=LoopStop.HUMAN_STOPPED,
+                )
+            if decision != "approved":
+                stop = (
+                    LoopStop.APPROVAL_TIMEOUT
+                    if decision == "timeout"
+                    else LoopStop.APPROVAL_DENIED
+                )
+                return _Execution(
+                    state=state,
+                    execution_error=f"the admitted plan was not approved ({decision})",
+                    hard_stop=stop,
+                )
+
         budget = self._round_budget(meter)
         try:
             raw = compiled.invoke(
@@ -615,6 +695,61 @@ class GovernedLoop:
             executed=True, state=self._initial_state(raw), iterations=iterations
         )
 
+    def _request_approval(
+        self,
+        proposal: Subgraph,
+        verdict: AdmissionResult,
+        ctx: RunContext,
+        round_number: int,
+    ) -> str:
+        """Ask the configured gate; both the question and the answer are audited.
+
+        The request event carries the same nodes/edges the topology event does,
+        so a reader showing "approve this?" needs nothing but the trace. The
+        callback may block indefinitely from the loop's point of view — bounding
+        the wait is the callback's job, reported as a "timeout" decision.
+        """
+        self._emit(
+            ctx,
+            node=f"{self.name}:approval",
+            phase="approval_request",
+            state_delta={
+                "round": round_number,
+                "proposal_id": proposal.proposal_id,
+                "fingerprint": proposal.fingerprint(),
+                "nodes": [n.name for n in proposal.nodes],
+                "edges": [[e.source, e.target] for e in proposal.edges],
+            },
+        )
+        try:
+            if self.approval is None:
+                decision = "approved"
+            elif _accepts_should_stop(self.approval):
+                # A gate that can watch for a halt is told how: it should
+                # return early (any non-approved answer) when this fires.
+                decision = self.approval(
+                    proposal, verdict, should_stop=self._halt.is_set
+                )
+            else:
+                decision = self.approval(proposal, verdict)
+        except Exception as exc:  # noqa: BLE001 — a broken gate must fail closed
+            decision = f"denied (approval gate raised: {exc})"
+        normalized = (
+            decision if decision in ("approved", "timeout") else "denied"
+        )
+        self._emit(
+            ctx,
+            node=f"{self.name}:approval",
+            phase="approval_response",
+            state_delta={
+                "round": round_number,
+                "proposal_id": proposal.proposal_id,
+                "decision": normalized,
+                "detail": decision if normalized == "denied" else "",
+            },
+        )
+        return normalized
+
     def _round_budget(self, meter: BudgetMeter) -> Budget:
         """This round's ceiling: exactly what the run has left, per dimension.
 
@@ -622,10 +757,12 @@ class GovernedLoop:
         round cannot spend what the earlier ones already did.
         """
         left = RemainingBudget.from_meter(meter)
+        # Floored at zero: "already over" must read as an exhausted budget,
+        # never as a negative ceiling in an error message.
         return Budget(
-            max_iterations=left.iterations,
-            max_tokens=left.tokens,
-            max_seconds=left.seconds,
+            max_iterations=None if left.iterations is None else max(0, left.iterations),
+            max_tokens=None if left.tokens is None else max(0, left.tokens),
+            max_seconds=None if left.seconds is None else max(0.0, left.seconds),
             max_concurrency=self.budget.max_concurrency,
         )
 
@@ -707,6 +844,19 @@ class GovernedLoop:
             step=ctx.next_step(),
             **fields,
         )
+
+
+def _accepts_should_stop(gate: Any) -> bool:
+    """Whether an approval gate takes the optional `should_stop` keyword."""
+    import inspect
+
+    try:
+        parameters = inspect.signature(gate).parameters
+    except (TypeError, ValueError):
+        return False
+    return "should_stop" in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
 
 
 def _left(value: float | int | None) -> str:

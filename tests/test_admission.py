@@ -78,7 +78,12 @@ def checker(reg: NodeRegistry, **kwargs) -> AdmissionChecker:
 
 
 def test_a_valid_proposal_is_admitted_and_every_check_ran():
-    result = checker(registry("fetch", "summarise")).check(linear("fetch", "summarise"))
+    # `require_entry` is opt-in (a proposal may attach to a live graph, where
+    # the entry is outside it), so a checker that runs *every* gate has to ask.
+    result = checker(
+        registry("fetch", "summarise"),
+        limits=AdmissionLimits(require_entry=True),
+    ).check(linear("fetch", "summarise"))
 
     assert result.admitted
     assert result.status is AdmissionStatus.ADMITTED
@@ -653,7 +658,12 @@ def test_a_diamond_is_not_a_cycle():
 
 
 def all_checks_failing() -> Subgraph:
-    """One proposal that trips registry, policy, budget, depth and acyclicity."""
+    """One proposal that trips every gate at once.
+
+    Registry (an unregistered kind), policy (a deny-all policy), budget (a
+    costly kind against a tiny remainder), depth (a nested subgraph),
+    acyclicity (a -> b -> a), and reachability (nothing leaves START).
+    """
     inner = Subgraph(nodes=(ProposedNode(name="inner", kind="step"),))
     return Subgraph(
         nodes=(
@@ -669,9 +679,9 @@ def all_checks_failing() -> Subgraph:
 
 def test_every_failed_check_is_reported_not_just_the_first():
     reg = registry("step", step=CostEstimate(tokens=10_000))
-    result = checker(reg, edge_policy=EdgePolicy()).check(
-        all_checks_failing(), remaining=RemainingBudget(tokens=5)
-    )
+    result = checker(
+        reg, edge_policy=EdgePolicy(), limits=AdmissionLimits(require_entry=True)
+    ).check(all_checks_failing(), remaining=RemainingBudget(tokens=5))
 
     assert not result.admitted
     assert set(result.failed_checks()) == set(Check)
@@ -679,9 +689,9 @@ def test_every_failed_check_is_reported_not_just_the_first():
 
 def test_every_rejection_names_a_check_a_code_and_a_subject():
     reg = registry("step", step=CostEstimate(tokens=10_000))
-    result = checker(reg, edge_policy=EdgePolicy()).check(
-        all_checks_failing(), remaining=RemainingBudget(tokens=5)
-    )
+    result = checker(
+        reg, edge_policy=EdgePolicy(), limits=AdmissionLimits(require_entry=True)
+    ).check(all_checks_failing(), remaining=RemainingBudget(tokens=5))
 
     for reason in result.rejections:
         assert isinstance(reason.check, Check)
@@ -692,9 +702,9 @@ def test_every_rejection_names_a_check_a_code_and_a_subject():
 
 def test_feedback_is_a_planner_readable_list_of_every_failure():
     reg = registry("step", step=CostEstimate(tokens=10_000))
-    result = checker(reg, edge_policy=EdgePolicy()).check(
-        all_checks_failing(), remaining=RemainingBudget(tokens=5)
-    )
+    result = checker(
+        reg, edge_policy=EdgePolicy(), limits=AdmissionLimits(require_entry=True)
+    ).check(all_checks_failing(), remaining=RemainingBudget(tokens=5))
     text = result.feedback()
 
     assert result.proposal_id in text
@@ -1081,3 +1091,80 @@ def test_a_renamed_denied_kind_is_refused_inside_a_graph_run(trace):
     assert admission_events and "policy/edge_denied" in (admission_events[0].error or "")
     executed = {e.node for e in trace.read_events() if e.phase == "end"}
     assert executed == {"planner", "admission"}  # `helper` never became a node
+
+
+# -- reachability: structural runnability, opt-in ------------------------------
+
+
+def test_a_proposal_with_no_entry_edge_is_rejected_when_entry_is_required():
+    """The materializer always refused this; admission used to say yes first,
+    so the loop learned "could not be built" — a build failure it cannot
+    replan against — instead of a rejection carrying a remedy."""
+    proposal = Subgraph(
+        nodes=(ProposedNode(name="a", kind="step"), ProposedNode(name="b", kind="step")),
+        edges=(ProposedEdge(source="a", target="b"),),
+    )
+    result = checker(
+        registry("step"), limits=AdmissionLimits(require_entry=True)
+    ).check(proposal)
+
+    assert not result.admitted
+    (reason,) = result.reasons(Check.REACHABILITY)
+    assert reason.code == "no_entry_edge"
+    assert START in reason.remedy
+
+
+def test_a_node_nothing_reaches_is_rejected_by_name():
+    proposal = Subgraph(
+        nodes=(
+            ProposedNode(name="a", kind="step"),
+            ProposedNode(name="orphan", kind="step"),
+        ),
+        edges=(
+            ProposedEdge(source=START, target="a"),
+            ProposedEdge(source="a", target=END),
+        ),
+    )
+    result = checker(
+        registry("step"), limits=AdmissionLimits(require_entry=True)
+    ).check(proposal)
+
+    assert not result.admitted
+    (reason,) = result.reasons(Check.REACHABILITY)
+    assert reason.code == "unreachable_node"
+    assert reason.subject == "orphan"
+
+
+def test_a_fan_out_and_join_is_reachable():
+    """Parallel branches converging is the shape planners propose most; it
+    must not read as unreachable."""
+    proposal = Subgraph(
+        nodes=tuple(
+            ProposedNode(name=n, kind="step") for n in ("seed", "l", "r", "join")
+        ),
+        edges=(
+            ProposedEdge(source=START, target="seed"),
+            ProposedEdge(source="seed", target="l"),
+            ProposedEdge(source="seed", target="r"),
+            ProposedEdge(source="l", target="join"),
+            ProposedEdge(source="r", target="join"),
+            ProposedEdge(source="join", target=END),
+        ),
+    )
+    assert (
+        checker(registry("step"), limits=AdmissionLimits(require_entry=True))
+        .check(proposal)
+        .admitted
+    )
+
+
+def test_entry_is_not_required_by_default_so_a_live_graph_can_be_extended():
+    """Admission stays the broader gate: a proposal may name nodes of a graph
+    already running, where the entry lives outside the proposal entirely."""
+    proposal = Subgraph(
+        nodes=(ProposedNode(name="added", kind="step"),),
+        edges=(ProposedEdge(source="live", target="added"),),
+    )
+    result = checker(registry("step"), known_nodes={"live": "step"}).check(proposal)
+    assert result.admitted
+    assert Check.REACHABILITY not in result.checks_run

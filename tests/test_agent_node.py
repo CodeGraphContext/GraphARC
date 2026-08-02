@@ -403,6 +403,29 @@ def test_crashing_tool_becomes_a_tool_error():
     assert "nope" in result.tool_calls[0].detail
 
 
+def test_invented_argument_names_get_the_real_schema_in_the_error():
+    """A model that calls `read(filename=...)` when the tool takes `path` is
+    told the actual parameter list — the bare TypeError names the wrong
+    argument but not the right ones, which a weak model cannot recover from."""
+
+    def read(path: str, limit: int = 0) -> str:
+        return path
+
+    harness = _harness(
+        [ToolSpec(name="read", description="", fn=read)],
+        [{"action": "allow", "pattern": "read"}],
+    )
+    model = ToolScriptedChatModel(
+        responses=["", "ok"], tool_call_script=[[_call("read", {"filename": "a.md"})]]
+    )
+    result = AgentNode(model, harness).run("go", _ctx())
+
+    detail = result.tool_calls[0].detail
+    assert result.tool_calls[0].status is ToolCallStatus.ERROR
+    assert "unexpected keyword argument" in detail
+    assert "takes exactly: path, limit=…" in detail
+
+
 @requires_sandbox
 def test_sandbox_violation_surfaces_as_a_tool_error(tmp_path):
     """The executor's boundary reaches the model as a readable result — the
@@ -658,7 +681,12 @@ def test_tool_arguments_that_are_not_a_mapping_become_a_tool_error():
     assert result.termination_reason is StopReason.TARGET_MET
     record = result.tool_calls[0]
     assert record.status is ToolCallStatus.ERROR
-    assert record.detail == "TOOL_ERROR: tool arguments must be a JSON object, got list"
+    assert record.detail.startswith(
+        "TOOL_ERROR: tool arguments must be a JSON object, got list"
+    )
+    # The wrong-shape error also names the real parameters — a model that sent
+    # a list needs the schema as much as one that misnamed a keyword.
+    assert "takes exactly: text" in record.detail
     assert record.args == {}
     assert _tool_messages(model.calls[1])[0].content == record.detail
 
@@ -985,7 +1013,9 @@ def test_agent_node_runs_inside_a_graph(tmp_path, trace):
     # Sub-node steps come from the same run counter, so each loop step is its
     # own replay point rather than collapsing into the node's single step.
     node_step = next(e.step for e in events if e.node == "reader")
-    inner = [e.step for e in events if e.node != "reader"]
+    inner = [
+        e.step for e in events if e.node != "reader" and e.phase != "topology"
+    ]
     assert inner == sorted(inner)
     assert len(set(inner)) == len(inner)
     assert min(inner) > node_step
@@ -1071,3 +1101,24 @@ def test_max_iterations_below_one_is_rejected():
     harness = _harness([], [])
     with pytest.raises(AgentConfigError, match="max_iterations"):
         AgentNode(ToolScriptedChatModel(responses=[]), harness, max_iterations=0)
+
+
+def test_a_type_error_inside_a_correct_call_gets_no_signature_hint():
+    """`len(None)` inside the tool body is the tool's bug, not the model's —
+    a hint asserting the (valid) arguments were wrong steers the model into
+    rewriting a call that was fine."""
+
+    def broken_inside(path: str) -> int:
+        return len(None)  # type: ignore[arg-type]
+
+    harness = _harness(
+        [ToolSpec(name="broken", description="", fn=broken_inside)],
+        [{"action": "allow", "pattern": "broken"}],
+    )
+    model = ToolScriptedChatModel(
+        responses=["", "ok"], tool_call_script=[[_call("broken", {"path": "a"})]]
+    )
+    result = AgentNode(model, harness).run("go", _ctx())
+    detail = result.tool_calls[0].detail
+    assert result.tool_calls[0].status is ToolCallStatus.ERROR
+    assert "takes exactly" not in detail, detail

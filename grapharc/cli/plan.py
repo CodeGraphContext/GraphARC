@@ -65,6 +65,12 @@ class RegistryBundle:
     #: the policy generator so it knows what to deny; empty means it denies
     #: nothing, which is why a module that can change things should say so.
     mutating: tuple[str, ...] = ()
+    #: The module's own `build_loop`, when it ships one. This is how a registry
+    #: owns its goal check and observer instead of inheriting the incident
+    #: demo's (`len(notes) >= 3`) — a registry whose state never accumulates
+    #: three notes would otherwise burn every round and report failure after
+    #: doing the work. Absent, the incident builder remains the fallback.
+    build_loop: Any = None
 
 
 def resolve_registry(target: str, model: Any = None) -> RegistryBundle:
@@ -108,6 +114,7 @@ def resolve_registry(target: str, model: Any = None) -> RegistryBundle:
         writes=getattr(module, "WRITES", None),
         default_policy=default_policy() if callable(default_policy) else default_policy,
         mutating=tuple(getattr(module, "MUTATING_KINDS", ())),
+        build_loop=getattr(module, "build_loop", None),
     )
 
 
@@ -187,6 +194,8 @@ def plan(
     max_tokens: int | None = None,
     config_path: Path | None = None,
     settings: Settings | None = None,
+    approve: bool = False,
+    approval_timeout: float | None = None,
     as_json: bool = False,
 ) -> int:
     """Run one governed planning loop against `goal`. Returns the exit code."""
@@ -228,10 +237,30 @@ def plan(
     except Exception as exc:  # noqa: BLE001 — a backend that will not load is a setup failure
         return fail(f"could not build the plan: {exc}", as_json=as_json, command="plan", goal=goal)
 
-    from grapharc.examples.plan_incident import IncidentState, build_loop
+    from grapharc.examples.plan_incident import IncidentState
+    from grapharc.examples.plan_incident import build_loop as incident_build_loop
 
     schema = state_schema or IncidentState
     trace = TraceRecorder(trace_path)
+    approval = None
+    if approve:
+        import sys
+
+        from grapharc.planner.approval_file import DEFAULT_TIMEOUT_SECONDS, file_approval
+
+        def _announce(message: str) -> None:
+            # Printed *and flushed* before the run parks: a terminal user (or a
+            # log tailer) must learn how to answer without waiting for the exit.
+            print(message, flush=True, file=sys.stdout)
+
+        approval = file_approval(
+            trace_path.parent,
+            timeout_seconds=approval_timeout or DEFAULT_TIMEOUT_SECONDS,
+            announce=_announce,
+        )
+    # The registry module's own loop builder wins; the incident demo's is the
+    # fallback that keeps the default path byte-identical.
+    build_loop = bundle.build_loop or incident_build_loop
     loop = build_loop(
         model,
         edge_policy=edge_policy,
@@ -241,6 +270,7 @@ def plan(
         registry=registry,
         state_schema=schema,
         writes=writes,
+        approval=approval,
     )
     # `goal` is set when the schema has somewhere to put it; a custom schema is
     # not required to carry one, and the planner is told the goal regardless.

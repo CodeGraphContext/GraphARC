@@ -30,7 +30,9 @@ user types is ever interpreted by a shell.
 from __future__ import annotations
 
 import shlex
+import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -65,8 +67,22 @@ PLAN_REGISTRIES = frozenset(
     {
         "grapharc.examples.plan_incident:build_registry",
         "grapharc.examples.plan_docs:build_registry",
+        "grapharc.stdlib:build_registry",
     }
 )
+
+#: The one plan registry whose kinds execute agent tools on the host (under
+#: `LocalExecutor`, path-confined to the workspace but unsandboxed). From Slack
+#: it needs the same double opt-in as `agent`, and every run of it is parked on
+#: the human approval gate before anything executes.
+AGENT_PLAN_REGISTRY = "grapharc.stdlib:build_registry"
+
+#: Subcommands that write a trace while they run. The gate gives each of them
+#: a trace path it knows (unless the requester named one), so the bot can tail
+#: the file for live progress and readers (`metrics`, `viz`, `replay`) can be
+#: pointed at it from Slack afterwards. The CLI's own defaults are tempdirs
+#: outside the bot's world (`agent` excepted), where nothing can be read back.
+LIVE_COMMANDS = frozenset({"demo", "run", "plan", "agent"})
 
 ALLOWED_COMMANDS: dict[str, CommandSpec] = {
     "demo": CommandSpec(
@@ -91,7 +107,9 @@ ALLOWED_COMMANDS: dict[str, CommandSpec] = {
             "--tenant": False,
             "--max-rounds": False,
             "--max-tokens": False,
+            "--approval-timeout": False,
         },
+        bool_flags=frozenset({"--approve"}),
         model_flags=frozenset({"--model"}),
         choice_flags={"--registry": PLAN_REGISTRIES},
     ),
@@ -111,6 +129,9 @@ ALLOWED_COMMANDS: dict[str, CommandSpec] = {
         # `local` (no confinement) stays unreachable; `claude-cli` delegates to
         # Claude Code's own sandboxed loop, which the injection below tempers.
         choice_flags={"--executor": frozenset({"sandbox", "claude-cli"})},
+    ),
+    "approve": CommandSpec(
+        bool_flags=frozenset({"--deny"}), path_positionals=frozenset({0})
     ),
     "replay": CommandSpec(path_positionals=frozenset({0})),
     "diff": CommandSpec(path_positionals=frozenset({0})),
@@ -161,6 +182,11 @@ def parse_command(
     timeout_seconds: float | None = None,
 ) -> list[str]:
     """Turn Slack text into the argv the bot may run, or raise with the reason."""
+    # People copy commands out of code-formatted Slack messages, and the
+    # backticks come along for the ride: "`approve x/trace.jsonl`" arrives
+    # with a backtick glued to the first and last token. No admissible
+    # command starts or ends with one, so wrapping backticks are noise.
+    text = text.strip().strip("`").strip()
     try:
         tokens = shlex.split(text)
     except ValueError as exc:
@@ -253,4 +279,85 @@ def parse_command(
         if delegated and "--allow" not in argv and "--deny" not in argv:
             argv.extend(["--deny", "Bash"])
 
+    if name == "plan" and _flag_value(argv, "--registry") == AGENT_PLAN_REGISTRY:
+        # The stdlib registry materializes agent nodes that run tools on the
+        # host, so it inherits `agent`'s double opt-in — and, opted in or not,
+        # a Slack-launched agent plan always parks on the human approval gate.
+        # The gate is answered with `/grapharc approve <trace>` — by ANY
+        # workspace member, not only the requester: the handshake is bound to
+        # the run's directory, and the workspace is the trust boundary here
+        # exactly as it is for every other command the bot runs. A human saw
+        # the graph and said yes; *which* human is not recorded (the trace has
+        # no actor field — see the architecture review).
+        if not (allow_agent and allow_model):
+            raise SlackCommandError(
+                "the stdlib plan registry runs agent tools on the host and is off "
+                "by default; the operator enables it with both "
+                "GRAPHARC_SLACK_ALLOW_AGENT=1 and GRAPHARC_SLACK_ALLOW_MODEL=1 "
+                "in the shell that starts the bot"
+            )
+        if not _has_flag(argv, "--approve"):
+            argv.append("--approve")
+
+    # ANY parked plan — stdlib-injected or requester-chosen `--approve` on a
+    # demo registry — must time its wait under the runner's kill: the CLI
+    # default (300s) exceeds the bot default (120s), and a park that outlives
+    # the runner is a hard kill mid-wait instead of a clean approval_timeout.
+    # Half the wall clock for the wait, capped to leave the run 10s to report,
+    # floored so a tiny ceiling still gives a human a moment.
+    if (
+        name == "plan"
+        and _has_flag(argv, "--approve")
+        and not _has_flag(argv, "--approval-timeout")
+        and timeout_seconds is not None
+    ):
+        wait = max(10.0, min(timeout_seconds - 10.0, timeout_seconds / 2))
+        argv.extend(["--approval-timeout", str(wait)])
+
+    # A tracing command whose trace the requester did not place gets one the
+    # bot can find: unique per invocation (a reused file would make a tailer's
+    # first line some other run's), relative to the workdir the runner uses as
+    # cwd. A requester-named `--trace` was already confined above and wins.
+    if name in LIVE_COMMANDS and not _has_flag(argv, "--trace"):
+        argv.extend(["--trace", _default_trace()])
+
     return argv
+
+
+def _has_flag(argv: list[str], flag: str) -> bool:
+    return any(token == flag or token.startswith(f"{flag}=") for token in argv)
+
+
+def _flag_value(argv: list[str], flag: str) -> str | None:
+    for index, token in enumerate(argv):
+        if token == flag and index + 1 < len(argv):
+            return argv[index + 1]
+        if token.startswith(f"{flag}="):
+            return token.partition("=")[2]
+    return None
+
+
+def _default_trace() -> str:
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    return f"slack-runs/{stamp}-{uuid.uuid4().hex[:8]}/trace.jsonl"
+
+
+def trace_path(argv: list[str], workdir: Path) -> Path | None:
+    """The trace file an admitted argv will write, or None for a reader.
+
+    The gate injects `--trace` into every `LIVE_COMMANDS` argv it admits, so
+    for those this always resolves; it is how `bot.py` learns where to tail
+    without re-deriving the gate's decisions.
+    """
+    if not argv or argv[0] not in LIVE_COMMANDS:
+        return None
+    raw: str | None = None
+    for index, token in enumerate(argv):
+        if token == "--trace" and index + 1 < len(argv):
+            raw = argv[index + 1]
+        elif token.startswith("--trace="):
+            raw = token.partition("=")[2]
+    if raw is None:
+        return None
+    path = Path(raw)
+    return path if path.is_absolute() else workdir / path

@@ -28,6 +28,7 @@ from grapharc.harness.permissions import Decision
 from grapharc.observe.trace import TraceRecorder
 from grapharc.planner import (
     AdmissionChecker,
+    AdmissionLimits,
     CostEstimate,
     EdgePolicy,
     EdgeRule,
@@ -151,6 +152,7 @@ def build_loop(
     registry: NodeRegistry | None = None,
     state_schema: type[BaseModel] | None = None,
     writes: dict[str, set[str]] | None = None,
+    approval: Any = None,
 ) -> GovernedLoop:
     """Assemble the loop from operator-owned parts.
 
@@ -177,6 +179,11 @@ def build_loop(
             registry=registry,
             edge_policy=edge_policy or default_edge_policy(),
             trace=trace,
+            # This loop materializes each admitted round as a standalone
+            # graph, so structural runnability is admission's business:
+            # otherwise a plan with no entry is admitted and then fails to
+            # build, which the planner cannot replan against.
+            limits=AdmissionLimits(require_entry=True),
         ),
         materializer=Materializer(
             registry=registry,
@@ -194,6 +201,7 @@ def build_loop(
         # supplied through `--registry` cannot turn "am I done" into an
         # AttributeError halfway through a run.
         goal_reached=lambda state: len(getattr(state, "notes", ()) or ()) >= 3,
+        approval=approval,
     )
 
 

@@ -95,6 +95,12 @@ class Check(StrEnum):
     BUDGET = "budget"
     DEPTH = "depth"
     ACYCLICITY = "acyclicity"
+    # Structural runnability: a graph with no entry, or with nodes nothing can
+    # reach, is not a plan even when every kind and edge is permitted. The
+    # materializer refused these anyway — but *after* admission had said yes,
+    # so the loop learned "could not be built" instead of a rejection it could
+    # replan against, and burned its execution-failure allowance discovering it.
+    REACHABILITY = "reachability"
 
 
 class AdmissionStatus(StrEnum):
@@ -314,6 +320,15 @@ class AdmissionLimits(BaseModel):
     # them and a proposal that genuinely needs one has to be admitted by a
     # checker configured to allow it.
     require_acyclic: bool = True
+    # Whether every scope must have an entry from START and no unreachable
+    # node — the two conditions `Materializer` enforces when it builds a
+    # *standalone* graph. Off by default because admission is deliberately the
+    # broader gate: a proposal may name `known_nodes` of a graph already
+    # running, where the entry lives outside the proposal entirely. Any driver
+    # that materializes standalone (every `GovernedLoop` does) should turn it
+    # on, so a structurally unrunnable plan comes back as a rejection the
+    # planner can act on rather than a build failure it cannot.
+    require_entry: bool = False
 
 
 class AdmissionResult(BaseModel):
@@ -430,6 +445,9 @@ class AdmissionChecker:
         depth = parent_depth + proposal.nesting_depth()
         rejections.extend(self._check_depth(depth, parent_depth, proposal))
         checks_run = [Check.REGISTRY, Check.POLICY, Check.BUDGET, Check.DEPTH]
+        if self.limits.require_entry:
+            rejections.extend(self._check_reachability(proposal))
+            checks_run.append(Check.REACHABILITY)
         if self.limits.require_acyclic:
             rejections.extend(self._check_acyclicity(proposal))
             checks_run.append(Check.ACYCLICITY)
@@ -687,6 +705,51 @@ class AdmissionChecker:
             )
         ]
 
+    def _check_reachability(self, proposal: Subgraph) -> list[Rejection]:
+        """Every scope needs an entry, and every node needs a way in.
+
+        Same two conditions `Materializer` enforces, checked here so a planner
+        gets a rejection it can act on — with the remedy spelled out — instead
+        of an admitted proposal that dies at build time.
+        """
+        out: list[Rejection] = []
+        for path, _depth, sub in proposal.scopes():
+            names = sub.node_names()
+            if not names:
+                continue
+            if not any(edge.source == START for edge in sub.edges):
+                out.append(
+                    Rejection(
+                        check=Check.REACHABILITY,
+                        code="no_entry_edge",
+                        subject=_scoped(path, START),
+                        detail=(
+                            "no edge leaves START, so the graph has no entry point "
+                            f"and none of {sorted(names)} could run"
+                        ),
+                        remedy=f"add an edge from {START!r} to the first node to run",
+                    )
+                )
+                continue
+            unreachable = sorted(names - _reachable_from_start(sub))
+            for name in unreachable:
+                out.append(
+                    Rejection(
+                        check=Check.REACHABILITY,
+                        code="unreachable_node",
+                        subject=_scoped(path, name),
+                        detail=(
+                            "nothing leads to this node from START, so it would "
+                            "never run — a proposal that does not mean what it says"
+                        ),
+                        remedy=(
+                            f"add an edge from a node reachable from {START!r} to "
+                            f"{name!r}, or drop the node"
+                        ),
+                    )
+                )
+        return out
+
     def _check_acyclicity(self, proposal: Subgraph) -> list[Rejection]:
         out: list[Rejection] = []
         for path, _depth, sub in proposal.scopes():
@@ -746,6 +809,22 @@ def _status_for(rejections: tuple[Rejection, ...]) -> AdmissionStatus:
     if all(r.code == "edge_needs_approval" for r in rejections):
         return AdmissionStatus.NEEDS_APPROVAL
     return AdmissionStatus.REJECTED
+
+
+def _reachable_from_start(sub: Subgraph) -> set[str]:
+    """Nodes a walk from START can arrive at, within one scope."""
+    adjacency: dict[str, list[str]] = {}
+    for edge in sub.edges:
+        adjacency.setdefault(edge.source, []).append(edge.target)
+    seen: set[str] = set()
+    stack = list(adjacency.get(START, ()))
+    while stack:
+        node = stack.pop()
+        if node in seen or node == END:
+            continue
+        seen.add(node)
+        stack.extend(adjacency.get(node, ()))
+    return seen
 
 
 def _scoped(path: str, subject: str) -> str:

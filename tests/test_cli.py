@@ -793,6 +793,57 @@ def test_serve_reports_a_missing_server_package(monkeypatch, capsys):
     assert "server extra" in payload["error"]
 
 
+def test_serve_live_root_reaches_create_app_and_the_startup_lines(
+    monkeypatch, capsys, tmp_path
+):
+    record: dict = {}
+    monkeypatch.setitem(sys.modules, "grapharc.server", _server_stub(record))
+    code, out, _ = call(["serve", "--live-root", str(tmp_path)], capsys)
+    assert code == 0
+    assert record["create_app"] == {"live_root": str(tmp_path)}
+    assert "live view" in out and "/live" in out
+
+
+def test_serve_live_token_is_passed_only_with_a_live_root(monkeypatch, capsys, tmp_path):
+    record: dict = {}
+    monkeypatch.setitem(sys.modules, "grapharc.server", _server_stub(record))
+    code, _, _ = call(
+        ["serve", "--live-root", str(tmp_path), "--live-token", "s3cret"], capsys
+    )
+    assert code == 0
+    assert record["create_app"]["live_token"] == "s3cret"
+
+    record.clear()
+    code, _, _ = call(["serve", "--live-token", "s3cret"], capsys)
+    assert code == 0
+    assert record["create_app"] == {}
+
+
+def test_serve_without_live_root_prints_no_live_line(monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "grapharc.server", _server_stub({}))
+    code, out, _ = call(["serve"], capsys)
+    assert code == 0
+    assert "live view" not in out  # the cookbook pins the three plain lines
+
+
+def test_serve_live_root_off_loopback_warns_about_exposure(monkeypatch, capsys, tmp_path):
+    record: dict = {}
+    monkeypatch.setitem(sys.modules, "grapharc.server", _server_stub(record))
+    _, loopback_out, _ = call(["serve", "--live-root", str(tmp_path)], capsys)
+    assert "tunnel" not in loopback_out
+    _, exposed_out, _ = call(
+        ["serve", "--live-root", str(tmp_path), "--host", "0.0.0.0"], capsys
+    )
+    assert "tunnel" in exposed_out
+
+
+def test_serve_live_root_must_be_a_directory(monkeypatch, capsys, tmp_path):
+    monkeypatch.setitem(sys.modules, "grapharc.server", _server_stub({}))
+    code, payload, _ = call_json(["serve", "--live-root", str(tmp_path / "absent")], capsys)
+    assert code == 2
+    assert "--live-root" in payload["error"]
+
+
 # -- replay / diff ------------------------------------------------------------
 
 

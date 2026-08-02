@@ -578,7 +578,8 @@ def test_sub_step_spans_nest_under_their_node(trace):
     children = [s for s in spans if s.parent_id == node_span.span_id]
     assert children, "the agent's model/tool sub-steps must nest under the node span"
     assert {s.attributes["grapharc.phase"] for s in children} >= {"model", "tool", "stop"}
-    assert replay(trace, "r1").orphan_sub_events == []
+    orphans = replay(trace, "r1").orphan_sub_events
+    assert [e.phase for e in orphans] == ["topology"]  # shape record, not lost work
 
 
 def test_error_spans_carry_the_error(trace):
@@ -1242,7 +1243,10 @@ def test_resume_still_seeds_step_and_attempt_from_the_thread(trace):
     compiled.invoke({"question": "b"}, thread_id="t1", run_id="r2")
     second = trace.read_events("r2")
 
-    assert min(e.step for e in second) > max(first)
+    # The topology event always carries step 0 — it states shape, not order —
+    # so the monotonicity claim is about the *work* steps.
+    steps = [e.step for e in second if e.phase != "topology"]
+    assert min(steps) > max(first)
     assert {e.attempt for e in second} == {2}
 
 

@@ -302,6 +302,12 @@ class GraphARC:
         self._nodes: dict[str, set[str]] = {}
         self._async_nodes: set[str] = set()
         self._static_edges: list[tuple[str, str]] = []
+        # Conditional routes are topology too: the mapping's targets are known
+        # statically, and a diagram that omitted them would show a branch node
+        # with no way out. Fan-out targets are dynamic, so only the source is
+        # recorded and a renderer connects the workers that actually ran.
+        self._conditional_edges: list[tuple[str, str]] = []
+        self._fanout_sources: list[str] = []
         self._adapters: dict[str, TypeAdapter[Any]] = {}
 
     def add_node(
@@ -345,6 +351,9 @@ class GraphARC:
                 f"graph {self.name!r} is dag=True: conditional edges are not allowed"
             )
         self._graph.add_conditional_edges(source, router, mapping)
+        self._conditional_edges.extend(
+            (source, target) for target in dict.fromkeys(mapping.values())
+        )
         return self
 
     def add_fanout_edge(
@@ -372,6 +381,7 @@ class GraphARC:
             return sends
 
         self._graph.add_conditional_edges(source, dispatch)
+        self._fanout_sources.append(source)
         return self
 
     def compile(self, checkpointer: Any = None) -> CompiledGraphARC:
@@ -742,6 +752,25 @@ class GraphARC:
         return wrapped
 
 
+def topology_delta(arc: GraphARC) -> dict[str, Any]:
+    """The declared shape of a graph, as one trace-event `state_delta`.
+
+    Node order is declaration order (a proposal's order, for materialized
+    graphs). Edge triples carry their kind: `static` edges run unconditionally,
+    `conditional` targets are a router's statically-known options. Fan-out
+    targets are dynamic, so only the sources are named — a renderer connects
+    them to the workers that actually ran.
+    """
+    edges = [[source, target, "static"] for source, target in arc._static_edges]
+    edges += [
+        [source, target, "conditional"] for source, target in arc._conditional_edges
+    ]
+    delta: dict[str, Any] = {"nodes": list(arc._nodes), "edges": edges}
+    if arc._fanout_sources:
+        delta["fanout_sources"] = list(arc._fanout_sources)
+    return delta
+
+
 class CompiledGraphARC:
     """A compiled graph plus GraphARC run semantics (run ids, budgets, resume)."""
 
@@ -768,6 +797,24 @@ class CompiledGraphARC:
             step_seed=step_seed,
         )
         self.last_run = ctx
+        if self.arc.trace is not None:
+            # The graph's declared shape, into the same audit trail its
+            # execution lands in. Until this event existed, a diagram could
+            # only ever show the path that ran — branches not taken, parallel
+            # structure, and nodes that never started were unrecoverable from
+            # the trace. Emitted per entry (a resumed attempt re-states it);
+            # readers keep the latest per graph. `step=0` sits below every real
+            # step, so readers comparing step ranges filter this phase out.
+            self.arc.trace.event(
+                run_id=rid,
+                graph=self.arc.name,
+                node="topology",
+                phase="topology",
+                step=0,
+                thread_id=thread,
+                attempt=attempt,
+                state_delta=topology_delta(self.arc),
+            )
         config: dict[str, Any] = {"configurable": {"thread_id": thread, "grapharc_ctx": ctx}}
         limit = (budget or self.arc.budget or _NOOP_BUDGET).max_concurrency
         if limit is not None:
