@@ -517,7 +517,7 @@ def test_the_serve_transcript_runs_against_a_real_server(tmp_path):
         trace = _run_console(_substituted(trace_step[0], mapping), tmp_path, env)
         assert trace.returncode == 0, trace.stderr
         phases = [json.loads(line)["phase"] for line in trace.stdout.splitlines()]
-        assert phases == ["start", "end"], trace.stdout
+        assert phases == ["topology", "start", "end"], trace.stdout
     finally:
         server.terminate()
         try:

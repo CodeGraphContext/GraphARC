@@ -328,7 +328,7 @@ def test_create_then_poll_to_completion(client):
     # The scripted model reports usage, so the meter must have seen both calls.
     assert done["usage"]["iterations"] == 2
     assert done["usage"]["tokens"] > 0
-    assert done["event_count"] == 4  # start+end for each of two nodes
+    assert done["event_count"] == 5  # topology, then start+end for each of two nodes
 
 
 def test_thread_id_defaults_to_the_session_id_and_is_honoured_when_given(client):
@@ -401,6 +401,7 @@ def test_a_graph_of_async_nodes_runs(client):
         "reviewed": "AWAITED NOW",
     }
     assert [e["node"] for e in trace_events(client, sid)] == [
+        "topology",
         "fetch",
         "fetch",
         "wrap",
@@ -460,7 +461,7 @@ def test_interrupt_stops_the_run_before_the_next_node(client):
     # empty: it was never written.
     assert done["result"] == {"question": "q", "answer": "first done"}
     nodes = {e["node"] for e in trace_events(client, sid)}
-    assert nodes == {"first"}
+    assert nodes == {"topology", "first"}
 
 
 def test_interrupt_on_a_finished_session_is_reported_as_not_applied(client):
@@ -521,10 +522,22 @@ def test_stream_replays_a_finished_run_and_terminates(client):
         frames = read_sse(response)
 
     kinds = [f[0] for f in frames]
-    assert kinds == ["trace"] * 4 + ["status", "done"]
-    assert [f[2] for f in frames[:4]] == ["1", "2", "3", "4"]
-    assert [f[1]["node"] for f in frames[:4]] == ["answer", "answer", "review", "review"]
-    assert [f[1]["phase"] for f in frames[:4]] == ["start", "end", "start", "end"]
+    assert kinds == ["trace"] * 5 + ["status", "done"]
+    assert [f[2] for f in frames[:5]] == ["1", "2", "3", "4", "5"]
+    assert [f[1]["node"] for f in frames[:5]] == [
+        "topology",
+        "answer",
+        "answer",
+        "review",
+        "review",
+    ]
+    assert [f[1]["phase"] for f in frames[:5]] == [
+        "topology",
+        "start",
+        "end",
+        "start",
+        "end",
+    ]
     assert frames[-2][1]["status"] == "succeeded"
     assert frames[-2][1]["result"]["answer"] == "42 is the answer."
 
@@ -539,15 +552,21 @@ def test_stream_carries_events_recorded_after_it_opened(client):
     assert GATE_ENTERED.wait(timeout=10), "the gated node never started"
     opened_with = client.get(f"/sessions/{sid}").json()
     assert opened_with["status"] == "running"
-    assert opened_with["event_count"] == 1  # only `first`'s start event so far
+    assert opened_with["event_count"] == 2  # the topology event, then `first`'s start
 
     threading.Timer(0.2, GATE.set).start()
     with client.stream("GET", f"/sessions/{sid}/stream") as response:
         response.read()
         frames = read_sse(response)
 
-    assert [f[0] for f in frames] == ["trace", "trace", "trace", "trace", "status", "done"]
-    assert [f[1]["node"] for f in frames[:4]] == ["first", "first", "second", "second"]
+    assert [f[0] for f in frames] == ["trace"] * 5 + ["status", "done"]
+    assert [f[1]["node"] for f in frames[:5]] == [
+        "topology",
+        "first",
+        "first",
+        "second",
+        "second",
+    ]
     assert frames[-2][1]["status"] == "succeeded"
 
 
@@ -555,21 +574,21 @@ def test_stream_cursor_skips_events_already_seen(client):
     sid = start(client, "demo")
     wait_for(client, sid, {"succeeded"})
 
-    with client.stream("GET", f"/sessions/{sid}/stream?cursor=3") as response:
+    with client.stream("GET", f"/sessions/{sid}/stream?cursor=4") as response:
         response.read()
         frames = read_sse(response)
     assert [f[0] for f in frames] == ["trace", "status", "done"]
-    assert frames[0][2] == "4"
+    assert frames[0][2] == "5"
     assert frames[0][1]["node"] == "review"
     assert frames[0][1]["phase"] == "end"
 
     with client.stream(
-        "GET", f"/sessions/{sid}/stream", headers={"last-event-id": "3"}
+        "GET", f"/sessions/{sid}/stream", headers={"last-event-id": "4"}
     ) as response:
         response.read()
         resumed = read_sse(response)
     assert [f[0] for f in resumed] == ["trace", "status", "done"]
-    assert resumed[0][2] == "4"
+    assert resumed[0][2] == "5"
 
 
 def test_stream_events_are_the_trace_file(client):
@@ -613,7 +632,7 @@ def test_stream_and_trace_are_the_same_record_for_an_answer_over_2000_chars(clie
     disk_lines = client.get(f"/sessions/{sid}/trace").text.splitlines()
     on_disk = [json.loads(line) for line in disk_lines]
 
-    assert len(on_disk) == 2 and len(streamed) == 2, (len(on_disk), len(streamed))
+    assert len(on_disk) == 3 and len(streamed) == 3, (len(on_disk), len(streamed))
     assert streamed == on_disk
     assert streamed_lines == disk_lines  # byte for byte, not just equal objects
 
@@ -688,7 +707,7 @@ def test_a_runtime_whose_fanout_raises_still_finishes_the_session(registry, tmp_
         assert done["status"] == "succeeded", done["error"]
         assert done["result"]["answer"] == "42 is the answer."
         # The trace file is complete even though every subscriber call failed.
-        assert len(trace_events(c, sid)) == 4
+        assert len(trace_events(c, sid)) == 5
         assert done["event_count"] == 0
 
 
@@ -771,6 +790,8 @@ def test_sse_arrives_incrementally_over_a_socket(live_server):
             assert response.status_code == 200
             lines = response.iter_lines()
             name, event = next_frame(lines)
+            assert (name, event["phase"]) == ("trace", "topology")
+            name, event = next_frame(lines)
             # This frame reached the client while the graph is still parked in
             # `first` — nothing has finished, so nothing could have been replayed.
             assert (name, event["node"], event["phase"]) == ("trace", "first", "start")
@@ -801,7 +822,7 @@ def test_trace_is_ndjson_and_empty_before_the_first_event(client):
     GATE.set()
     wait_for(client, sid, {"succeeded"})
     events = trace_events(client, sid)
-    assert len(events) == 4
+    assert len(events) == 5
     assert {e["graph"] for e in events} == {"gated"}
 
 
@@ -813,7 +834,7 @@ def test_sessions_do_not_share_a_trace_file(client):
 
     for sid, question in ((a, "a"), (b, "b")):
         events = trace_events(client, sid)
-        assert len(events) == 4
+        assert len(events) == 5
         assert {e["run_id"] for e in events} == {client.get(f"/sessions/{sid}").json()["run_id"]}
         assert client.get(f"/sessions/{sid}").json()["result"]["question"] == question
 
@@ -1012,8 +1033,8 @@ def test_a_sync_only_checkpointer_runs_through_the_http_api(sqlite_saver, tmp_pa
 
         assert done["status"] == "succeeded", done["error"]
         assert done["result"]["answer"] == "42 is the answer."
-        assert done["event_count"] == 4
-        assert len(trace_events(c, sid)) == 4
+        assert done["event_count"] == 5
+        assert len(trace_events(c, sid)) == 5
 
     # The checkpointer was actually used, not quietly bypassed.
     saved = sqlite_saver.get_tuple({"configurable": {"thread_id": "conv-1"}})
@@ -1035,7 +1056,7 @@ def test_the_sync_driver_honours_an_interrupt_at_the_same_boundary(sqlite_saver,
             done = wait_for(c, sid, {"interrupted", "failed", "succeeded"})
             assert done["status"] == "interrupted", done["error"]
             assert done["result"] == {"question": "q", "answer": "first done"}
-            assert {e["node"] for e in trace_events(c, sid)} == {"first"}
+            assert {e["node"] for e in trace_events(c, sid)} == {"topology", "first"}
         finally:
             GATE.set()
 

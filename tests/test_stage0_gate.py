@@ -56,7 +56,12 @@ def test_gate_crash_mid_write_then_resume_yields_exactly_one_report(
 
     # Replay-point identity survives the resume: both attempts share the
     # thread_id, attempts are numbered, and step numbers never collide.
-    events = [e for e in trace.read_events() if e.thread_id == "t1"]
+    events = [
+        e
+        for e in trace.read_events()
+        # Topology events carry step 0 on every attempt — shape, not order.
+        if e.thread_id == "t1" and e.phase != "topology"
+    ]
     assert events, "trace events must carry thread_id"
     first = [e for e in events if e.attempt == 1]
     second = [e for e in events if e.attempt == 2]

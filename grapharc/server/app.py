@@ -90,6 +90,8 @@ def create_app(
     max_workers: int | None = None,
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     keepalive_seconds: float | None = DEFAULT_KEEPALIVE_SECONDS,
+    live_root: str | Path | None = None,
+    live_token: str | None = None,
 ) -> FastAPI:
     """Build the app.
 
@@ -99,6 +101,11 @@ def create_app(
     configure the default runtime and mean nothing next to a supplied one. With
     neither, the registry is empty and every create request gets a 404 naming
     that fact.
+
+    `live_root` mounts the read-only live view (`grapharc.server.live`) over
+    the trace files under that directory. It is storage to *read*, not runtime
+    configuration, so it composes with either a registry or a supplied runtime
+    — the Slack topology is a live root and no registry at all.
     """
     if runtime is not None and any(
         arg is not None for arg in (registry, root, max_workers)
@@ -125,6 +132,11 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.runtime = session_runtime
+
+    if live_root is not None:
+        from grapharc.server.live import live_router
+
+        app.include_router(live_router(Path(live_root), token=live_token))
 
     @app.exception_handler(UnknownSessionError)
     def _unknown_session(request: Request, exc: UnknownSessionError) -> JSONResponse:

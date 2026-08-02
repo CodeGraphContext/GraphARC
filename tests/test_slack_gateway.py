@@ -133,7 +133,7 @@ def test_plan_registry_admits_only_the_shipped_modules(tmp_path):
         "plan goal --registry grapharc.examples.plan_docs:build_registry",
         workdir=tmp_path,
     )
-    assert argv[-1] == "grapharc.examples.plan_docs:build_registry"
+    assert argv[argv.index("--registry") + 1] == "grapharc.examples.plan_docs:build_registry"
     with pytest.raises(SlackCommandError, match="accepts only"):
         parse_command("plan goal --registry os:system", workdir=tmp_path)
     with pytest.raises(SlackCommandError, match="accepts only"):
@@ -142,11 +142,72 @@ def test_plan_registry_admits_only_the_shipped_modules(tmp_path):
         )
 
 
+def test_the_stdlib_plan_registry_needs_the_agent_double_opt_in(tmp_path):
+    """Agent-backed plan kinds run tools on the host: same gate as `agent`."""
+    for kwargs in ({}, {"allow_agent": True}, {"allow_model": True}):
+        with pytest.raises(SlackCommandError, match="GRAPHARC_SLACK_ALLOW_AGENT"):
+            parse_command(
+                "plan goal --registry grapharc.stdlib:build_registry",
+                workdir=tmp_path,
+                **kwargs,
+            )
+
+
+def test_a_slack_stdlib_plan_is_always_parked_on_the_approval_gate(tmp_path):
+    argv = parse_command(
+        "plan goal --registry grapharc.stdlib:build_registry",
+        workdir=tmp_path,
+        allow_model=True,
+        allow_agent=True,
+        timeout_seconds=600,
+    )
+    assert "--approve" in argv
+    assert argv[argv.index("--approval-timeout") + 1] == "300.0"
+
+    # A requester-set gate config wins over the injection.
+    explicit = parse_command(
+        "plan goal --registry grapharc.stdlib:build_registry --approval-timeout 90",
+        workdir=tmp_path,
+        allow_model=True,
+        allow_agent=True,
+        timeout_seconds=600,
+    )
+    assert explicit.count("--approval-timeout") == 1
+    assert explicit[explicit.index("--approval-timeout") + 1] == "90"
+
+
+def test_the_demo_plan_registries_stay_reachable_without_opt_ins(tmp_path):
+    argv = parse_command(
+        "plan goal --registry grapharc.examples.plan_docs:build_registry",
+        workdir=tmp_path,
+    )
+    assert "--approve" not in argv  # only the host-acting registry is parked
+
+
+def test_a_command_pasted_with_code_backticks_still_parses(tmp_path):
+    """Copying from a code-formatted Slack message brings the backticks along."""
+    argv = parse_command(
+        "`approve slack-runs/x/trace.jsonl`", workdir=tmp_path
+    )
+    assert argv == ["approve", "slack-runs/x/trace.jsonl"]
+    # A single stray trailing backtick — half a copy — is tolerated too.
+    argv = parse_command("approve slack-runs/x/trace.jsonl`", workdir=tmp_path)
+    assert argv == ["approve", "slack-runs/x/trace.jsonl"]
+
+
+def test_approve_is_admitted_with_path_confinement(tmp_path):
+    argv = parse_command("approve slack-runs/x/trace.jsonl --deny", workdir=tmp_path)
+    assert argv == ["approve", "slack-runs/x/trace.jsonl", "--deny"]
+    with pytest.raises(SlackCommandError, match="escapes"):
+        parse_command("approve ../elsewhere/trace.jsonl", workdir=tmp_path)
+
+
 def test_model_is_refused_by_default_and_admitted_on_opt_in(tmp_path):
     with pytest.raises(SlackCommandError, match="paid backend"):
         parse_command("plan 'a goal' --model mock/x", workdir=tmp_path)
     argv = parse_command("plan 'a goal' --model mock/x", workdir=tmp_path, allow_model=True)
-    assert argv == ["plan", "a goal", "--model", "mock/x"]
+    assert argv[:4] == ["plan", "a goal", "--model", "mock/x"]
+    assert "--trace" in argv  # tracing commands get a trace the bot can find
 
 
 def test_a_path_positional_may_not_escape_the_workdir(tmp_path):
@@ -171,7 +232,48 @@ def test_a_path_inside_the_workdir_is_admitted_even_absolute(tmp_path):
 
 def test_a_quoted_goal_survives_as_one_argument(tmp_path):
     argv = parse_command('plan "investigate the checkout outage"', workdir=tmp_path)
-    assert argv == ["plan", "investigate the checkout outage"]
+    assert argv[:2] == ["plan", "investigate the checkout outage"]
+
+
+def test_a_tracing_command_gets_a_unique_injected_trace(tmp_path):
+    first = parse_command("run graph.toml", workdir=tmp_path)
+    second = parse_command("run graph.toml", workdir=tmp_path)
+    first_trace = first[first.index("--trace") + 1]
+    second_trace = second[second.index("--trace") + 1]
+    assert first_trace.startswith("slack-runs/")
+    assert first_trace.endswith("trace.jsonl")
+    assert first_trace != second_trace, "a reused path would replay another run"
+
+
+def test_a_requester_named_trace_wins_over_injection(tmp_path):
+    argv = parse_command("run graph.toml --trace runs/mine.jsonl", workdir=tmp_path)
+    assert argv.count("--trace") == 1
+    assert argv[argv.index("--trace") + 1] == "runs/mine.jsonl"
+
+
+def test_agent_also_gets_an_injected_trace(tmp_path):
+    argv = parse_command(
+        "agent task", workdir=tmp_path, allow_model=True, allow_agent=True
+    )
+    assert "--trace" in argv
+
+
+def test_readers_get_no_trace_injection(tmp_path):
+    assert "--trace" not in parse_command("metrics t.jsonl r1", workdir=tmp_path)
+    assert "--trace" not in parse_command("models", workdir=tmp_path)
+
+
+def test_trace_path_resolves_the_injected_and_named_forms(tmp_path):
+    from grapharc.slack.command import trace_path
+
+    argv = parse_command("run graph.toml", workdir=tmp_path)
+    resolved = trace_path(argv, tmp_path)
+    assert resolved is not None and resolved.is_relative_to(tmp_path)
+
+    inline = trace_path(["run", "g.toml", "--trace=runs/t.jsonl"], tmp_path)
+    assert inline == tmp_path / "runs" / "t.jsonl"
+
+    assert trace_path(["metrics", "t.jsonl", "r1"], tmp_path) is None
 
 
 def test_empty_text_answers_with_usage_not_a_traceback(tmp_path):
@@ -229,7 +331,7 @@ def test_truncation_is_announced_never_silent():
         timeout_seconds=60,
     )
     message = format_result(result)
-    assert "500 more characters not shown" in message
+    assert "500 earlier characters not shown" in message
 
 
 def test_a_fence_in_the_output_cannot_break_out():
@@ -315,6 +417,54 @@ def test_config_reads_workdir_timeout_and_model_opt_in(tmp_path):
     assert config.timeout_seconds == 5.0
     assert config.allow_model
     assert config.allow_agent
+
+
+def test_live_config_defaults_on_and_reads_the_switches(tmp_path):
+    base = {"SLACK_BOT_TOKEN": "xoxb-x", "SLACK_APP_TOKEN": "xapp-x"}
+    assert SlackBotConfig.from_env(dict(base)).live is True
+    assert SlackBotConfig.from_env({**base, "GRAPHARC_SLACK_LIVE": "0"}).live is False
+    config = SlackBotConfig.from_env({**base, "GRAPHARC_SLACK_LIVE_INTERVAL": "5"})
+    assert config.live_interval_seconds == 5.0
+
+
+def test_a_bad_live_interval_is_a_named_error(tmp_path):
+    base = {"SLACK_BOT_TOKEN": "xoxb-x", "SLACK_APP_TOKEN": "xapp-x"}
+    with pytest.raises(SlackConfigError, match="GRAPHARC_SLACK_LIVE_INTERVAL"):
+        SlackBotConfig.from_env({**base, "GRAPHARC_SLACK_LIVE_INTERVAL": "soon"})
+    with pytest.raises(SlackConfigError, match="positive"):
+        SlackBotConfig.from_env({**base, "GRAPHARC_SLACK_LIVE_INTERVAL": "0"})
+
+
+def test_live_url_base_is_validated_and_stripped(tmp_path):
+    base = {"SLACK_BOT_TOKEN": "xoxb-x", "SLACK_APP_TOKEN": "xapp-x"}
+    assert SlackBotConfig.from_env(dict(base)).live_url_base is None
+    config = SlackBotConfig.from_env(
+        {**base, "GRAPHARC_SLACK_LIVE_URL": "https://laptop.tailnet.ts.net/"}
+    )
+    assert config.live_url_base == "https://laptop.tailnet.ts.net"
+    with pytest.raises(SlackConfigError, match="GRAPHARC_SLACK_LIVE_URL"):
+        SlackBotConfig.from_env({**base, "GRAPHARC_SLACK_LIVE_URL": "laptop:8000"})
+
+
+def test_live_view_url_is_composed_only_for_tracing_argvs(tmp_path):
+    from grapharc.slack.format import live_view_url
+
+    argv = parse_command("run graph.toml", workdir=tmp_path)
+    url = live_view_url(argv, base="https://laptop.example", workdir=tmp_path)
+    assert url is not None
+    assert url.startswith("https://laptop.example/live/view?trace=slack-runs%2F")
+
+    assert live_view_url(argv, base=None, workdir=tmp_path) is None
+    reader = parse_command("metrics t.jsonl r1", workdir=tmp_path)
+    assert live_view_url(reader, base="https://laptop.example", workdir=tmp_path) is None
+
+
+def test_live_view_url_carries_the_run_id_when_named(tmp_path):
+    from grapharc.slack.format import live_view_url
+
+    argv = parse_command("run graph.toml --run-id r7", workdir=tmp_path)
+    url = live_view_url(argv, base="https://laptop.example", workdir=tmp_path)
+    assert url is not None and url.endswith("&run=r7")
 
 
 def test_handle_text_turns_a_refusal_into_a_message_not_an_exception(tmp_path):

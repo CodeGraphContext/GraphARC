@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 import time
 import types
 import typing
@@ -68,6 +69,18 @@ from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget, BudgetExceeded, BudgetMeter
 from grapharc.runtime.convergence import StopReason
 from grapharc.runtime.graph import RunContext
+
+#: Error text that means "the CALL was shaped wrong" — the only case where
+#: appending the tool's real signature helps rather than misleads. A TypeError
+#: raised inside a correctly-called tool body matches none of these.
+_CALL_SHAPE_ERROR = re.compile(
+    r"unexpected keyword argument"
+    r"|missing \d+ required"
+    r"|required positional argument"
+    r"|positional arguments? but"
+    r"|got multiple values for"
+    r"|must be a JSON object"
+)
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a tool-using agent inside a GraphARC graph.\n"
@@ -568,6 +581,26 @@ class AgentNode:
             ctx.meter.charge_tokens(total, source=message)
         return total
 
+    def _argument_hint(self, name: str) -> str:
+        """The tool's real parameter list, for an error a model must recover from."""
+        spec = self.harness.registry.get(name)
+        if spec is None:
+            return ""
+        try:
+            params = inspect.signature(spec.fn).parameters.values()
+        except (TypeError, ValueError):
+            return ""
+
+        def render(p: inspect.Parameter) -> str:
+            if p.kind is inspect.Parameter.VAR_POSITIONAL:
+                return f"*{p.name}"
+            if p.kind is inspect.Parameter.VAR_KEYWORD:
+                return f"**{p.name}"
+            return p.name if p.default is inspect.Parameter.empty else f"{p.name}=…"
+
+        shown = ", ".join(render(p) for p in params)
+        return f" (tool {name!r} takes exactly: {shown or 'no arguments'})"
+
     def _execute(self, ctx: RunContext, iteration: int, call: dict[str, Any]) -> ToolCallRecord:
         """Route one model-requested call through the harness, never around it."""
         name = str(call.get("name") or "")
@@ -589,6 +622,17 @@ class AgentNode:
             raise  # the run's ceiling, not this tool's failure
         except Exception as exc:  # noqa: BLE001 — a broken tool must not end the run
             status, detail = ToolCallStatus.ERROR, f"TOOL_ERROR: {exc}"
+            # A call-shape TypeError means the model invented an argument
+            # shape (`filename=` for `path`, a lambda over a list). The bare
+            # exception names the wrong argument but not the right ones, which
+            # leaves a weak model no way to self-correct — so name them. The
+            # message pattern matters: a TypeError raised *inside* a correct
+            # call (`len(None)`) must not earn a hint telling the model its
+            # valid arguments were wrong. The sandbox re-raises the child's
+            # failure as a RuntimeError whose message embeds `TypeError(...)`,
+            # so the pattern is checked on the text, not the type.
+            if _CALL_SHAPE_ERROR.search(detail):
+                detail += self._argument_hint(name)
         else:
             status, detail = ToolCallStatus.OK, self._render(value)
         duration_ms = (time.perf_counter() - started) * 1000

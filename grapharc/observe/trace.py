@@ -220,6 +220,48 @@ class TraceRecorder:
         return list(dict.fromkeys(ev.run_id for ev in self.read_events()))
 
 
+class TailRecorder(TraceRecorder):
+    """Read-only recorder over a file another process may be mid-write in.
+
+    `TraceRecorder.read_events` validates every line and raises on a torn one —
+    correct for a file the reader owns, wrong for one being appended to right
+    now. This override reads bytes, cuts at the last newline, and skips
+    anything that does not parse: the same discipline `_advance_index` applies.
+    It also skips the parent constructor's mkdir — a reader must not create
+    directories for a path that may come from a request, and the file it names
+    may simply not exist yet.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self._lock = threading.Lock()
+        self._indexed_bytes = 0
+        self._thread_max: dict[str, tuple[int, int]] = {}
+
+    def record(self, event: TraceEvent) -> None:
+        raise RuntimeError("TailRecorder is read-only")
+
+    def read_events(self, run_id: str | None = None) -> list[TraceEvent]:
+        try:
+            raw = self.path.read_bytes()
+        except OSError:
+            return []
+        cut = raw.rfind(b"\n")
+        if cut < 0:
+            return []
+        events = []
+        for line in raw[: cut + 1].splitlines():
+            if not line.strip():
+                continue
+            try:
+                event = TraceEvent.model_validate_json(line)
+            except ValueError:
+                continue
+            if run_id is None or event.run_id == run_id:
+                events.append(event)
+        return events
+
+
 def load_events(
     source: TraceRecorder | str | Path, run_id: str | None = None
 ) -> list[TraceEvent]:
@@ -228,4 +270,4 @@ def load_events(
     return recorder.read_events(run_id)
 
 
-__all__ = ["TraceEvent", "TraceReadError", "TraceRecorder", "load_events"]
+__all__ = ["TailRecorder", "TraceEvent", "TraceReadError", "TraceRecorder", "load_events"]

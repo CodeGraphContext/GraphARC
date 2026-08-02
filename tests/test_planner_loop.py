@@ -1496,4 +1496,78 @@ def test_stop_reasons_are_stable_machine_readable_strings():
         "planning_failed",
         "execution_failed",
         "human_stopped",
+        "approval_denied",
+        "approval_timeout",
     }
+
+
+def test_rejection_feedback_accumulates_across_rounds():
+    """Round 3's prompt shows rounds 1 AND 2 — a model shown only the last
+    refusal re-proposes the round-before-last's mistake with no way to see
+    the pattern, and exhausts the rejection allowance repeating itself."""
+    denied = plan(("ship", "deploy"))
+    loop, model, _ = build_loop(
+        [denied, denied, denied],
+        policy=DENY_DEPLOY,
+    )
+    result = loop.run("goal")
+    assert result.stop is LoopStop.ADMISSION_REFUSED
+
+    third_turn = " ".join(str(m.content) for m in model.calls[2])
+    assert "Round 1:" in third_turn
+    assert "Round 2:" in third_turn
+
+
+def test_accumulated_feedback_is_bounded_to_the_last_three_rounds():
+    denied = plan(("ship", "deploy"))
+    loop, model, _ = build_loop(
+        [denied] * 5,
+        policy=DENY_DEPLOY,
+        limits=LoopLimits(max_consecutive_rejections=5, max_rounds=6),
+    )
+    loop.run("goal")
+    fifth_turn = " ".join(str(m.content) for m in model.calls[4])
+    assert "Round 1:" not in fifth_turn  # dropped: the prompt must not grow forever
+    assert "Round 2:" in fifth_turn and "Round 4:" in fifth_turn
+
+
+def test_an_unreachable_backend_stops_on_the_first_round():
+    """A dead server is not a planning problem: rephrasing cannot reach it.
+    The loop used to burn its whole planning allowance re-dialing the same
+    socket, then report a planning failure for an infrastructure one."""
+
+    class DeadBackend:
+        def __init__(self):
+            self.calls = 0
+
+        def propose(self, task, ctx=None, *, feedback=""):
+            self.calls += 1
+            from grapharc.planner.proposal import PlanningOutcome
+
+            return PlanningOutcome(
+                error="planner model call failed: APIConnectionError('Connection error.')",
+                unreachable=True,
+            )
+
+    planner = DeadBackend()
+    bodies = Bodies()
+    reg = registry(bodies)
+    loop = GovernedLoop(
+        planner=planner,
+        checker=gate(reg),
+        materializer=Materializer(registry=reg, state_schema=LoopState),
+    )
+    result = loop.run("goal")
+
+    assert result.stop is LoopStop.PLANNING_FAILED
+    assert "could not be reached" in result.detail
+    assert planner.calls == 1, "the loop retried an unreachable backend"
+    assert bodies.ran == []
+
+
+def test_a_merely_bad_reply_still_gets_its_retries():
+    """The unreachable shortcut must not swallow ordinary planning failures."""
+    loop, model, _ = build_loop(["not json at all"], on_exhausted="repeat")
+    result = loop.run("goal")
+    assert result.stop is LoopStop.PLANNING_FAILED
+    assert len(result.rounds) == 3  # the full allowance, as before

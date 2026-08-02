@@ -267,3 +267,79 @@ def test_a_phase_that_gave_up_is_labelled_as_such(workspace):
     assert state["notes"], state
     # Either it met the target or the reason is on the line; never silent.
     assert state["notes"][0] == "partial" or state["notes"][0].startswith("[")
+
+
+# -- the plan-registry contract (`grapharc plan --registry grapharc.stdlib:...`) --
+
+
+def test_stdlib_ships_the_full_registry_module_contract():
+    """Everything `cli/plan.py` reads by getattr, present and coherent."""
+    import grapharc.stdlib as stdlib
+
+    assert stdlib.STATE_SCHEMA is stdlib.WorkState
+    assert callable(stdlib.build_loop)
+    assert callable(stdlib.goal_met)
+    replies = stdlib.scripted_planner_replies()
+    assert replies, "the spend-free smoke path needs at least one reply"
+
+
+def test_goal_met_reads_notes_defensively():
+    from grapharc.stdlib import WorkState, goal_met
+
+    assert not goal_met(WorkState())
+    assert goal_met(WorkState(notes=["a report landed"]))
+    assert not goal_met(object())  # no notes attribute: not met, not a crash
+
+
+def test_the_scripted_plan_runs_spend_free_and_stops_cleanly(tmp_path):
+    """The whole loop through stdlib's own builder, no model, no network."""
+    from grapharc.observe.trace import TraceRecorder
+    from grapharc.planner import LoopStop
+    from grapharc.stdlib import WorkState, build_loop, scripted_planner_replies
+    from grapharc.testing import ScriptedChatModel
+
+    trace = TraceRecorder(tmp_path / "t.jsonl")
+    model = ScriptedChatModel(responses=scripted_planner_replies())
+    loop = build_loop(model, trace=trace)
+    result = loop.run("smoke", WorkState(goal="smoke"))
+
+    # The deterministic kinds cannot write `notes`, so the honest clean stop
+    # is "no further work" — never a burn to planning_failed.
+    assert result.stop is LoopStop.NO_FURTHER_WORK
+    assert result.state.findings, "collect_context must actually have run"
+    phases = {e.phase for e in trace.read_events(result.run_id)}
+    assert "topology" in phases  # the admitted round's shape is on the trace
+
+
+def test_parallel_phases_merge_instead_of_colliding(tmp_path):
+    """The schema's whole claim: two phases finishing in one superstep must
+    merge. Without `operator.add` reducers LangGraph raised InvalidUpdateError
+    ("Can receive only one value per step"), so every fan-out a planner
+    proposed — the natural shape for a decomposable job — died at execution."""
+    from grapharc.observe.trace import TraceRecorder
+    from grapharc.runtime.graph import END, START, GraphARC
+    from grapharc.stdlib import WorkState
+
+    trace = TraceRecorder(tmp_path / "t.jsonl")
+    g = GraphARC(WorkState, name="fanout", trace=trace)
+    g.add_node("seed", lambda s: {"findings": ["seed"]}, writes={"findings"})
+    for name in ("a", "b", "c"):
+        body = (lambda n: lambda s: {"findings": [f"from {n}"]})(name)
+        g.add_node(name, body, writes={"findings"})
+        g.add_edge("seed", name)
+        g.add_edge(name, "join")
+    g.add_node("join", lambda s: None, writes=set())
+    g.add_edge(START, "seed")
+    g.add_edge("join", END)
+
+    out = g.compile().invoke({"goal": "x"}, run_id="r1")
+    assert sorted(out["findings"]) == ["from a", "from b", "from c", "seed"]
+
+
+def test_phases_return_only_their_own_addition(tmp_path):
+    """With a reducer, returning the accumulated list would double it."""
+    from grapharc.stdlib import WorkState, _collect_context
+
+    body = _collect_context(None)
+    delta = body(WorkState(findings=["already here"]))
+    assert len(delta["findings"]) == 1, delta

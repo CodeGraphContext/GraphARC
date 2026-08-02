@@ -203,6 +203,11 @@ def to_spans(
                 spans.append(sub_span)
 
     for orphan in run.orphan_sub_events:
+        if orphan.phase == "topology":
+            # The graph's declared shape, not work that happened: it has no
+            # duration and no parent, and a span for it would report the act of
+            # stating the topology as if it were an executed step.
+            continue
         # Parented to the run rather than to a guessed node: see `replay._attach`.
         sub_span = _sub_span(run, orphan, parent_id=root_id)
         if sub_span is not None:

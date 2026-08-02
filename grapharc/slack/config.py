@@ -36,6 +36,18 @@ class SlackBotConfig:
     # effective together with allow_model — an agent cannot run spend-free.
     allow_agent: bool = False
     slash_command: str = "/grapharc"
+    # Edit one status message with live progress while a tracing command runs.
+    # Default on: every failure inside the live path degrades to the plain
+    # blocking reply, so there is nothing to lose by having it on.
+    live: bool = True
+    # Floor between two edits of the status message. Slack's chat.update sits
+    # in a ~50/min rate tier; a couple of seconds keeps one run well inside it.
+    live_interval_seconds: float = 2.5
+    # Base URL of an operator-run `grapharc serve --live-root` reachable by the
+    # requester (a tunnel or tailnet hostname). Unset means: post no link. The
+    # bot itself never opens a port — this is the operator asserting that a
+    # separate process does.
+    live_url_base: str | None = None
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> SlackBotConfig:
@@ -69,6 +81,24 @@ class SlackBotConfig:
         if timeout <= 0:
             raise SlackConfigError("GRAPHARC_SLACK_TIMEOUT must be positive")
 
+        raw_interval = env.get("GRAPHARC_SLACK_LIVE_INTERVAL", "2.5")
+        try:
+            live_interval = float(raw_interval)
+        except ValueError:
+            raise SlackConfigError(
+                "GRAPHARC_SLACK_LIVE_INTERVAL must be a number of seconds, "
+                f"got {raw_interval!r}"
+            ) from None
+        if live_interval <= 0:
+            raise SlackConfigError("GRAPHARC_SLACK_LIVE_INTERVAL must be positive")
+
+        live_url_base = env.get("GRAPHARC_SLACK_LIVE_URL", "").rstrip("/") or None
+        if live_url_base is not None and not live_url_base.startswith(("http://", "https://")):
+            raise SlackConfigError(
+                "GRAPHARC_SLACK_LIVE_URL must start with http:// or https://, "
+                f"got {live_url_base!r}"
+            )
+
         return cls(
             bot_token=bot_token,
             app_token=app_token,
@@ -77,4 +107,10 @@ class SlackBotConfig:
             allow_model=env.get("GRAPHARC_SLACK_ALLOW_MODEL", "") == "1",
             allow_agent=env.get("GRAPHARC_SLACK_ALLOW_AGENT", "") == "1",
             slash_command=env.get("GRAPHARC_SLACK_COMMAND", "/grapharc"),
+            # Any common spelling of "off" disables — an operator who wrote
+            # `false` and silently got live narration anyway was misled.
+            live=env.get("GRAPHARC_SLACK_LIVE", "1").strip().lower()
+            not in ("0", "false", "no", "off"),
+            live_interval_seconds=live_interval,
+            live_url_base=live_url_base,
         )

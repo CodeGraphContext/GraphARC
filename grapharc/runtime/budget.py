@@ -146,6 +146,19 @@ class BudgetMeter:
         with self._lock:
             self._iterations += n
 
+    def credit_seconds(self, seconds: float) -> None:
+        """Exclude a stretch of wall clock from `max_seconds`.
+
+        For time the run spent deliberately parked — a human deciding at an
+        approval gate — which is nobody's spend. Implemented by moving the
+        start mark forward, so `elapsed_seconds` simply never saw the wait.
+        Negative or zero credits are ignored rather than trusted.
+        """
+        if seconds <= 0:
+            return
+        with self._lock:
+            self._started_at += seconds
+
     def charge_tokens(self, n: int, *, automatic: bool = False, source: Any = None) -> None:
         """Add `n` tokens to the run's total.
 

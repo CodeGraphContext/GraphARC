@@ -799,6 +799,7 @@ for event in trace.read_events():
 Output:
 
 ```
+{'attempt': 1, 'graph': 'counter', 'node': 'topology', 'phase': 'topology', 'step': 0, 'state_delta': {'nodes': ['load', 'count'], 'edges': [['__start__', 'load', 'static'], ['load', 'count', 'static'], ['count', '__end__', 'static']]}}
 {'attempt': 1, 'graph': 'counter', 'node': 'load', 'phase': 'start', 'step': 1}
 {'attempt': 1, 'graph': 'counter', 'node': 'load', 'phase': 'end', 'step': 1, 'state_delta': {'items': ['a', 'b', 'c']}, 'tokens': 0}
 {'attempt': 1, 'graph': 'counter', 'node': 'count', 'phase': 'start', 'step': 2}
@@ -810,6 +811,12 @@ The four fields the snippet filtered out are on every line too: `ts` (ISO-8601 U
 printout only because they differ every run.
 
 So, by phase:
+
+- **`topology`** is written once per entry, before any node runs: the graph's declared
+  nodes and edges (conditional routes included, tagged by kind). It is what lets a
+  diagram show the whole orchestration — branches not taken included — rather than
+  only the path that happened to run. It carries `step: 0` on every attempt: it
+  states shape, not order.
 
 - **`start`** carries identity and nothing else: run, thread, attempt, graph, node,
   step, timestamp. It is written *before* the node body, so it exists even when the
@@ -1035,16 +1042,20 @@ conn.close()
 Output:
 
 ```
+attempt 1  step 0  topology topology
 attempt 1  step 1  fetch  start
 attempt 1  step 1  fetch  end
 attempt 1  step 2  save   start
 attempt 1  step 2  save   error
+attempt 2  step 0  topology topology
 attempt 2  step 3  save   start
 attempt 2  step 3  save   end
 ```
 
-The resumed attempt starts at step 3 rather than restarting the numbering, and
-`fetch` has no attempt-2 line because it did not re-run.
+The resumed attempt's *work* starts at step 3 rather than restarting the numbering,
+and `fetch` has no attempt-2 line because it did not re-run. Each attempt restates
+the graph's topology at step 0 — shape, not order — which is why step comparisons
+across attempts filter that phase out.
 
 ---
 

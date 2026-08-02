@@ -533,6 +533,21 @@ def test_the_trace_carries_what_the_page_says_each_phase_carries(tmp_path):
         for e in trace.read_events()
     ]
     assert printed == [
+        {
+            "attempt": 1,
+            "graph": "counter",
+            "node": "topology",
+            "phase": "topology",
+            "step": 0,
+            "state_delta": {
+                "nodes": ["load", "count"],
+                "edges": [
+                    ["__start__", "load", "static"],
+                    ["load", "count", "static"],
+                    ["count", "__end__", "static"],
+                ],
+            },
+        },
         {"attempt": 1, "graph": "counter", "node": "load", "phase": "start", "step": 1},
         {
             "attempt": 1,
@@ -557,7 +572,11 @@ def test_the_trace_carries_what_the_page_says_each_phase_carries(tmp_path):
     # The four fields the snippet filters out are on the lines anyway.
     for event in trace.read_events():
         assert event.run_id and event.thread_id == "demo" and event.ts
-    assert all(e.duration_ms is not None for e in trace.read_events() if e.phase != "start")
+    assert all(
+        e.duration_ms is not None
+        for e in trace.read_events()
+        if e.phase not in ("start", "topology")
+    )
 
 
 # -- "How do I see what a run spent, from inside a node?" ------------------
@@ -704,10 +723,12 @@ def test_trace_step_numbers_continue_across_a_resume(tmp_path):
         assert [
             (e.attempt, e.step, e.node, e.phase) for e in trace.read_events()
         ] == [
+            (1, 0, "topology", "topology"),
             (1, 1, "fetch", "start"),
             (1, 1, "fetch", "end"),
             (1, 2, "save", "start"),
             (1, 2, "save", "error"),
+            (2, 0, "topology", "topology"),
             (2, 3, "save", "start"),
             (2, 3, "save", "end"),
         ]

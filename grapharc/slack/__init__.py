@@ -14,12 +14,19 @@ The module is layered so everything with behaviour is testable without Slack:
     command.py   what Slack text is allowed to become an argv (the gate)
     runner.py    run an argv against this interpreter's grapharc, with a timeout
     format.py    turn an exit code and captured output into one Slack message
+    live.py      tail a running command's trace and narrate it via a callback
     bot.py       slack-bolt wiring; the only file that imports slack_bolt
     config.py    tokens and limits from the environment, nothing else
 
 Only `bot.py` needs the `slack` extra, and it imports it lazily — every other
-module (and this package) is stdlib-only, so a wheel without the extra still
-imports.
+module (and this package) needs nothing beyond grapharc's own core
+dependencies, so a wheel without the extra still imports.
+
+A tracing command (`demo`, `run`, `plan`, `agent`) is narrated live: the gate
+gives it a trace path the bot knows, `live.py` tails that file while the
+subprocess runs, and the bot edits one status message in place — a node
+progress line per event batch plus a refreshed mermaid.live diagram link.
+Every failure in that path degrades to the plain blocking reply.
 
 The gate's default is deliberately spend-free: `serve` is refused, `agent` and
 `--model` are refused unless the operator opts in (`agent` needs two switches:

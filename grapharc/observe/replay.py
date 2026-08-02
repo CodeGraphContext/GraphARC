@@ -165,6 +165,22 @@ class ReplayedRun(BaseModel):
         return round((max(stamps) - min(stamps)).total_seconds() * 1000, 2)
 
     @property
+    def recorded_cost_usd(self) -> float | None:
+        """Cost as `observe.cost` counts it: node totals plus orphans, once.
+
+        A model call inside an `AgentNode` lands its cost twice on the trace —
+        on its own `model` sub-event and again in the node's `end` aggregate —
+        so summing every event doubles the bill. Node terminals plus orphan
+        sub-events are disjoint by construction; sub-events attributed inside
+        a node are the breakdown of its total, never an addition to it.
+        """
+        amounts = [e.cost_usd for e in self.executions if e.cost_usd is not None]
+        amounts += [
+            e.cost_usd for e in self.orphan_sub_events if e.cost_usd is not None
+        ]
+        return round(sum(amounts), 6) if amounts else None
+
+    @property
     def errors(self) -> list[NodeExecution]:
         return [e for e in self.executions if e.error is not None]
 

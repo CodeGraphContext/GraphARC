@@ -39,7 +39,8 @@ rather than a code change. With **no** model it is not registered at all — see
 
 from __future__ import annotations
 
-from typing import Any
+import operator
+from typing import Annotated, Any
 
 from pydantic import BaseModel
 
@@ -68,17 +69,20 @@ TOOLS_FOR: dict[str, tuple[str, ...]] = {
 class WorkState(BaseModel):
     """The state contract for stdlib graphs.
 
-    Deliberately small and append-only. Every field is a list a phase adds to,
-    so two phases running in parallel cannot silently clobber each other — the
-    kernel would refuse an undeclared write anyway, but a schema that makes the
-    conflict impossible is better than one that reports it.
+    Deliberately small and append-only. Every list field carries an `operator.add`
+    reducer, which is what actually makes concurrency safe: without one,
+    LangGraph refuses two writes to the same key in one superstep
+    (`InvalidUpdateError`), so a fan-out of parallel phases — the shape a
+    planner proposes for any decomposable job — died at execution instead of
+    merging. Phases therefore return only what they *add*; the reducer appends
+    it, and two phases finishing together cannot clobber each other.
     """
 
     goal: str = ""
     #: What was learned. Read by later phases as their context.
-    findings: list[str] = []
+    findings: Annotated[list[str], operator.add] = []
     #: Narrative for a human reading the result.
-    notes: list[str] = []
+    notes: Annotated[list[str], operator.add] = []
 
 
 #: The single list field each agent-backed phase appends its report to.
@@ -148,7 +152,9 @@ def _collect_context(spec: Any) -> Any:
             if not p.name.startswith(".")
         )[:50]
         found = f"workspace contains {len(names)} visible entries: {', '.join(names)}"
-        return {"findings": [*state.findings, found]}
+        # Only the new item: `findings` carries an `operator.add` reducer, so
+        # returning the accumulated list would append it to itself.
+        return {"findings": [found]}
 
     body.writes = {"findings"}
     return body
@@ -211,7 +217,8 @@ def _agent_factory(model: Any, harness_for: Any, kind: str) -> Any:
             # is not indistinguishable from one that finished.
             reason = result.termination_reason.value
             line = result.output if reason == "target_met" else f"[{reason}] {result.output}"
-            return {field: [*getattr(state, field), line]}
+            # The reducer appends; returning the accumulated list would double it.
+            return {field: [line]}
 
         body.writes = {field}
         return body
@@ -315,6 +322,122 @@ def catalog_for_prompt(model: Any = None) -> dict[str, str]:
     return build_registry(model).catalog()
 
 
+def goal_met(state: Any) -> bool:
+    """Done when a report landed in `notes`.
+
+    `apply_change` and `summarize` are the kinds that write `notes`, so this
+    reads as "the run produced its human-facing outcome". Deterministic code,
+    never a model — and defensive about the schema, so a custom state supplied
+    through `--registry` cannot turn "am I done" into an AttributeError.
+    """
+    return len(getattr(state, "notes", ()) or ()) >= 1
+
+
+def _observe(state: Any) -> str:
+    """What the planner is shown between rounds: the goal's progress so far."""
+    parts = []
+    findings = getattr(state, "findings", None) or []
+    notes = getattr(state, "notes", None) or []
+    parts.append(f"findings so far: {len(findings)}")
+    for line in findings[-5:]:
+        parts.append(f"- {line}")
+    parts.append(f"notes so far: {len(notes)}")
+    for line in notes[-3:]:
+        parts.append(f"- {line}")
+    return "\n".join(parts)
+
+
+def scripted_planner_replies() -> list[str]:
+    """One model-free round: the two deterministic kinds, chained.
+
+    With no model only `collect_context` and `checkpoint` are registered, so
+    this is the only proposal the scripted path can make that admission will
+    take — and it is what makes `grapharc plan --registry grapharc.stdlib:...`
+    runnable spend-free as a smoke test.
+    """
+    import json
+
+    from grapharc.runtime.graph import END, START
+
+    return [
+        json.dumps(
+            {
+                "nodes": [{"name": "collect_context"}, {"name": "checkpoint"}],
+                "edges": [
+                    {"source": START, "target": "collect_context"},
+                    {"source": "collect_context", "target": "checkpoint"},
+                    {"source": "checkpoint", "target": END},
+                ],
+                "rationale": "list the workspace, then join",
+            }
+        ),
+        # Then nothing more: the deterministic kinds cannot write `notes`, so
+        # the honest second answer is "no further work" — the loop stops
+        # cleanly instead of burning rounds on an exhausted script.
+        json.dumps({"nodes": [], "edges": [], "rationale": "no further work"}),
+    ]
+
+
+def build_loop(
+    model: Any,
+    *,
+    edge_policy: Any = None,
+    trace: Any = None,
+    budget: Any = None,
+    limits: Any = None,
+    registry: Any = None,
+    state_schema: Any = None,
+    writes: dict[str, set[str]] | None = None,
+    approval: Any = None,
+) -> Any:
+    """Assemble the stdlib loop: same shape as the incident demo's, its own goal.
+
+    Read by `grapharc plan --registry grapharc.stdlib:build_registry` through
+    `RegistryBundle.build_loop` — which is what lets this registry own its goal
+    check and its observer instead of inheriting the demo's `len(notes) >= 3`.
+    """
+    from grapharc.planner import (
+        AdmissionChecker,
+        AdmissionLimits,
+        GovernedLoop,
+        Materializer,
+        PlannerNode,
+    )
+
+    registry = registry or build_registry(model)
+    registry.freeze()
+    return GovernedLoop(
+        planner=PlannerNode(
+            model, name="stdlib", catalog=registry.catalog(), trace=trace
+        ),
+        checker=AdmissionChecker(
+            registry=registry,
+            edge_policy=edge_policy or default_edge_policy(),
+            trace=trace,
+            # Rounds are materialized standalone, so "can this actually run"
+            # is part of admission here: a plan with no entry, or with nodes
+            # nothing reaches, comes back as a rejection carrying a remedy
+            # instead of a build failure the planner cannot act on.
+            limits=AdmissionLimits(require_entry=True),
+        ),
+        materializer=Materializer(
+            registry=registry,
+            state_schema=state_schema or WorkState,
+            writes=writes if writes is not None else WRITES,
+            trace=trace,
+        ),
+        budget=budget,
+        limits=limits,
+        trace=trace,
+        name="stdlib_loop",
+        goal_reached=goal_met,
+        # The planner should see what earlier phases learned, or every round
+        # re-plans blind against the same goal text.
+        observe=_observe,
+        approval=approval,
+    )
+
+
 __all__ = [
     "AGENT_KINDS",
     "DETERMINISTIC_KINDS",
@@ -326,8 +449,11 @@ __all__ = [
     "WRITES",
     "WRITE_TOOLS",
     "WorkState",
+    "build_loop",
     "build_registry",
     "catalog_for_prompt",
     "default_edge_policy",
     "default_harness",
+    "goal_met",
+    "scripted_planner_replies",
 ]
