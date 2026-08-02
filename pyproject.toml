@@ -150,6 +150,9 @@ exclude = [
     # `ignore-vcs` is on — this line is the only thing that does.
     "/HANDOFF.md",
     "/.grapharc",
+    # Demo footage embedded in the README. GitHub renders it; a pip install
+    # has no use for megabytes of GIF, so it stays out of the sdist.
+    "/docs/media",
 ]
 
 # `packages` is recursive: every subpackage under `grapharc/` ships without

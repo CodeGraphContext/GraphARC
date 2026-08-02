@@ -32,3 +32,4 @@ global-exclude *.sqlite
 global-exclude *.jsonl
 global-exclude /HANDOFF.md
 global-exclude /.grapharc
+global-exclude /docs/media
