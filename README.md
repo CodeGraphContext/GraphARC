@@ -9,7 +9,7 @@
 
 Build production-grade multi-agent systems with built-in safety, auditability, and control. GraphARC adds a governance layer on top of LangGraph: a planner *proposes* a subgraph, a deterministic checker *admits* it, and only then does anything execute. Every transition is permitted, every loop is bounded, and afterwards you can prove what happened and why it stopped.
 
-**Status:** Early days (`0.1.1`) — the API is not stable yet. `pip install grapharc` — see [Install](#install).
+**Status:** Early days (`0.1.2`) — the API is not stable yet. `pip install grapharc` — see [Install](#install).
 
 ### What makes GraphARC different
 
@@ -507,7 +507,7 @@ Re-derived on 2026-07-28 by running each item, not by reading the commit log.
 - **`.env` is found by walking up parent directories; `grapharc.toml` is not.** The config layer refuses an upward search on purpose — a run must not be governed by a file you did not know about. The credential loader predates that decision and still searches upward, so the thing that *spends money* is discovered more eagerly than the thing that *constrains* it.
 - **`grapharc run` has no budget unless you give it one.** Set any of `--max-tokens`, `--max-iterations`, `--max-seconds`, or `--max-concurrency`; without them each dimension is unlimited and the gate admits a topology of any worst-case cost.
 
-**Verified this pass:** `pytest` → 1,533 passed, 12 deselected (the live ones); `ruff check .` clean; all eight `grapharc demo` stages green, plus `grapharc plan` and `grapharc run`; the wheel builds and imports all 103 submodules in a clean virtualenv with `[all]`. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
+**Verified this pass:** `pytest` → 1,754 passed, 12 deselected (the live ones); `ruff check .` clean; all eight `grapharc demo` stages green, plus the `trace` / `metrics` / `viz` / `replay` tour against a freshly recorded demo trace; the wheel builds and imports all 116 submodules in a clean virtualenv with `[all]`. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
 
 [ROADMAP.md](ROADMAP.md) tracks what is built and what is not, item by item.
 
