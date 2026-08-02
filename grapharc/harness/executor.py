@@ -383,6 +383,84 @@ def _install_fork_exec_guard(spec_name: str) -> None:
     module.fork_exec = fork_exec
 
 
+#: Every stdlib function that accepts a directory-descriptor keyword uses one
+#: of exactly three spellings (`dir_fd`, `src_dir_fd`, `dst_dir_fd`), so
+#: `_install_dir_fd_guard` below checks all three by name rather than needing
+#: a table of which function takes which — a table would go stale the way the
+#: `fork_exec` arity above already did once. `readlink` is excluded: it has
+#: its own dedicated guard above, for a different reason (its *result*, not
+#: just its argument, has to be resolved and checked).
+_DIR_FD_MUTATORS = (
+    "chmod",
+    "chown",
+    "link",
+    "mkdir",
+    "mkfifo",
+    "mknod",
+    "open",
+    "remove",
+    "rename",
+    "replace",
+    "rmdir",
+    "symlink",
+    "unlink",
+    "utime",
+)
+
+
+def _install_dir_fd_guard() -> None:
+    """Refuse `dir_fd=`/`src_dir_fd=`/`dst_dir_fd=` on every mutating call that
+    accepts one — a real, verified escape from the workspace grant.
+
+    `check_path` resolves a call's path argument against the *process's cwd*,
+    pinned to the workspace by the `os.chdir` below. A directory-descriptor
+    keyword makes the underlying syscall resolve that same string against an
+    open file descriptor instead; cwd never enters into it. A tool legitimately
+    reading a directory inside the read grant — site-packages, say — gets a
+    descriptor for it, and `os.open("evil.pth", O_CREAT | O_WRONLY,
+    dir_fd=that_fd)` then writes there while `check_path` is validating a path
+    that has nothing to do with where the write actually lands. Confirmed by
+    running it end to end: the planted file executes on the next interpreter
+    start in that environment — the exact site-packages `.pth`-drop escape the
+    read/write grant split exists to close (see the module docstring above),
+    reopened through a syscall shape the audit-event path check never
+    considered a path argument for at all.
+
+    Like the `os.readlink` guard, this refuses the capability outright rather
+    than trying to resolve and check it: there is no reliable way to turn a
+    directory descriptor back into the path it names, so there is nothing to
+    validate against the grant. It is a wrapper, not an audit hook, and carries
+    the same documented caveat for the same reason — the original stays
+    reachable through the closure, so it closes the accident, not a
+    determined adversary already unwrapping functions from inside.
+    """
+    posix = sys.modules.get("posix") or sys.modules.get("nt")
+
+    def make_wrapper(original: Any, name: str) -> Any:
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            for kw in ("dir_fd", "src_dir_fd", "dst_dir_fd"):
+                if kwargs.get(kw) is not None:
+                    raise SandboxViolation(
+                        f"os.{name} through a directory descriptor ({kw}) resolves "
+                        "outside the process's cwd and cannot be checked against the "
+                        "workspace grant, so it is refused"
+                    )
+            return original(*args, **kwargs)
+
+        wrapper.__name__ = name
+        wrapper.__qualname__ = name
+        return wrapper
+
+    for name in _DIR_FD_MUTATORS:
+        original = getattr(os, name, None)
+        if original is None:  # pragma: no cover - platform-dependent (mkfifo/mknod on Windows)
+            continue
+        wrapped = make_wrapper(original, name)
+        setattr(os, name, wrapped)
+        if posix is not None and hasattr(posix, name):
+            setattr(posix, name, wrapped)
+
+
 def _is_sqlite_uri(database: Any) -> bool:
     """sqlite re-reads a `file:` name itself — percent-decoding it and honouring
     an authority and query string — so `realpath` does not name the file that
@@ -531,6 +609,7 @@ def _child_main(conn: Any, spec: ToolSpec, args: dict[str, Any], workspace: str)
         pass
     _install_readlink_guard(check_read)
     _install_fork_exec_guard(spec.name)
+    _install_dir_fd_guard()
     sys.addaudithook(hook)
     try:
         result = spec.fn(**args)

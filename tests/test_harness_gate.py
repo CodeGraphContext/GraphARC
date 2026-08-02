@@ -740,6 +740,69 @@ def test_gate_dot_pth_cannot_be_planted_in_site_packages(tmp_path, site_packages
 @_posix
 @pytest.mark.parametrize(
     "op",
+    ["os.open", "os.mkdir", "os.remove", "os.rename"],
+)
+def test_gate_dot_pth_cannot_be_planted_via_dir_fd(tmp_path, op, site_packages_probe):
+    """The same escape as `test_gate_dot_pth_cannot_be_planted_in_site_packages`,
+    reached through `dir_fd=` instead of a plain path.
+
+    `check_path` resolves the path argument of a call against the process's
+    cwd (pinned to the workspace). Every one of these calls also accepts a
+    directory-descriptor keyword that makes the real syscall resolve the same
+    string against an *open file descriptor* instead — cwd never enters into
+    it. A tool legitimately opens site-packages for reading (it is in the read
+    grant, or the import machinery could not work), gets a descriptor for it,
+    and then `os.open("evil.pth", O_CREAT | O_WRONLY, dir_fd=that_fd)` writes
+    there while `check_path` validates a path with nothing to do with where
+    the write actually lands. Verified end to end before this test existed:
+    the planted `.pth` ran on the very next interpreter start in that
+    environment — this is not a theoretical gap.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    pth_name = f"grapharc_pwned_dirfd_{uuid.uuid4().hex}.pth"
+
+    def plant_via_dir_fd(operation: str, name: str, victim: str) -> str:
+        import os as _os
+
+        dfd = _os.open(_SITE_PACKAGES, _os.O_RDONLY)
+        try:
+            if operation == "os.open":
+                fd = _os.open(name, _os.O_CREAT | _os.O_WRONLY, dir_fd=dfd)
+                _os.close(fd)
+            elif operation == "os.mkdir":
+                _os.mkdir(name, dir_fd=dfd)
+            elif operation == "os.remove":
+                _os.remove(_os.path.basename(victim), dir_fd=dfd)
+            elif operation == "os.rename":
+                _os.rename(
+                    _os.path.basename(victim), name, src_dir_fd=dfd, dst_dir_fd=dfd
+                )
+            return "escaped"
+        finally:
+            _os.close(dfd)
+
+    harness = _sandbox(workspace, plant_via_dir_fd=plant_via_dir_fd)
+    try:
+        with pytest.raises(SandboxViolation, match="directory descriptor"):
+            harness.call(
+                "plant_via_dir_fd",
+                {"operation": op, "name": pth_name, "victim": site_packages_probe},
+            )
+        assert not os.path.exists(
+            os.path.join(_SITE_PACKAGES, pth_name)
+        ), "a file was planted in site-packages via dir_fd"
+        if op in ("os.remove", "os.rename"):
+            assert os.path.exists(
+                site_packages_probe
+            ), "a site-packages file was removed/renamed via dir_fd"
+    finally:
+        _scrub("grapharc_pwned_dirfd_")  # a regression really does leave one behind
+
+
+@_posix
+@pytest.mark.parametrize(
+    "op",
     ["os.mkdir", "os.chmod", "os.utime", "os.truncate", "os.rename", "os.symlink", "os.link"],
 )
 def test_gate_runtime_paths_cannot_be_mutated(tmp_path, op, site_packages_probe):
