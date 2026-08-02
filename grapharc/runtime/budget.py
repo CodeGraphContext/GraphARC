@@ -380,8 +380,8 @@ def deadline_guard(meter: BudgetMeter, *, what: str) -> Iterator[None]:
     What this does *not* guarantee:
 
     - Mechanism 2 cannot interrupt a thread parked inside a C call: a
-      `time.sleep(60)` sleeps out its 60 seconds and raises on return. This is
-      not a fan-out-only weakness. Mechanism 1 needs `invoke()` to be on the
+      `time.sleep(60)` is not interrupted mid-call, but the guard still raises
+      on exit. This is not a fan-out-only weakness. Mechanism 1 needs `invoke()` to be on the
       process's main thread, so *any* run driven from a worker thread — every
       request handler in a threaded server, every `ThreadPoolExecutor` caller —
       falls back to mechanism 2 for the whole run, nodes and fan-out alike.
@@ -395,9 +395,10 @@ def deadline_guard(meter: BudgetMeter, *, what: str) -> Iterator[None]:
     - Like any asynchronous exception, the interrupt lands wherever the node
       happened to be: it is as safe as Ctrl-C, no safer.
 
-    Short of that last case the ceiling is honoured at the node boundary: if the
-    deadline passed and the node swallowed the exception, this guard raises on
-    exit, so the node's writes never reach state.
+    Short of the never-returns case the ceiling is honoured at the node
+    boundary: if the deadline passed — whether the node swallowed the exception
+    or no interrupt was ever delivered — this guard raises on exit, so the
+    node's writes never reach state.
     """
     remaining = meter.remaining_seconds()
     if remaining is None:
@@ -499,5 +500,11 @@ def deadline_guard(meter: BudgetMeter, *, what: str) -> Iterator[None]:
             disarm()
     except NodeDeadlineExceeded as exc:
         raise NodeDeadlineExceeded(detail()) from exc
-    if state["fired"]:
+
+    # Reached only when the node returned normally. It may have swallowed the
+    # interrupt, or the deadline may have passed without the timer firing —
+    # the timer thread needs the GIL, which a node inside a long C call
+    # withholds until it returns; either way its writes must not land.
+    left = meter.remaining_seconds()
+    if state["fired"] or (left is not None and left <= 0):
         raise NodeDeadlineExceeded(detail())

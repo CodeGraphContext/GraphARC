@@ -20,9 +20,27 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 _MAX_VALUE_CHARS = 2000
+
+
+class TraceReadError(Exception):
+    """A line in a trace file is not a `TraceEvent`.
+
+    Raised instead of skipped on purpose: a partially-read audit trail
+    presented as complete would be worse than a refusal. The message names the
+    file and the 1-based line so the one bad line — a process killed mid-write,
+    a hand edit — can be found without a pydantic field listing.
+    """
+
+    def __init__(self, path: Path, line_number: int, cause: Exception) -> None:
+        super().__init__(
+            f"unreadable trace file: {path}: line {line_number} is not a trace event"
+        )
+        self.path = path
+        self.line_number = line_number
+        self.cause = cause
 
 
 def _jsonable(value: Any) -> Any:
@@ -186,10 +204,13 @@ class TraceRecorder:
             return []
         events = []
         with self.path.open(encoding="utf-8") as f:
-            for line in f:
+            for line_number, line in enumerate(f, start=1):
                 if not line.strip():
                     continue
-                ev = TraceEvent.model_validate_json(line)
+                try:
+                    ev = TraceEvent.model_validate_json(line)
+                except ValidationError as exc:
+                    raise TraceReadError(self.path, line_number, exc) from exc
                 if run_id is None or ev.run_id == run_id:
                     events.append(ev)
         return events
@@ -249,4 +270,4 @@ def load_events(
     return recorder.read_events(run_id)
 
 
-__all__ = ["TailRecorder", "TraceEvent", "TraceRecorder", "load_events"]
+__all__ = ["TailRecorder", "TraceEvent", "TraceReadError", "TraceRecorder", "load_events"]

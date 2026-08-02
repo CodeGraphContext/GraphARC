@@ -542,6 +542,52 @@ def test_the_interrupt_is_re_armed_on_a_worker_thread_too():
     assert ran_for < 2.0, "the node asked for 5s and was not stopped"
 
 
+def test_an_overrun_is_refused_at_exit_even_if_the_timer_never_fired(monkeypatch):
+    """A node that holds the GIL through the deadline — a long C call, or plain
+    timer-scheduling latency — denies the timer thread its turn: `fire()` never
+    runs, the node returns normally, and an exit check that tests only
+    `state["fired"]` lets the overrun's writes land. The contract is the node
+    boundary, so the exit check itself must notice the spent deadline.
+
+    The timer is replaced with one that never fires, which makes this the
+    deterministic statement of that contract: asserting on whether a real
+    timer's async exception got delivered in time is a race (see
+    `_run_swallower` above), whereas the exit check runs unconditionally.
+    """
+
+    class NeverFires:
+        """`threading.Timer`'s surface as the guard uses it, minus the firing."""
+
+        def __init__(self, interval, function):
+            self.daemon = False
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(threading, "Timer", NeverFires)
+    outcome: dict[str, object] = {}
+
+    def body():  # a worker thread uses mechanism 2, like any threaded server
+        meter = BudgetMeter(Budget(max_seconds=0.05))
+        try:
+            with deadline_guard(meter, what="node 'n'"):
+                time.sleep(0.2)  # outlast the deadline; nothing interrupts it
+            outcome["raised"] = None
+        except NodeDeadlineExceeded as exc:
+            outcome["raised"] = exc
+
+    worker = threading.Thread(target=body)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+    assert isinstance(outcome["raised"], NodeDeadlineExceeded), (
+        "the node overran, no interrupt fired, and the guard let its writes land"
+    )
+
+
 def test_a_node_that_finishes_in_time_is_left_alone():
     def brisk(state):
         time.sleep(0.05)
