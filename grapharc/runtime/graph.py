@@ -5,6 +5,10 @@ LangGraph leaves to convention:
 
 - **Typed edges** — state schemas are Pydantic models; every value a node
   returns is validated against the field's declared type before it is written.
+  The same schema governs both other boundaries: an entry point's input keys are
+  checked rather than silently filtered down to the channels LangGraph knows,
+  and a fan-out worker's declared `input_schema` is enforced on the `Send`
+  payload it is handed.
 - **Write permissions** — every node declares which state fields it may write;
   an undeclared write raises instead of flowing downstream. A node may return a
   plain dict or a `langgraph.types.Command`; the command's `update` is checked
@@ -32,6 +36,7 @@ signalling a shared event-loop thread would land in the wrong coroutine.
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import threading
 import time
@@ -62,12 +67,20 @@ class WritePermissionError(Exception):
 
 
 class StateTypeError(Exception):
-    """A node returned a value that its state field's declared type rejects.
+    """A value contradicted the type its schema declares for it.
 
-    LangGraph drops unknown keys before validating an update, so a declared
-    field carrying the wrong *value* used to sail through to the graph's output.
-    GraphARC validates each write against the schema at the node boundary
-    instead — the type annotation is the contract, not documentation.
+    Two boundaries raise this, both for the same reason — a declared type is the
+    contract, not documentation:
+
+    - **A node's write.** LangGraph drops unknown keys before validating an
+      update, so a declared field carrying the wrong *value* used to sail
+      through to the graph's output. GraphARC validates each write against the
+      schema at the node boundary instead.
+    - **A fan-out `Send` payload.** A worker declaring `input_schema` is stating
+      what it is handed; LangGraph passes `Send.arg` to the node untouched, so a
+      payload of the wrong class used to surface deep inside the worker as an
+      `AttributeError` — or not at all, if the shapes happened to overlap.
+      GraphARC checks it at dispatch, next to where `Send.node` is checked.
     """
 
 
@@ -308,6 +321,7 @@ class GraphARC:
         # recorded and a renderer connects the workers that actually ran.
         self._conditional_edges: list[tuple[str, str]] = []
         self._fanout_sources: list[str] = []
+        self._input_schemas: dict[str, type[BaseModel] | None] = {}
         self._adapters: dict[str, TypeAdapter[Any]] = {}
 
     def add_node(
@@ -319,7 +333,15 @@ class GraphARC:
         input_schema: type[BaseModel] | None = None,
     ) -> GraphARC:
         """Register a node. `input_schema` types a fan-out worker's Send payload
-        (defaults to the graph state schema)."""
+        (defaults to the graph state schema).
+
+        A declared `input_schema` is enforced: a `Send` carrying anything that is
+        not an instance of it is refused at dispatch with `StateTypeError`, the
+        way an unknown `Send.node` is refused with `GraphRoutingError`. Leaving
+        `input_schema` unset keeps an untyped payload legal — the worker is then
+        saying nothing about what it accepts — but the payload is deep-copied on
+        the way in either way, so parallel workers never share one object.
+        """
         writes_set = set(writes)
         unknown = writes_set - set(self.state_schema.model_fields)
         if unknown:
@@ -327,6 +349,7 @@ class GraphARC:
                 f"node {name!r} declares writes to unknown state fields: {sorted(unknown)}"
             )
         self._nodes[name] = writes_set
+        self._input_schemas[name] = input_schema
         for field in sorted(writes_set):
             self._build_adapter(field)
         self._graph.add_node(
@@ -454,6 +477,32 @@ class GraphARC:
         """The destinations this graph can actually route to, for an error message."""
         return ", ".join([*(repr(name) for name in sorted(self._nodes)), "END"])
 
+    def _check_send_payload(self, who: str, send: Send) -> None:
+        """Hold a `Send.arg` to the worker's declared `input_schema`.
+
+        `Send.node` is checked because LangGraph drops an unknown target without
+        an error; `Send.arg` is checked for the mirror-image reason — LangGraph
+        hands the payload to the worker *exactly* as given, `input_schema` or
+        not, so a wrong-class payload is discovered by the worker's own body, as
+        an `AttributeError` several frames from the dispatcher that produced it.
+        A shard is data with a declared shape; it is refused where it is
+        dispatched, not where it is dereferenced.
+
+        No schema declared means no claim was made, so nothing to check — see
+        `add_node`. Payload isolation is separate and unconditional: `_enter`
+        deep-copies whatever arrives.
+        """
+        schema = self._input_schemas.get(send.node)
+        if schema is None or isinstance(send.arg, schema):
+            return
+        raise StateTypeError(
+            f"{who} sent node {send.node!r} a payload its input_schema rejects: "
+            f"expected {schema.__name__}, got {type(send.arg).__name__} "
+            f"({_short_repr(send.arg)}); LangGraph hands a Send payload to the "
+            f"worker unchecked, so this would surface inside the worker's body "
+            f"instead of here"
+        )
+
     def _check_goto_target(self, who: str, target: Any) -> None:
         """Reject one routing destination this graph cannot reach. See `GraphRoutingError`."""
         if isinstance(target, Send):
@@ -469,6 +518,7 @@ class GraphARC:
                     f"{', '.join(repr(n) for n in sorted(self._nodes)) or '(none)'} "
                     f"— END is not one, because a Send has to name a node that runs"
                 )
+            self._check_send_payload(who, target)
             return
         if isinstance(target, str):
             if target == END or target in self._nodes:
@@ -620,8 +670,17 @@ class GraphARC:
         # Nodes get a deep copy: the returned dict is the *only* write channel.
         # Without this, in-place mutation of nested models would bypass write
         # permissions invisibly (Pydantic passes nested models by reference).
+        #
+        # *Every* input, not only a BaseModel one: a fan-out `Send` payload can
+        # be any object, and two Sends built from one dict used to hand the
+        # workers the same live object — parallel nodes mutating shared state,
+        # which is a data race whose writes appear in nobody's declared writes.
+        # Fan-out is where the isolation matters most, so it cannot be the one
+        # path that skips it.
         if isinstance(state, BaseModel):
             state = state.model_copy(deep=True)
+        else:
+            state = copy.deepcopy(state)
 
         try:
             ctx.meter.check()
@@ -735,7 +794,12 @@ class GraphARC:
                     deadline_guard(ctx.meter, what=f"node {name!r}"),
                 ):
                     result = fn(state, ctx) if wants_ctx else fn(state)
-            except Exception as exc:
+            except BaseException as exc:
+                # BaseException, not Exception, for the reason the async twin
+                # gives: a sync node is most often stopped by a human hitting
+                # ^C, which is a KeyboardInterrupt and not an Exception, and a
+                # stop with no trace line is a stop nobody can audit afterwards.
+                # The exception is re-raised untouched; only the record is new.
                 emit("error", duration_ms=(time.perf_counter() - t0) * 1000, error=repr(exc))
                 raise
             return self._leave(
@@ -836,6 +900,32 @@ class CompiledGraphARC:
             configurable["checkpoint_id"] = checkpoint_id
         return {"configurable": configurable}
 
+    def _reject_unknown_fields(self, who: str, values: dict[str, Any]) -> None:
+        """Refuse keys the state schema does not have. One wording, every door."""
+        unknown = set(values) - set(self.arc.state_schema.model_fields)
+        if unknown:
+            raise WritePermissionError(
+                f"{who} targets unknown state fields: {sorted(unknown)}"
+            )
+
+    def _checked_input(self, entry: str, input: Any) -> Any:
+        """Hold an entry point's `input` to the state schema's field names.
+
+        The state schema forbids extra fields, and `update_state` refuses an
+        unknown key — but LangGraph filters a dict input down to the channels it
+        knows *before* the state model is ever constructed, so `extra="forbid"`
+        never sees the typo and the graph runs to completion on default values.
+        A misspelled question field is then a complete, plausible-looking run
+        against an empty question, with nothing said to the caller. The front
+        door gets the same refusal the side door already gives.
+
+        Only a dict is checked: a state model has already been validated by
+        Pydantic, and `None` means "resume from the last checkpoint".
+        """
+        if isinstance(input, dict):
+            self._reject_unknown_fields(f"{entry}()", input)
+        return input
+
     # -- running -----------------------------------------------------------
 
     def invoke(
@@ -854,6 +944,7 @@ class CompiledGraphARC:
         the thread's history so replay points stay unique across resumes.
         """
         self._reject_async_nodes("invoke")
+        input = self._checked_input("invoke", input)
         return self.inner.invoke(input, self._run_config(thread_id, run_id, budget))
 
     def stream(
@@ -871,6 +962,7 @@ class CompiledGraphARC:
         closed with MissingRunContextError.
         """
         self._reject_async_nodes("stream")
+        input = self._checked_input("stream", input)
         yield from self.inner.stream(
             input, self._run_config(thread_id, run_id, budget), **stream_kwargs
         )
@@ -889,6 +981,7 @@ class CompiledGraphARC:
         the wrapper's contract does not change. What does change for `async def`
         nodes is how `max_seconds` is delivered: see `_async_deadline`.
         """
+        input = self._checked_input("ainvoke", input)
         return await self.inner.ainvoke(input, self._run_config(thread_id, run_id, budget))
 
     async def astream(
@@ -901,6 +994,7 @@ class CompiledGraphARC:
         **stream_kwargs: Any,
     ) -> AsyncIterator[Any]:
         """Async twin of `stream()`; `.inner.astream()` fails closed."""
+        input = self._checked_input("astream", input)
         async for chunk in self.inner.astream(
             input, self._run_config(thread_id, run_id, budget), **stream_kwargs
         ):
@@ -924,6 +1018,7 @@ class CompiledGraphARC:
         """
         if version not in ("v1", "v2"):
             raise ValueError(f"astream_events supports version 'v1' or 'v2', got {version!r}")
+        input = self._checked_input("astream_events", input)
         async for event in self.inner.astream_events(
             input, self._run_config(thread_id, run_id, budget), version=version, **kwargs
         ):
@@ -1005,11 +1100,7 @@ class CompiledGraphARC:
             raise WritePermissionError(
                 f"update_state takes a dict of field updates, got {type(values)!r}"
             )
-        unknown = set(values) - set(self.arc.state_schema.model_fields)
-        if unknown:
-            raise WritePermissionError(
-                f"update_state targets unknown state fields: {sorted(unknown)}"
-            )
+        self._reject_unknown_fields("update_state", values)
         if as_node is not None and as_node in self.arc._nodes:
             return self.arc._check_update(
                 f"update_state(as_node={as_node!r})", self.arc._nodes[as_node], values
