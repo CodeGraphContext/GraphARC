@@ -70,7 +70,13 @@ def load_topology(path: Path) -> dict[str, Any]:
     """
     if not path.is_file():
         raise PlanSetupError(f"no such graph file: {path}")
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        # A topology saved as UTF-16, or truncated in transit, is a file we
+        # cannot run — not a crash. `UnicodeDecodeError` is a `ValueError`, so
+        # neither decoder below would ever have caught it.
+        raise PlanSetupError(f"{path}: {exc}") from exc
     try:
         if path.suffix.lower() == ".toml":
             return tomllib.loads(text)

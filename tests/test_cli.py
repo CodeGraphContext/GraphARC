@@ -373,6 +373,37 @@ def test_a_malformed_trace_fails_as_one_json_document(argv, tmp_path, capsys):
     assert err == ""
 
 
+# A path that exists but cannot be read is the same class of failure as a
+# malformed one, and used to escape as a traceback with exit 1: `_existing_trace`
+# tested `exists()` and the handlers catch only `TraceReadError`, so every other
+# `OSError` went straight past both.
+@pytest.mark.parametrize("argv", READERS, ids=lambda argv: argv[0])
+def test_a_directory_where_a_trace_belongs_is_a_report_not_a_traceback(
+    argv, tmp_path, capsys
+):
+    directory = tmp_path / "adir"
+    directory.mkdir()
+    code, out, err = call([argv[0], str(directory), *argv[1:]], capsys)
+    assert code == 2
+    assert out == ""
+    assert err.startswith(f"error: unreadable trace file: {directory}: ")
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize("argv", READERS, ids=lambda argv: argv[0])
+def test_a_directory_where_a_trace_belongs_fails_as_one_json_document(
+    argv, tmp_path, capsys
+):
+    directory = tmp_path / "adir"
+    directory.mkdir()
+    code, payload, err = call_json([argv[0], str(directory), *argv[1:]], capsys)
+    assert code == 2
+    assert payload["ok"] is False
+    assert payload["command"] == argv[0]
+    assert payload["error"].startswith(f"unreadable trace file: {directory}: ")
+    assert err == ""
+
+
 # -- models -------------------------------------------------------------------
 
 
@@ -1393,6 +1424,23 @@ def test_run_says_which_file_is_missing(tmp_path, capsys):
 
     assert code == 2
     assert "no such graph file" in err
+
+
+def test_run_reports_a_graph_file_that_is_not_utf8(tmp_path, capsys):
+    """`UnicodeDecodeError` is a `ValueError`, so neither decoder caught it.
+
+    A topology saved as UTF-16 or truncated in transit used to exit 1 with a
+    traceback and an empty document.
+    """
+    binary = tmp_path / "bin.json"
+    binary.write_bytes(b"\xff\xfe\x00binary")
+
+    code, payload, err = call_json(["run", str(binary)], capsys)
+
+    assert code == 2
+    assert payload["ok"] is False
+    assert "utf-8" in payload["error"]
+    assert err == ""
 
 
 def test_a_policy_document_gates_a_hand_written_graph_too(tmp_path, capsys):

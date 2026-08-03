@@ -235,6 +235,19 @@ def test_malformed_toml_names_the_file(tmp_path):
         load(path)
 
 
+def test_a_config_that_is_not_utf8_names_the_file(tmp_path):
+    """`UnicodeDecodeError` is a `ValueError`, so it was in neither except tuple.
+
+    This file is picked up implicitly from the working directory, so a stray
+    binary `grapharc.toml` used to traceback out of every configurable command.
+    """
+    path = tmp_path / CONFIG_NAME
+    path.write_bytes(b"\xff\xfe")
+
+    with pytest.raises(ConfigError, match=CONFIG_NAME):
+        load(path)
+
+
 # -- the resolver itself -----------------------------------------------------
 
 
