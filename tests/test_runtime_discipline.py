@@ -4,7 +4,7 @@ import operator
 from typing import Annotated
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from grapharc.runtime.budget import Budget, BudgetExceeded, BudgetMeter
 from grapharc.runtime.graph import (
@@ -153,6 +153,132 @@ def test_in_place_mutation_of_nested_models_is_discarded():
     result = g.compile().invoke({"items": [Inner(text="original")]})
     assert result["downstream_saw"] == "original"
     assert result["items"][0].text == "original"
+
+
+# -- fan-out payloads: the same isolation, and the declared input contract ---
+
+
+class FanState(GraphARCState):
+    ran: Annotated[list[str], operator.add] = []
+
+
+class Shard(BaseModel):
+    who: str = ""
+    hits: list[int] = []
+
+
+def _fanout(payloads, *, worker, input_schema=None):
+    g = GraphARC(FanState, name="fan")
+    g.add_node("plan", lambda s: None, writes=set())
+    g.add_node("worker", worker, writes={"ran"}, input_schema=input_schema)
+    g.add_edge(START, "plan")
+    g.add_fanout_edge("plan", lambda s: [("worker", p) for p in payloads])
+    g.add_edge("worker", END)
+    return g.compile()
+
+
+def test_two_workers_fanned_out_with_one_payload_do_not_share_it():
+    """The deep copy is not only for BaseModel state. Two Sends built from one
+    dict used to hand both workers the same live object — parallel nodes reading
+    each other's mutations, through a channel no node declared a write to."""
+
+    def worker(payload: dict) -> dict:
+        payload["hits"].append(1)
+        return {"ran": [f"hits={len(payload['hits'])}"]}
+
+    shared = {"who": "orig", "hits": []}
+    result = _fanout([shared, shared], worker=worker).invoke({})
+    assert result["ran"] == ["hits=1", "hits=1"]
+    assert shared == {"who": "orig", "hits": []}
+
+
+def test_a_basemodel_payload_is_still_isolated():
+    """The path that already worked has to keep working."""
+
+    def worker(payload: Shard) -> dict:
+        payload.hits.append(1)
+        return {"ran": [f"hits={len(payload.hits)}"]}
+
+    shard = Shard(who="orig")
+    result = _fanout([shard, shard], worker=worker, input_schema=Shard).invoke({})
+    assert result["ran"] == ["hits=1", "hits=1"]
+    assert shard.hits == []
+
+
+def test_a_payload_contradicting_input_schema_is_refused_at_dispatch():
+    """`input_schema` is a claim about what the worker is handed; LangGraph
+    passes Send.arg through untouched, so GraphARC checks it where Send.node is
+    checked rather than letting the worker's body discover it."""
+    compiled = _fanout(
+        [{"who": "orig"}], worker=lambda p: {"ran": [p.who]}, input_schema=Shard
+    )
+    with pytest.raises(StateTypeError) as caught:
+        compiled.invoke({})
+    message = str(caught.value)
+    assert "fan-out dispatcher on node 'plan'" in message
+    assert "node 'worker'" in message
+    assert "expected Shard" in message and "got dict" in message
+
+
+def test_a_payload_of_the_wrong_model_class_is_refused_too():
+    """It used to reach the worker and surface as a bare AttributeError."""
+
+    class Other(BaseModel):
+        nope: int = 0
+
+    compiled = _fanout(
+        [Other()], worker=lambda p: {"ran": [p.who]}, input_schema=Shard
+    )
+    with pytest.raises(StateTypeError, match="got Other"):
+        compiled.invoke({})
+
+
+def test_a_worker_declaring_no_input_schema_accepts_any_payload():
+    """No schema is no claim — the payload is still copied, but not typed."""
+    compiled = _fanout([{"who": "a"}, {"who": "b"}], worker=lambda p: {"ran": [p["who"]]})
+    assert sorted(compiled.invoke({})["ran"]) == ["a", "b"]
+
+
+# -- the front door: input keys are checked like any other write ------------
+
+
+class Front(GraphARCState):
+    question: str = ""
+    out: str = ""
+
+
+def _front_door():
+    g = GraphARC(Front, name="front")
+    g.add_node("n", lambda s: {"out": f"saw:{s.question!r}"}, writes={"out"})
+    g.add_edge(START, "n")
+    g.add_edge("n", END)
+    return g.compile()
+
+
+def test_invoke_refuses_an_input_key_the_schema_does_not_have():
+    """LangGraph filters input down to known channels before the state model is
+    constructed, so `extra="forbid"` never saw the typo and the graph ran to
+    completion on defaults — a plausible-looking answer to an empty question."""
+    with pytest.raises(WritePermissionError) as caught:
+        _front_door().invoke({"quesiton": "typo"})
+    assert str(caught.value) == "invoke() targets unknown state fields: ['quesiton']"
+
+
+def test_stream_refuses_it_in_the_same_words():
+    with pytest.raises(WritePermissionError) as caught:
+        list(_front_door().stream({"quesiton": "typo"}))
+    assert str(caught.value) == "stream() targets unknown state fields: ['quesiton']"
+
+
+def test_a_wrongly_typed_input_value_is_still_pydantics_to_report():
+    """Only the unknown-key case changed; a type error was already loud."""
+    with pytest.raises(ValidationError):
+        _front_door().invoke({"out": 5})
+
+
+def test_legal_input_reaches_the_graph_untouched():
+    assert _front_door().invoke({"question": "q"})["out"] == "saw:'q'"
+    assert _front_door().invoke(Front(question="q"))["out"] == "saw:'q'"
 
 
 class Typed(GraphARCState):
