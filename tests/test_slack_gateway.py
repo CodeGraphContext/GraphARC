@@ -184,6 +184,94 @@ def test_the_demo_plan_registries_stay_reachable_without_opt_ins(tmp_path):
     assert "--approve" not in argv  # only the host-acting registry is parked
 
 
+def test_a_repeated_registry_cannot_walk_the_agent_opt_in(tmp_path):
+    """The gate read the first `--registry`; argparse would have run the last.
+
+    A benign registry in front of the stdlib one was admitted against the
+    benign value and executed against the agent one, with the forced
+    `--approve` skipped in the same step. Both orders, so neither "the gate
+    reads the last" nor "the gate reads the first" can pass this again.
+    """
+    kwargs = dict(workdir=tmp_path, allow_model=True, allow_agent=False)
+    benign = "grapharc.examples.plan_docs:build_registry"
+    stdlib = "grapharc.stdlib:build_registry"
+    for first, second in ((benign, stdlib), (stdlib, benign)):
+        with pytest.raises(SlackCommandError, match="twice"):
+            parse_command(
+                f"plan 'ship it' --model openrouter/x/y "
+                f"--registry {first} --registry {second}",
+                **kwargs,
+            )
+    # The single-flag refusal is untouched.
+    with pytest.raises(SlackCommandError, match="GRAPHARC_SLACK_ALLOW_AGENT"):
+        parse_command(f"plan 'ship it' --model openrouter/x/y --registry {stdlib}", **kwargs)
+    # And so is the single-flag admission of a benign registry.
+    argv = parse_command(f"plan 'ship it' --model openrouter/x/y --registry {benign}", **kwargs)
+    assert argv.count("--registry") == 1
+
+
+def test_a_repeated_model_cannot_smuggle_a_backend_past_the_spend_gate(tmp_path):
+    with pytest.raises(SlackCommandError, match="paid backend"):
+        parse_command("plan goal --model mock/x --model openrouter/a/b", workdir=tmp_path)
+    # Opted in, a second `--model` is still refused: the gate must never have
+    # to choose which of two values the CLI is going to use.
+    with pytest.raises(SlackCommandError, match="twice"):
+        parse_command(
+            "plan goal --model mock/x --model openrouter/a/b",
+            workdir=tmp_path,
+            allow_model=True,
+        )
+    # The `=` form is the same flag, whichever way each occurrence is spelled.
+    with pytest.raises(SlackCommandError, match="twice"):
+        parse_command(
+            "plan goal --model mock/x --model=openrouter/a/b",
+            workdir=tmp_path,
+            allow_model=True,
+        )
+
+
+def test_every_gated_flag_is_refused_in_its_duplicated_form(tmp_path):
+    """Exhaustive over the allowlist, so a future gate cannot reopen the gap.
+
+    Every admitted flag except the ones the CLI accumulates (`action="append"`)
+    must be refused when it appears twice — the gate reads one occurrence, and
+    a flag whose two occurrences could differ is a flag the gate cannot judge.
+    """
+    from grapharc.slack.command import ALLOWED_COMMANDS
+
+    checked = 0
+    for name, spec in ALLOWED_COMMANDS.items():
+        flags = set(spec.bool_flags) | set(spec.model_flags) | set(spec.value_flags)
+        flags |= set(spec.choice_flags)
+        for flag in sorted(flags - set(spec.repeatable_flags)):
+            if flag in spec.bool_flags:
+                text = f"{name} {flag} {flag}"
+            else:
+                if flag in spec.choice_flags:
+                    value = sorted(spec.choice_flags[flag])[0]
+                elif spec.value_flags.get(flag, False):
+                    value = "inside.jsonl"
+                else:
+                    value = "1"
+                text = f"{name} {flag} {value} {flag} {value}"
+            with pytest.raises(SlackCommandError, match="twice"):
+                parse_command(text, workdir=tmp_path, allow_model=True, allow_agent=True)
+            checked += 1
+    assert checked > 20, "the allowlist shrank; this sweep should still be broad"
+
+
+def test_the_flags_the_cli_accumulates_stay_repeatable(tmp_path):
+    """`--allow`/`--deny` are argparse `append`: every occurrence reaches the run."""
+    argv = parse_command(
+        "agent task --deny 'shell*' --deny 'net*' --allow 'read*' --allow 'list*'",
+        workdir=tmp_path,
+        allow_model=True,
+        allow_agent=True,
+    )
+    assert argv.count("--deny") == 2
+    assert argv.count("--allow") == 2
+
+
 def test_a_command_pasted_with_code_backticks_still_parses(tmp_path):
     """Copying from a code-formatted Slack message brings the backticks along."""
     argv = parse_command(
@@ -222,6 +310,40 @@ def test_a_path_flag_value_may_not_escape_the_workdir_either_form(tmp_path):
         parse_command("plan goal --trace ../t.jsonl", workdir=tmp_path)
     with pytest.raises(SlackCommandError, match="escapes"):
         parse_command("plan goal --trace=../t.jsonl", workdir=tmp_path)
+
+
+def test_a_nul_byte_is_a_refusal_not_an_exception(tmp_path):
+    """`Path.resolve()` raises `ValueError` on a NUL; the bot must still reply.
+
+    `handle_text_live` catches `SlackCommandError` and nothing else, so a
+    `ValueError` out of the gate escaped the bolt listener and the requester
+    saw no reply at all — indistinguishable from the bot being down.
+    """
+    from grapharc.slack.bot import handle_text
+
+    for text in ("trace a\x00b", "plan goal --trace a\x00b", "plan a\x00b --model mock/x"):
+        with pytest.raises(SlackCommandError, match="NUL byte"):
+            parse_command(text, workdir=tmp_path, allow_model=True)
+
+    config = SlackBotConfig(bot_token="xoxb-x", app_token="xapp-x", workdir=tmp_path)
+    reply = handle_text("trace a\x00b", config)
+    assert "NUL byte" in reply
+
+    # `_confined` keeps the guarantee for any other caller of its own.
+    from grapharc.slack.command import _confined
+
+    with pytest.raises(SlackCommandError, match="NUL byte"):
+        _confined("a\x00b", tmp_path)
+
+
+def test_a_single_dash_token_is_refused_as_a_flag_not_taken_as_a_path(tmp_path):
+    """The flag allowlist is meant to be exhaustive; `--` let short options by."""
+    with pytest.raises(SlackCommandError, match="not allowed"):
+        parse_command("trace -h", workdir=tmp_path)
+    with pytest.raises(SlackCommandError, match="not allowed"):
+        parse_command("run graph.toml -x", workdir=tmp_path)
+    with pytest.raises(SlackCommandError, match="not allowed"):
+        parse_command("metrics -", workdir=tmp_path)
 
 
 def test_a_path_inside_the_workdir_is_admitted_even_absolute(tmp_path):
