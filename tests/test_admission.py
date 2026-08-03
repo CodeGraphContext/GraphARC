@@ -665,6 +665,27 @@ def test_an_already_overspent_run_admits_nothing_that_costs():
     assert result.remaining.tokens == -400
 
 
+def test_worst_case_counts_iterations_for_unequal_arm_joins_in_acyclic_plans():
+    reg = registry("step", step=CostEstimate(tokens=100, iterations=1))
+    proposal = Subgraph(
+        nodes=(
+            ProposedNode(name="a", kind="step"),
+            ProposedNode(name="b", kind="step"),
+            ProposedNode(name="c", kind="step"),
+        ),
+        edges=(
+            ProposedEdge(source=START, target="a"),
+            ProposedEdge(source="a", target="b"),
+            ProposedEdge(source="b", target="c"),
+            ProposedEdge(source="a", target="c"),
+            ProposedEdge(source="c", target=END),
+        ),
+    )
+    result = checker(reg).check(proposal)
+    assert result.worst_case.iterations == 4
+    assert result.worst_case.tokens == 400
+
+
 # -- DEPTH ---------------------------------------------------------------------
 
 
