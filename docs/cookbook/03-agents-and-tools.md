@@ -546,6 +546,16 @@ Patterns match the **tool name** only, never its arguments. `DENY "run_command"`
 stops the shell tool entirely; it cannot express "deny `rm` but allow `ls`". That
 distinction belongs in a pre-hook, two recipes down.
 
+**A name that is also a pattern.** `fnmatch` reads `[`…`]` as a character class,
+so a tool called `exfil[all]` — or an MCP-style `mcp__srv__do[all]` — is not the
+same string as the pattern that spells it. A `deny` or `ask` rule therefore also
+fires on an **exact literal match**, so pasting a tool's name into a rule refuses
+it whatever characters it holds. That fallback is deliberately not extended to
+`allow`: equality can only ever add a refusal, never a grant. To *allow* one tool
+whose name carries `*`, `?` or `[`, build the rule with
+`PermissionRule.literal(Decision.ALLOW, name)`, which escapes the name instead of
+widening the match.
+
 ---
 
 ## How do I make sure a denied tool is never even offered to the model?

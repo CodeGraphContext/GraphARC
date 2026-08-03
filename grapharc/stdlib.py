@@ -252,8 +252,11 @@ def default_harness(tools: tuple[str, ...], workspace: Any = None) -> Any:
     registry = ToolRegistry()
     for spec in core_tools(Path(workspace or Path.cwd()), include=tools):
         registry.register(spec)
+    # `literal`, not a bare pattern: these names come from a registry, not from
+    # an operator writing globs, and an ALLOW rule is the one tier where a name
+    # read as a pattern could grant more than was asked for.
     policy = PermissionPolicy(
-        rules=[PermissionRule(action=Decision.ALLOW, pattern=name) for name in tools],
+        rules=[PermissionRule.literal(Decision.ALLOW, name) for name in tools],
         default=Decision.DENY,
     )
     return Harness(registry=registry, policy=policy, executor=LocalExecutor())
