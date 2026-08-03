@@ -104,16 +104,21 @@ def test_the_quick_start_block_actually_runs_against_this_tree():
     trailing comment on the page states the printed result, and it is compared
     against what the block really prints.
     """
-    blocks = _blocks("Quick Start")
-    assert [lang for lang, _ in blocks] == ["python"], blocks
-    code = blocks[0][1]
+    # The section leads with the CLI tour (a bash block) and follows it with one
+    # Python graph, so this selects by language rather than by position — the
+    # earlier `== ["python"]` assertion encoded the old layout, in which the
+    # Python snippet was the section's only content and sat 100 lines above the
+    # commands that actually demonstrate the project.
+    python_blocks = [code for lang, code in _blocks("Quick start") if lang == "python"]
+    assert len(python_blocks) == 1, "the quick start must carry exactly one Python block"
+    code = python_blocks[0]
 
     # The expectation is written on the page as a trailing `# {...}` comment,
     # so the snippet stays copy-pasteable instead of carrying a second block.
     expected = [
         line.lstrip("# ").strip() for line in code.splitlines() if line.startswith("# {")
     ]
-    assert len(expected) == 1, "the Quick Start must state its printed result"
+    assert len(expected) == 1, "the quick start must state its printed result"
 
     buffer = io.StringIO()
     namespace: dict = {"__name__": "__readme__"}
@@ -123,25 +128,27 @@ def test_the_quick_start_block_actually_runs_against_this_tree():
     assert _normalise(buffer.getvalue()) == _normalise(expected[0])
 
 
-def test_the_quick_start_reaches_no_live_backend():
+def test_the_quick_start_python_block_reaches_no_live_backend():
     """The first snippet a visitor copies must not be able to spend money."""
-    code = _blocks("Quick Start")[0][1]
+    code = [c for lang, c in _blocks("Quick start") if lang == "python"][0]
 
     for forbidden in ("get_model(", "openrouter", "ClaudeCodeCLIChatModel", "claude-cli"):
         assert forbidden not in code, forbidden
 
 
-def test_every_table_of_contents_link_resolves_to_a_real_heading():
-    """Two of the seven entries pointed at sections that do not exist.
+def test_every_in_page_link_resolves_to_a_real_heading():
+    """A dead `#anchor` does nothing visible on GitHub, so neither reading the
+    page nor running the suite used to surface one.
 
-    `#usage` and `#documentation` were both dead — the refactor that added the
-    contents list invented them — and a dead anchor on GitHub silently does
-    nothing when clicked, so neither reading the page nor running the suite
-    surfaced it. Anchors are derived here the way GitHub derives them, and
-    every in-page link in the list has to land somewhere.
+    This began life checking only the hand-maintained contents list, which had
+    two invented entries (`#usage`, `#documentation`) pointing at sections that
+    never existed. That list is gone — GitHub renders its own outline, and a
+    second one in a different order from the document was a maintenance burden
+    that had already drifted — so the check now covers *every* in-page link on
+    the page, which is strictly more than it covered before and no longer
+    depends on a particular section existing.
     """
     text = README.read_text(encoding="utf-8")
-    contents = _section("Table of Contents")
 
     anchors = set()
     for line in text.splitlines():
@@ -151,11 +158,11 @@ def test_every_table_of_contents_link_resolves_to_a_real_heading():
         slug = re.sub(r"[^a-z0-9\s-]", "", title.lower())
         anchors.add(re.sub(r"\s+", "-", slug.strip()))
 
-    linked = re.findall(r"\]\(#([a-z0-9-]+)\)", contents)
-    assert linked, "the contents list has no in-page links at all"
+    linked = re.findall(r"\]\(#([a-z0-9-]+)\)", text)
+    assert linked, "the README has no in-page links at all"
 
     dead = sorted(set(linked) - anchors)
-    assert not dead, f"table of contents links to non-existent sections: {dead}"
+    assert not dead, f"README links to non-existent sections: {dead}"
 
 
 def _embedded_images() -> list[str]:
