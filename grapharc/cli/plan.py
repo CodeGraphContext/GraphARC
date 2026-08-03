@@ -251,6 +251,10 @@ def plan(
         def _announce(message: str) -> None:
             # Printed *and flushed* before the run parks: a terminal user (or a
             # log tailer) must learn how to answer without waiting for the exit.
+            # Silent in JSON mode: stdout there carries exactly one document, and
+            # a notice printed ahead of it makes the whole output unparseable.
+            if as_json:
+                return
             print(message, flush=True, file=sys.stdout)
 
         approval = file_approval(
