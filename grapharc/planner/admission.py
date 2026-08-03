@@ -12,10 +12,13 @@ list rather than the first complaint:
 | Check | Question | Authority |
 |---|---|---|
 | REGISTRY | is every node's `kind` allowed, and does every edge endpoint exist? | `NodeRegistry` |
-| POLICY | is every edge permitted between the kinds it joins? | `EdgePolicy`, deny → ask → allow |
+| POLICY | may each node's `kind` run, and each edge be taken? | `NodePolicy`, `EdgePolicy` |
 | BUDGET | does the worst case fit what is *left*? | `RemainingBudget` |
 | DEPTH | is the nesting within the limit? | `AdmissionLimits.max_depth` |
 | ACYCLICITY | is the topology acyclic where that is required? | `AdmissionLimits` |
+
+Both policy objects tier deny → ask → allow, and a checker given no
+`NodePolicy` decides node kinds on registry membership alone, as it always did.
 
 Four properties worth stating precisely, because each is a place where a gate
 usually leaks:
@@ -305,6 +308,60 @@ class EdgePolicy(BaseModel):
         return self.default
 
 
+class NodeRule(BaseModel):
+    """One deny/ask/allow rule over a node kind, matched by fnmatch.
+
+    `match` is a pattern over a **registry kind**, never over the instance name
+    a planner chose — the same rule the rest of this module follows, so a denied
+    kind cannot be renamed out of its denial.
+
+    `reason` is the operator's own words, carried from the policy document that
+    compiled to this rule so a refusal can quote why rather than only what.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    action: Decision
+    match: str = "*"
+    reason: str = ""
+
+
+class NodePolicy(BaseModel):
+    """Which node kinds may be proposed at all: deny → ask → allow, tiered.
+
+    The counterpart of `EdgePolicy` for nodes, and deliberately a *second* gate
+    rather than a replacement for `NodeRegistry`: the registry is the operator's
+    allowlist of kinds that exist and what each costs, while this answers "may
+    this kind run here" from a document that can be edited without touching the
+    code that builds the registry. A kind has to pass both.
+
+    Same semantics as `EdgePolicy` and `PermissionPolicy` — every `deny` is
+    tried before every `ask` and every `ask` before every `allow`, first match
+    within a tier wins, and an unmatched kind gets `default`. `default` is
+    `deny`, so an empty `NodePolicy()` admits nothing; that is the same shape
+    `EdgePolicy` has and the same reason: a policy object that governs nothing
+    should have to be written down on purpose.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    rules: tuple[NodeRule, ...] = ()
+    default: Decision = Decision.DENY
+
+    def rule_for(self, kind: str) -> NodeRule | None:
+        """The rule that decides `kind`, or None when the default applies."""
+        for tier in (Decision.DENY, Decision.ASK, Decision.ALLOW):
+            for rule in self.rules:
+                if rule.action == tier and fnmatch(kind, rule.match):
+                    return rule
+        return None
+
+    def decide(self, kind: str) -> Decision:
+        """Decide one node kind. The argument is a kind, never an instance name."""
+        rule = self.rule_for(kind)
+        return self.default if rule is None else rule.action
+
+
 class AdmissionLimits(BaseModel):
     """Structural limits, set by the operator and not by the proposal."""
 
@@ -391,6 +448,7 @@ class AdmissionChecker:
         *,
         registry: NodeRegistry,
         edge_policy: EdgePolicy,
+        node_policy: NodePolicy | None = None,
         limits: AdmissionLimits | None = None,
         known_nodes: Iterable[str] | Mapping[str, str] = (),
         trace: TraceRecorder | None = None,
@@ -398,6 +456,12 @@ class AdmissionChecker:
     ) -> None:
         self.registry = registry
         self.edge_policy = edge_policy
+        # `None` is not "allow everything": it means no *document* governs node
+        # kinds here, and the registry — an allowlist with no wildcard — remains
+        # the only node gate, which is where it was before this check existed.
+        # A `NodePolicy` supplied on purpose is consulted for every proposed
+        # node, and an empty one denies every kind.
+        self.node_policy = node_policy
         self.limits = limits or AdmissionLimits()
         # Nodes already live in the graph this proposal attaches to. Edges may
         # reference them; proposed nodes may not reuse their names.
@@ -439,6 +503,7 @@ class AdmissionChecker:
 
         rejections: list[Rejection] = []
         rejections.extend(self._check_registry(proposal))
+        rejections.extend(self._check_node_policy(proposal))
         rejections.extend(self._check_policy(proposal))
         worst_case, complete = self._worst_case(proposal)
         rejections.extend(self._check_budget(worst_case, complete, remaining))
@@ -536,6 +601,51 @@ class AdmissionChecker:
                     remedy=f"propose {endpoint!r} as a node, or point the edge elsewhere",
                 )
             )
+        return out
+
+    def _check_node_policy(self, proposal: Subgraph) -> list[Rejection]:
+        """Decide every proposed node on its *kind*, when a node policy exists.
+
+        Part of the POLICY check rather than a gate of its own: REGISTRY answers
+        "does this kind exist and what does it cost", POLICY answers "is it
+        permitted", and a planner replanning from feedback should read one
+        answer to the second question whether the refusal was about a node or an
+        edge. With no node policy configured this decides nothing — the registry
+        is then the only node gate, as it was before.
+        """
+        if self.node_policy is None:
+            return []
+        out: list[Rejection] = []
+        for path, _depth, sub in proposal.scopes():
+            for node in sub.nodes:
+                rule = self.node_policy.rule_for(node.kind)
+                decision = self.node_policy.default if rule is None else rule.action
+                if decision is Decision.ALLOW:
+                    continue
+                denied = decision is Decision.DENY
+                verb = "denies" if denied else "requires approval for"
+                # The operator's own words, when the rule carried any. A rule
+                # without a `reason` still refuses; the detail then names the
+                # kind and nothing more, which is the whole of what was decided.
+                because = f": {rule.reason}" if rule is not None and rule.reason else ""
+                out.append(
+                    Rejection(
+                        check=Check.POLICY,
+                        code="node_denied" if denied else "node_needs_approval",
+                        subject=_scoped(path, node.name),
+                        detail=(
+                            f"the node policy {verb} this kind: "
+                            f"{_describe(node.name, node.kind)}{because}"
+                        ),
+                        remedy=(
+                            "the decision is made on the registry kind, not the name you "
+                            "chose: renaming the node will not change it — propose a "
+                            "permitted kind"
+                            if denied
+                            else "obtain approval and re-submit"
+                        ),
+                    )
+                )
         return out
 
     def _check_policy(self, proposal: Subgraph) -> list[Rejection]:
@@ -806,7 +916,7 @@ class AdmissionChecker:
 def _status_for(rejections: tuple[Rejection, ...]) -> AdmissionStatus:
     if not rejections:
         return AdmissionStatus.ADMITTED
-    if all(r.code == "edge_needs_approval" for r in rejections):
+    if all(r.code in ("edge_needs_approval", "node_needs_approval") for r in rejections):
         return AdmissionStatus.NEEDS_APPROVAL
     return AdmissionStatus.REJECTED
 
@@ -891,7 +1001,9 @@ __all__ = [
     "CostEstimate",
     "EdgePolicy",
     "EdgeRule",
+    "NodePolicy",
     "NodeRegistry",
+    "NodeRule",
     "NodeSpec",
     "Rejection",
     "RemainingBudget",

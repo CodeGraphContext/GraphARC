@@ -1117,6 +1117,32 @@ effect = "deny"
 
 _PERMISSIVE = 'version = "1"\ndefault = "allow"\n'
 
+# Issue #66's document, plus the catch-all its author's `default = "deny"`
+# needs. Its `node` rules used to be compiled by nobody: the run admitted the
+# denied kind and executed it, and the only hint was a rule count in the banner.
+_DENY_DEPLOY_NODE = """version = "1"
+default = "deny"
+
+[[rule]]
+id = "no-deploy-node"
+resource = "node"
+match = "deploy"
+effect = "deny"
+reason = "deploying from a plan is never permitted"
+
+[[rule]]
+id = "other-nodes-run"
+resource = "node"
+match = "*"
+effect = "allow"
+
+[[rule]]
+id = "ordinary-work-flows"
+resource = "edge"
+match = "*->*"
+effect = "allow"
+"""
+
 
 def test_plan_runs_the_governed_loop_and_reports_every_round(tmp_path, capsys):
     code, out, _ = call(
@@ -1199,6 +1225,48 @@ def test_a_policy_document_is_what_refuses_the_transition(tmp_path, capsys):
     assert code == 0
     assert payload["rejections"] == ["edge_denied"]
     assert str(doc) in payload["policy"]
+
+
+def test_a_document_that_denies_a_node_kind_stops_it_running(tmp_path, capsys):
+    """Issue #66, end to end: a `resource = "node"` deny rule is enforced.
+
+    The shipped script proposes `deploy` in round 1. Before the fix the whole
+    node half of the document was discarded and `deploy ran` landed in the
+    state; now the kind is refused with the operator's own reason and the
+    planner replans around it.
+    """
+    doc = tmp_path / "nodepolicy.toml"
+    doc.write_text(_DENY_DEPLOY_NODE, encoding="utf-8")
+
+    code, payload, _ = call_json(
+        ["plan", "fix the outage", "--policy", str(doc),
+         "--trace", str(tmp_path / "t.jsonl")],
+        capsys,
+    )
+
+    assert code == 0
+    assert payload["rejections"] == ["node_denied"]
+    assert payload["rounds"][0]["status"] == "rejected"
+    assert payload["rounds"][0]["executed"] is False
+    assert "deploy ran" not in payload["state"]["notes"]
+    assert payload["state"]["notes"] == ["triage ran", "patch ran", "verify ran"]
+    # The banner counts both halves of the document, so a reader can see that
+    # the node rules were read rather than skimmed past.
+    assert "1 edge rule(s), 2 node rule(s)" in payload["policy"]
+
+
+def test_a_node_denial_is_traced_with_the_reason_the_document_gave(tmp_path, capsys):
+    from grapharc.observe.trace import TraceRecorder
+
+    doc = tmp_path / "nodepolicy.toml"
+    doc.write_text(_DENY_DEPLOY_NODE, encoding="utf-8")
+    path = tmp_path / "t.jsonl"
+
+    call(["plan", "fix the outage", "--policy", str(doc), "--trace", str(path)], capsys)
+    admissions = [e for e in TraceRecorder(path).read_events() if e.phase == "admission"]
+
+    assert admissions, "the gate's decision has to be on the record"
+    assert "policy/node_denied" in (admissions[0].error or "")
 
 
 def test_a_permissive_document_admits_what_the_strict_one_refused(tmp_path, capsys):
@@ -1284,10 +1352,31 @@ def test_the_shipped_command_is_what_finally_imports_the_policy_package(tmp_path
     doc = tmp_path / "policy.toml"
     doc.write_text(_DENY_DEPLOY, encoding="utf-8")
 
-    policy, description = plan_module.resolve_edge_policy(doc, tenant="default")
+    policy, description = plan_module.resolve_policy(doc, tenant="default")
 
-    assert policy.rules, "the document's edge rules must reach the admission gate"
+    assert policy.edge.rules, "the document's edge rules must reach the admission gate"
     assert "tenant 'default'" in description
+    # This document declares no node rules, so nothing governs kinds but the
+    # registry. Compiling one anyway would read "said nothing about nodes" as
+    # "denied every node" and refuse the whole run.
+    assert policy.node is None
+
+
+def test_a_documents_node_rules_are_compiled_alongside_its_edge_rules(tmp_path, capsys):
+    """The half of the compile that did not exist before issue #66."""
+    import grapharc.cli.plan as plan_module
+
+    doc = tmp_path / "policy.toml"
+    doc.write_text(_DENY_DEPLOY_NODE, encoding="utf-8")
+
+    from grapharc.harness.permissions import Decision
+
+    policy, description = plan_module.resolve_policy(doc, tenant="default")
+
+    assert policy.node is not None
+    assert policy.node.decide("deploy") is Decision.DENY
+    assert policy.node.decide("triage") is Decision.ALLOW
+    assert "2 node rule(s)" in description
 
 
 # --------------------------------------------------------------------------

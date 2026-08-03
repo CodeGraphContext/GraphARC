@@ -17,6 +17,12 @@ It composes with the harness rather than replacing it:
 `Harness` already obeys, and `engine.approval_router(handlers, tenant=...)`
 produces the approval callback that goes with it.
 
+For the planner plane the pair is `engine.node_policy(tenant=...)` and
+`engine.edge_policy(tenant=...)`, which produce the two objects
+`grapharc.planner.admission.AdmissionChecker` consults — so the document
+decides which kinds may run and which transitions may be wired, rather than
+only answering questions about them.
+
 A shipped, commented example document lives at `grapharc/policy/example.toml`.
 """
 
