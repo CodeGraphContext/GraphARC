@@ -164,3 +164,35 @@ token in this repository or in its secrets.
    `grapharc/__init__.py`. CI fails if the two disagree.
 2. Tag the release; the commit log is the record of what changed.
 3. Tag `vX.Y.Z` and push it.
+
+### The one-time PyPI configuration
+
+Trusted Publishing needs a publisher registered **on PyPI** whose claims match
+the ones GitHub mints for this workflow. It is configured once per project, by
+someone with owner rights on the PyPI project, and until it exists the publish
+job fails closed — no upload, and an `invalid-publisher` error that names the
+claims it offered rather than the setting that is missing:
+
+    Token request failed: ... `invalid-publisher`: valid token, but no
+    corresponding publisher (Publisher with matching claims was not found)
+
+That message means the two sides disagree, not that the token was bad. Register
+the publisher at
+<https://pypi.org/manage/project/grapharc/settings/publishing/> with exactly:
+
+| Field | Value |
+| --- | --- |
+| Owner | `CodeGraphContext` |
+| Repository name | `GraphARC` |
+| Workflow name | `release.yml` |
+| Environment name | `pypi` |
+
+**Environment name is the one people leave blank**, and blank does not match:
+the job declares `environment: name: pypi`, so GitHub puts `environment: pypi`
+in the claim set and PyPI looks for a publisher that asked for it. Every one of
+those four values is visible in the failed job's log, under "The claims rendered
+below are for debugging purposes only" — compare them against the form rather
+than against memory.
+
+Re-running the failed job is enough once the publisher exists; the build job's
+artifacts are reused, so nothing is rebuilt.
