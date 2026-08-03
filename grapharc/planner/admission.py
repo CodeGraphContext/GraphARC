@@ -162,6 +162,16 @@ class CostEstimate(BaseModel):
             seconds=self.seconds + other.seconds,
         )
 
+    def __mul__(self, factor: int) -> CostEstimate:
+        return CostEstimate(
+            tokens=self.tokens * factor,
+            iterations=self.iterations * factor,
+            seconds=round(self.seconds * factor, 6),
+        )
+
+    def __rmul__(self, factor: int) -> CostEstimate:
+        return self.__mul__(factor)
+
 
 class RemainingBudget(BaseModel):
     """What is left, per dimension. `None` means unlimited, matching `Budget`."""
@@ -764,12 +774,32 @@ class AdmissionChecker:
         total = CostEstimate()
         complete = True
         for _path, _depth, sub in proposal.scopes():
+            max_step = len(sub.nodes) + 1
+            step_set: dict[str, set[int]] = {node.name: set() for node in sub.nodes}
+            step_set[START] = {0}
+            for k in self.known_nodes:
+                step_set[k] = {0}
+            queue = [START, *[k for k in self.known_nodes if k in {e.source for e in sub.edges}]]
+            while queue:
+                curr = queue.pop(0)
+                curr_steps = step_set.get(curr, set())
+                for edge in sub.edges:
+                    if edge.source == curr:
+                        next_steps = {s + 1 for s in curr_steps if s + 1 <= max_step}
+                        target = edge.target
+                        if target in step_set:
+                            added = next_steps - step_set[target]
+                            if added:
+                                step_set[target].update(added)
+                                if target not in queue:
+                                    queue.append(target)
             for node in sub.nodes:
                 spec = self.registry.get(node.kind)
                 if spec is None:
                     complete = False
                     continue
-                total = total + spec.worst_case
+                multiplier = max(1, len(step_set.get(node.name, set())))
+                total = total + (spec.worst_case * multiplier)
         return total, complete
 
     def _check_budget(
