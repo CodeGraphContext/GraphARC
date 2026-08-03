@@ -7,7 +7,7 @@ and "used to be true" — the two things a reader most needs kept apart.
 
 Entries are newest-last within a release, matching the order they were written.
 
-## Unreleased
+## 0.1.3
 
 - `grapharc plan` drives the governed loop; `PolicyEngine.edge_policy()` compiles the TOML document into the gate `AdmissionChecker` consults, and `grapharc plan --policy` is the caller; `grapharc demo --memory PATH` hands the shipped graphs the durable SQLite store.
 - the shipped registry withheld the trace recorder from its `PlannerNode` and `Materializer`, so `grapharc plan` wrote a file with no `plan` event and **no `start`/`end` pair for any node it executed** — the paragraph above claiming otherwise was true of a hand-wired loop and false of the one the command drives. Both now get the recorder, and a test asserts the phase counts.

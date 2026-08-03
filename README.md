@@ -17,7 +17,7 @@
 
 Build production-grade multi-agent systems with built-in safety, auditability, and control. GraphARC adds a governance layer on top of LangGraph: a planner *proposes* a subgraph, a deterministic checker *admits* it, and only then does anything execute. Every transition is permitted, every loop is bounded, and afterwards you can prove what happened and why it stopped.
 
-**Status:** early days (`0.1.2`) — the API is not stable yet. Known limits are listed in [Status and limits](#status-and-limits); closed ones are in [CHANGELOG.md](CHANGELOG.md).
+**Status:** early days (`0.1.3`) — the API is not stable yet. Known limits are listed in [Status and limits](#status-and-limits); closed ones are in [CHANGELOG.md](CHANGELOG.md).
 
 ![One English question is decomposed by a local model into a nine-node graph — four parallel evidence pulls fanning out of START, a correlate join, a hypothesis fork, and a final report — shown live in the browser: the proposed graph waits grey for human approval, then each node turns amber while it runs and green when it is done.](docs/media/grapharc-decompose.gif)
 
