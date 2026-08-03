@@ -23,10 +23,14 @@ Two tiers:
   not chosen by the model at run time. `apply_change` is the only one that can
   write, which is what makes it the one worth denying by default.
 
-All but one of the agent kinds need a **tool-calling** backend: `AgentNode`
-refuses a model with no `bind_tools` rather than degrading, so the Claude CLI
-subscription cannot drive them. `summarize` is the exception — it is toolless by
-design, so it binds nothing and runs anywhere.
+All but one of the agent kinds want a **tool-calling** backend, because that is
+the only way GraphARC can run the loop itself and gate each call. Given the
+Claude CLI — which has no tool-calling wire format — `AgentNode` delegates the
+whole loop to Claude Code instead, warning at construction and marking the
+trace: the fixed allowlists described above do not apply to a delegated run,
+because the tools are Claude Code's rather than this registry's. `summarize` is
+the exception either way — it is toolless by design, so it binds nothing and
+runs anywhere.
 
 Registered but denied is the interesting state: **given a model**, `apply_change`
 is in the registry because changing files is a real capability, and the default

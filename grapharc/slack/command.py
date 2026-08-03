@@ -19,6 +19,16 @@ rules, and why each exists:
 - **`--model` is refused unless the operator opted in**, because it reaches a
   paid backend. Without it every allowed command runs the scripted, spend-free
   path; the default answer to "can Slack cost me money?" is no.
+- **A flag may not be repeated.** The gate admits a command by reading a flag's
+  value, and argparse's `store` action then runs the *last* occurrence — so any
+  reader that takes a different one is a bypass, and `--registry <shipped demo>
+  --registry <stdlib>` was exactly that: admitted against the benign value,
+  executed against the agent registry, with the forced `--approve` skipped in
+  the same step. Refusing the repeat is the fail-closed reading and it closes
+  the whole first-vs-last family at once, rather than the one flag that showed
+  it. The carve-out is `repeatable_flags`: options the CLI itself accumulates
+  (`agent --allow/--deny`, argparse `action="append"`), where every occurrence
+  reaches the run and there is no "other" value to diverge from.
 - **Every path must resolve inside the bot's working directory.** `trace
   ../../.env` is refused before a process is spawned, whether it arrives as a
   positional or as a flag value.
@@ -54,6 +64,10 @@ class CommandSpec:
     # flag -> the exact values it may take. How `--registry` stays shut against
     # arbitrary imports while the registries this package ships stay reachable.
     choice_flags: dict[str, frozenset[str]] = field(default_factory=dict)
+    # flags the CLI accumulates (argparse `action="append"`), so a second
+    # occurrence adds to the run rather than replacing what the gate read.
+    # Every other flag is refused on its second occurrence.
+    repeatable_flags: frozenset[str] = frozenset()
 
 
 _BUDGET = {"--max-tokens": False, "--max-iterations": False, "--max-seconds": False}
@@ -129,6 +143,9 @@ ALLOWED_COMMANDS: dict[str, CommandSpec] = {
         # `local` (no confinement) stays unreachable; `claude-cli` delegates to
         # Claude Code's own sandboxed loop, which the injection below tempers.
         choice_flags={"--executor": frozenset({"sandbox", "claude-cli"})},
+        # Tool-name globs: the CLI appends them, so `--deny 'shell*' --deny
+        # 'net*'` denies both. Repeating them narrows the run, never widens it.
+        repeatable_flags=frozenset({"--allow", "--deny"}),
     ),
     "approve": CommandSpec(
         bool_flags=frozenset({"--deny"}), path_positionals=frozenset({0})
@@ -167,8 +184,26 @@ def _confined(raw: str, workdir: Path) -> None:
 
     Lexical resolution only — the target need not exist yet (`--trace` names a
     file the run will create).
+
+    Every refusal here leaves as a `SlackCommandError`, including the ones the
+    filesystem raises: `Path.resolve()` throws `ValueError` on a NUL byte, and
+    the bolt listeners catch only `SlackCommandError`, so anything else escapes
+    the handler and the requester gets no reply at all — silence being the one
+    answer a chat bot must never give, since it is indistinguishable from being
+    down. `parse_command` screens NUL bytes out of the whole request before it
+    gets here; this keeps the guarantee for any other caller.
     """
-    resolved = (workdir / raw).resolve() if not Path(raw).is_absolute() else Path(raw).resolve()
+    if "\x00" in raw:
+        # `repr`, not the raw string: a NUL echoed back into a Slack message
+        # is invisible, and an invisible character is exactly what the reader
+        # needs to see named.
+        raise SlackCommandError(f"path contains a NUL byte, which cannot name a file: {raw!r}")
+    try:
+        resolved = (
+            (workdir / raw).resolve() if not Path(raw).is_absolute() else Path(raw).resolve()
+        )
+    except (ValueError, OSError) as exc:
+        raise SlackCommandError(f"that is not a usable path: {exc}") from None
     if not resolved.is_relative_to(workdir.resolve()):
         raise SlackCommandError(f"path escapes the bot's working directory: `{raw}`")
 
@@ -187,6 +222,14 @@ def parse_command(
     # with a backtick glued to the first and last token. No admissible
     # command starts or ends with one, so wrapping backticks are noise.
     text = text.strip().strip("`").strip()
+    # A NUL byte cannot name a file, cannot cross into `subprocess`, and makes
+    # `Path.resolve()` raise `ValueError` — an exception type the bolt handlers
+    # do not catch, so it would surface as no reply rather than as a refusal.
+    # Screen it out of the whole request, not just the path-shaped parts: it is
+    # never meaningful anywhere in a command, and this is the one place that
+    # sees the text before anything tries to use it.
+    if "\x00" in text:
+        raise SlackCommandError("that contains a NUL byte, which cannot name a file or a command")
     try:
         tokens = shlex.split(text)
     except ValueError as exc:
@@ -217,10 +260,27 @@ def parse_command(
     argv = [name]
     positional_index = 0
     index = 0
+    seen_flags: set[str] = set()
     while index < len(rest):
         token = rest[index]
-        if token.startswith("--"):
+        # Any leading dash is a flag, not a positional. The allowlist is meant
+        # to be exhaustive, and testing for `--` let short options through it:
+        # `trace -h` was admitted and spent the path positional on `-h`. The
+        # CLI has one short option and no positional that begins with a dash,
+        # so treating the whole shape as a flag costs nothing and leaves the
+        # allowlist the only way in.
+        if token.startswith("-"):
             flag, eq, inline_value = token.partition("=")
+            # Repeats are refused before the flag is read, because reading one
+            # of several occurrences is what the gate cannot safely do — see
+            # the module docstring. An inadmissible flag was already refused on
+            # its first occurrence, so anything reaching here was admitted once.
+            if flag in seen_flags and flag not in spec.repeatable_flags:
+                raise SlackCommandError(
+                    f"`{flag}` was given twice; from Slack a flag may appear only once, "
+                    "because the gate and the CLI would not necessarily read the same one"
+                )
+            seen_flags.add(flag)
             if flag in spec.bool_flags:
                 if eq:
                     raise SlackCommandError(f"`{flag}` takes no value")
@@ -329,12 +389,22 @@ def _has_flag(argv: list[str], flag: str) -> bool:
 
 
 def _flag_value(argv: list[str], flag: str) -> str | None:
+    """The value the CLI will act on: the **last** occurrence, as argparse.
+
+    `parse_command` already refuses a repeated flag, so there is only ever one
+    here. Reading it argparse's way anyway is the cheap half of the belt: this
+    function returning the *first* occurrence while `store` kept the last is
+    precisely how a second `--registry` walked past the agent opt-in, and a
+    future caller that assembles an argv some other way should not be able to
+    reopen that gap.
+    """
+    value: str | None = None
     for index, token in enumerate(argv):
         if token == flag and index + 1 < len(argv):
-            return argv[index + 1]
-        if token.startswith(f"{flag}="):
-            return token.partition("=")[2]
-    return None
+            value = argv[index + 1]
+        elif token.startswith(f"{flag}="):
+            value = token.partition("=")[2]
+    return value
 
 
 def _default_trace() -> str:

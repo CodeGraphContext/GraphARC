@@ -161,8 +161,12 @@ def load(explicit: Path | None = None, *, cwd: Path | None = None) -> Settings:
             return Settings()
 
     try:
+        # `UnicodeDecodeError` is a `ValueError`, so it belongs in this tuple
+        # explicitly: without it a stray binary `grapharc.toml` in the working
+        # directory tracebacks out of every configurable command, because this
+        # file is picked up implicitly rather than named by the operator.
         document = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"{path}: {exc}") from exc
 
     table = document.get(TABLE, document)
