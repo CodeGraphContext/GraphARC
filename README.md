@@ -41,34 +41,48 @@ Build production-grade multi-agent systems with built-in safety, auditability, a
 - [Core Components](#core-components)
 - [What it adds on top of LangGraph](#what-it-adds-on-top-of-langgraph)
 - [Install](#install)
-- [Usage](#usage)
-- [Documentation](#documentation)
+- [Quickstart](#quickstart) — the CLI tour
+- [The admission gate](#the-admission-gate)
+- [Configuration, and the zero-config path](#configuration-and-the-zero-config-path)
+- [The model gateway](#the-model-gateway)
+- [Independent verification](#independent-verification)
+- [Tools and the harness](#tools-and-the-harness)
+- [Memory](#memory)
+- [Sessions, the HTTP API, and policy](#sessions-the-http-api-and-policy)
+- [Reading a run afterwards](#reading-a-run-afterwards)
+- [Tests are gates](#tests-are-gates)
+- [Status and limits](#status-and-limits)
 
 ## Quick Start
 
 ```python
-from grapharc.runtime import StateGraph
-from pydantic import BaseModel
+from grapharc import Budget, GraphARC, GraphARCState
+from grapharc.runtime.graph import END, START
 
-# Define your state
-class MyState(BaseModel):
-    messages: list[str]
+# State is a typed contract, not a free-form dict: `extra="forbid"`.
+class MyState(GraphARCState):
+    question: str
     result: str = ""
 
-# Create a graph
-graph = StateGraph(MyState)
+def process(state: MyState) -> dict:
+    return {"result": f"handled: {state.question}"}
 
-# Add nodes and edges
-graph.add_node("process", lambda state: {"result": "done"})
-graph.add_edge("START", "process")
-graph.add_edge("process", "END")
+graph = GraphARC(MyState, name="quickstart", budget=Budget(max_iterations=10))
 
-# Compile and run
-compiled = graph.compile()
-result = compiled.invoke({"messages": ["hello"]})
+# `writes` is required. A node that returns a field it did not declare
+# raises WritePermissionError instead of quietly writing it.
+graph.add_node("process", process, writes={"result"})
+graph.add_edge(START, "process")
+graph.add_edge("process", END)
+
+print(graph.compile().invoke({"question": "hello"}))
+# {'question': 'hello', 'result': 'handled: hello'}
 ```
 
-See [Usage](#usage) for more detailed examples.
+Three things in that snippet are the whole point, and none of them are optional:
+the state is a typed schema, the node declares what it may write, and the run
+carries a `Budget`. See [Quickstart](#quickstart) for the CLI tour and
+[The admission gate](#the-admission-gate) for the part with no prior art.
 
 ## Architecture
 
