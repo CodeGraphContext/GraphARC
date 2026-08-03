@@ -12,7 +12,6 @@
 [![Python](https://img.shields.io/pypi/pyversions/grapharc.svg)](https://pypi.org/project/grapharc/)
 [![CI](https://github.com/CodeGraphContext/GraphARC/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeGraphContext/GraphARC/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Lines of code](https://tokei.rs/b1/github/CodeGraphContext/GraphARC?category=code)](https://github.com/CodeGraphContext/GraphARC)
 
 **A governed agent runtime built on [LangGraph](https://github.com/langchain-ai/langgraph).** 
 
