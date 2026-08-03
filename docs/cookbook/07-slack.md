@@ -27,6 +27,7 @@ an afterthought. The defaults:
 | The budget, policy and trace flags each command already has | `--registry` (imports an arbitrary module), `--config`, `--json`, `--no-color` |
 | `plan --registry`, for exactly the two registries the package ships | any other `--registry` value |
 | `agent`, only behind the double opt-in below | `--model` / `--reviewer-model`, unless the operator opts in |
+| Each admitted flag, once; `agent --allow`/`--deny` accumulate as the CLI does | The same flag twice (`--registry <demo> --registry <stdlib>`), because the gate would judge one occurrence and the CLI would run the other |
 
 With `--model` off, every reachable command runs the scripted, spend-free
 path. The default answer to "can someone in Slack cost me money?" is **no**;
