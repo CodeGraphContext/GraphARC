@@ -178,10 +178,21 @@ def scan_traces(root: Path) -> list[dict[str, Any]]:
     Run ids are parsed only for the `SCAN_PARSE_LIMIT` newest files; older
     rows carry an empty `runs` list — their viewer pages still work (the run
     is resolved from the file when the page opens).
+
+    Confined exactly as `resolve_trace` confines the reader: `rglob` matches a
+    symlinked file by name, so without this the index advertised names, sizes
+    and parsed run ids for files the stream then 404s. Two checks for one
+    contract — the shared `resolve_trace` call, and an outright skip of
+    symlinks — so a refactor of either cannot quietly reopen the leak.
     """
     found = []
     for path in root.rglob("*.jsonl"):
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            rel = path.relative_to(root).as_posix()
+            resolve_trace(root, rel)
+        except (ValueError, LivePathError):
             continue
         try:
             stat = path.stat()
@@ -189,7 +200,7 @@ def scan_traces(root: Path) -> list[dict[str, Any]]:
             continue
         found.append(
             {
-                "trace": path.relative_to(root).as_posix(),
+                "trace": rel,
                 "size": stat.st_size,
                 "mtime": stat.st_mtime,
                 "runs": [],
@@ -229,14 +240,24 @@ def live_router(
         header = request.headers.get("authorization", "")
         if header.startswith("Bearer "):
             supplied = supplied or header.removeprefix("Bearer ")
-        if supplied is None or not secrets.compare_digest(supplied, token):
+        # Compared as bytes: `compare_digest` refuses `str` outside ASCII, so
+        # comparing text turned a one-character guess into a 500 — the gate
+        # crashing on the strangers it exists to refuse. Encoding keeps the
+        # constant-time property, which is the reason it is here at all.
+        if supplied is None or not secrets.compare_digest(
+            supplied.encode("utf-8"), token.encode("utf-8")
+        ):
             raise HTTPException(status_code=401, detail="missing or wrong token")
 
     def _resolved(raw: str) -> str:
-        """Validate confinement; 404 on refusal (don't map what exists outside)."""
+        """Validate confinement; 404 on refusal (don't map what exists outside).
+
+        `ValueError` too: a NUL byte in the name reaches the filesystem call
+        inside `resolve()`, and a malformed request is a 404 like any other.
+        """
         try:
             resolve_trace(root_path, raw)
-        except LivePathError:
+        except (LivePathError, ValueError):
             raise HTTPException(status_code=404, detail="no such trace") from None
         return raw
 
