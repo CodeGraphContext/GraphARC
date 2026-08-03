@@ -117,3 +117,136 @@ def test_a_missing_binary_is_exit_2_with_the_reason(tmp_path, monkeypatch, capsy
     code = _run(tmp_path)
     assert code == 2
     assert "not on PATH" in capsys.readouterr().err
+
+
+# ---- the same delegation, reached from an AgentNode ---------------------------
+#
+# `AgentNode` used to refuse the Claude CLI outright: it has no tool-calling wire
+# format, so GraphARC cannot run its own gated loop over it. It now delegates the
+# whole loop to Claude Code instead, which is a genuine widening of the trust
+# boundary — so what these gates pin is that the widening is *visible*, at
+# construction and afterwards in the trace.
+
+
+def _node(workspace, trace=None, name="worker"):
+    from grapharc.gateway import get_model
+    from grapharc.harness import Harness, PermissionPolicy, PermissionRule, ToolRegistry
+    from grapharc.harness.agent import AgentNode
+
+    harness = Harness(
+        ToolRegistry(),
+        PermissionPolicy(rules=[PermissionRule(action="allow", pattern="*")]),
+        workspace=str(workspace),
+    )
+    with pytest.warns(Warning):
+        return AgentNode(get_model("claude-cli"), harness, name=name, trace=trace)
+
+
+def test_a_claude_cli_agent_node_warns_loudly_at_construction(tmp_path, fake_claude):
+    """A silent switch from "refuses" to "runs with every tool and no checks"
+    is the one thing this must not be. The warning names each thing given up.
+    """
+    from grapharc.gateway import get_model
+    from grapharc.harness import Harness, PermissionPolicy, PermissionRule, ToolRegistry
+    from grapharc.harness.agent import AgentNode, DelegatedToolUseWarning
+
+    harness = Harness(
+        ToolRegistry(),
+        PermissionPolicy(rules=[PermissionRule(action="allow", pattern="*")]),
+        workspace=str(tmp_path),
+    )
+    with pytest.warns(DelegatedToolUseWarning) as caught:
+        node = AgentNode(get_model("claude-cli"), harness, name="worker")
+
+    assert node.delegated is True
+    text = str(caught[0].message)
+    for claim in ("EVERY tool", "NOT checked", "NOT confined", "bypassPermissions"):
+        assert claim in text, f"the warning does not mention {claim!r}: {text}"
+
+
+def test_a_tool_calling_backend_is_not_delegated_and_does_not_warn(tmp_path):
+    """The mock double must keep running GraphARC's own loop.
+
+    Detection is on `_llm_type`, not on "does this model lack bind_tools" —
+    `ScriptedChatModel` lacks it too, and matching that way would have silently
+    delegated every mocked agent in the suite to a real subprocess.
+    """
+    import warnings as _warnings
+
+    from grapharc.gateway import get_model
+    from grapharc.harness import Harness, PermissionPolicy, PermissionRule, ToolRegistry
+    from grapharc.harness.agent import AgentNode
+
+    harness = Harness(
+        ToolRegistry(),
+        PermissionPolicy(rules=[PermissionRule(action="allow", pattern="*")]),
+        workspace=str(tmp_path),
+    )
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")  # any warning at all fails this
+        node = AgentNode(get_model("mock/x", responses=["hi"]), harness, name="m")
+    assert node.delegated is False
+
+
+def test_the_delegated_node_asks_for_every_tool_and_bypasses_the_prompt(
+    tmp_path, fake_claude
+):
+    """Two axes, and conflating them was a real bug found by running it.
+
+    Omitting `--allowedTools` does not mean "every tool" — it leaves Claude
+    Code's own gating on, and headless there is nobody to approve a Write, so
+    the sub-agent came back reporting it could not create the file. Only
+    `--permission-mode bypassPermissions` means what "everything Claude Code
+    has" was chosen to mean.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    _node(workspace).run("do a thing")
+
+    argv = json.loads(fake_claude.read_text())
+    assert "--allowedTools" not in argv, "an allowlist would narrow the tool set"
+    assert "--permission-mode" in argv
+    assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
+
+
+def test_every_delegated_trace_event_says_it_was_delegated(tmp_path, fake_claude):
+    """The construction warning is gone by the time anyone reads the run back.
+
+    Without this marking, a JSONL reader six months later sees an agent node
+    that completed and has no way to know its tool calls never reached this
+    graph's permission policy — which is exactly the claim the project makes
+    about its traces.
+    """
+    from grapharc.observe.trace import TraceRecorder
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    trace_path = tmp_path / "t.jsonl"
+    _node(workspace, trace=TraceRecorder(trace_path)).run("do a thing")
+
+    events = [json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
+    assert events, "the delegated run recorded nothing"
+    for event in events:
+        delta = event.get("state_delta") or {}
+        assert delta.get("executor") == "delegated", event
+
+    opening = events[0]["state_delta"]
+    assert opening["permission_mode"] == "bypassPermissions"
+    assert "not this graph's policy" in opening["governed_by"]
+
+
+def test_a_delegated_run_charges_the_meter_what_the_sub_agent_reported(tmp_path, fake_claude):
+    """A budget must not be simply blind to a delegated node — but the figure is
+    the sub-agent's own, and every name it surfaces under says so.
+    """
+    from grapharc.runtime.budget import Budget, BudgetMeter
+    from grapharc.runtime.graph import RunContext
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    ctx = RunContext(run_id="r", graph="g", meter=BudgetMeter(Budget()))
+    result = _node(workspace).run("do a thing", ctx)
+
+    assert ctx.meter.tokens == REPORT["usage"]["input_tokens"] + REPORT["usage"]["output_tokens"]
+    assert "tokens reported by the sub-agent" in result.note
+    assert "not checked by this graph's policy" in result.note

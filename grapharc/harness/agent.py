@@ -53,8 +53,10 @@ import time
 import types
 import typing
 import uuid
+import warnings
 from collections.abc import Callable, Mapping
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -297,6 +299,48 @@ def _coerce_args(raw: Any) -> dict[str, Any]:
     raise TypeError(f"tool arguments must be a JSON object, got {type(raw).__name__}")
 
 
+
+class DelegatedToolUseWarning(UserWarning):
+    """An `AgentNode` is running Claude Code's tool loop instead of GraphARC's.
+
+    Its own category so it can be filtered, asserted on in tests, or turned
+    into an error with `-W error::grapharc.harness.agent.DelegatedToolUseWarning`
+    by anyone who wants the old refusal back.
+    """
+
+
+#: What the delegated loop runs under. `bypassPermissions` is Claude Code's
+#: "no checks at all" mode, and it is deliberate: omitting `--allowedTools`
+#: leaves its default gating in place, and headless there is no one to approve
+#: a Write — the sub-agent simply reports that it could not create the file.
+#: "Every tool Claude Code has" only means that with this set.
+DELEGATED_PERMISSION_MODE = "bypassPermissions"
+
+_DELEGATION_WARNING = (
+    "agent node {name!r} is backed by the Claude CLI, which has no tool-calling "
+    "wire format, so GraphARC cannot run its own tool loop over it. The whole "
+    "loop is delegated to Claude Code's headless agent, which means: it uses "
+    "EVERY tool Claude Code has (Bash, Write, WebFetch, Task, ...) under its "
+    "bypassPermissions mode, so those calls are NOT checked by this graph's "
+    "permission policy, NOT confined by the sandbox executor, and NOT gated by "
+    "Claude Code's own prompts either. The token figure is what the sub-agent "
+    "reports rather than what GraphARC metered. The workspace boundary and the wall-clock "
+    "ceiling still apply. Every trace event from this node is marked "
+    "executor=delegated so the run stays auditable; use a tool-calling backend "
+    "(openrouter/*, openai/*, ollama/*) for a governed loop."
+)
+
+
+def _is_claude_cli(model: Any) -> bool:
+    """Is this the Claude CLI backend?
+
+    Matched on `_llm_type` rather than `isinstance`, so this module does not
+    import the gateway, and rather than "does it lack bind_tools" — which is
+    also true of `ScriptedChatModel` and would silently delegate every mock.
+    """
+    return getattr(model, "_llm_type", None) == "grapharc-claude-cli"
+
+
 class AgentNode:
     """A tool-using agent loop, shaped as a GraphARC node.
 
@@ -341,6 +385,16 @@ class AgentNode:
         self.prompt_fn = prompt_fn
         self.trace = trace
         self.max_tool_result_chars = max_tool_result_chars
+        #: True when the backend is the Claude CLI, which has no tool-calling
+        #: wire format and therefore cannot be driven as a raw model. The loop
+        #: is handed to Claude Code instead — see `_run_delegated`.
+        self.delegated = _is_claude_cli(model)
+        if self.delegated:
+            warnings.warn(
+                _DELEGATION_WARNING.format(name=name),
+                DelegatedToolUseWarning,
+                stacklevel=2,
+            )
 
     @property
     def writes(self) -> set[str]:
@@ -384,6 +438,9 @@ class AgentNode:
             ctx = RunContext(
                 run_id=uuid.uuid4().hex[:12], graph=self.name, meter=BudgetMeter(Budget())
             )
+
+        if self.delegated:
+            return self._run_delegated(prompt, ctx)
 
         model = self._bind_tools()
         messages: list[BaseMessage] = [
@@ -523,6 +580,89 @@ class AgentNode:
         return result
 
     # -- internals ------------------------------------------------------------
+
+    def _run_delegated(self, prompt: str, ctx: RunContext) -> AgentResult:
+        """Hand the whole task to Claude Code's headless agent.
+
+        The trade is stated in `_DELEGATION_WARNING` and repeated on every trace
+        event this writes, because a warning at construction is gone by the time
+        anyone reads the run back. `executor="delegated"` on the events is what
+        stops a reader six months later from assuming this graph's permission
+        policy saw these tool calls. It did not.
+
+        The workspace boundary and the wall-clock ceiling still hold: the CLI is
+        spawned with `cwd` set to the harness workspace, and `max_seconds` is
+        enforced from outside by the subprocess timeout. Everything finer than
+        that is Claude Code's.
+        """
+        from grapharc.cli.delegate import DelegationError, delegate_task
+
+        remaining = ctx.meter.remaining_seconds() if ctx.meter else None
+        step = 1
+        if self.trace is not None:
+            self.trace.event(
+                run_id=ctx.run_id, graph=ctx.graph, node=self.name, phase="model",
+                step=step, thread_id=ctx.thread_id, attempt=ctx.attempt,
+                state_delta={"executor": "delegated", "tools": "all of Claude Code's",
+                             "permission_mode": DELEGATED_PERMISSION_MODE,
+                             "governed_by": "Claude Code, not this graph's policy"},
+            )
+        try:
+            workspace = getattr(self.harness.executor, "workspace", None)
+            if workspace is None:
+                raise DelegationError(
+                    "the delegated executor needs a workspace directory, and this "
+                    f"harness's executor ({type(self.harness.executor).__name__}) "
+                    "does not expose one",
+                    reason="no_workspace",
+                )
+            run = delegate_task(
+                prompt,
+                workspace=Path(workspace),
+                max_turns=self.max_iterations,
+                max_seconds=remaining,
+                system_prompt=self.system_prompt,
+                permission_mode=DELEGATED_PERMISSION_MODE,
+            )
+        except DelegationError as exc:
+            if self.trace is not None:
+                self.trace.event(
+                    run_id=ctx.run_id, graph=ctx.graph, node=self.name, phase="stop",
+                    step=step, thread_id=ctx.thread_id, attempt=ctx.attempt,
+                    state_delta={"executor": "delegated", "termination_reason": exc.reason},
+                    error=str(exc),
+                )
+            return AgentResult(
+                termination_reason=StopReason.ERROR, iterations=0, note=str(exc)
+            )
+
+        # The sub-agent's own count, charged so a budget is not simply blind to
+        # a delegated node — but named `tokens_reported` everywhere it surfaces,
+        # because GraphARC did not meter these call by call.
+        if ctx.meter and run.tokens_reported:
+            ctx.meter.charge_tokens(run.tokens_reported)
+        reason = StopReason.TARGET_MET if run.ok else StopReason.ERROR
+        if self.trace is not None:
+            self.trace.event(
+                run_id=ctx.run_id, graph=ctx.graph, node=self.name, phase="stop",
+                step=step, thread_id=ctx.thread_id, attempt=ctx.attempt,
+                tokens=run.tokens_reported or None,
+                cost_usd=run.cost_usd,
+                state_delta={"executor": "delegated", "termination_reason": reason.value,
+                             "turns": run.turns, "tokens_reported": run.tokens_reported,
+                             "session_id": run.session_id},
+            )
+        return AgentResult(
+            output=run.answer if run.ok else "",
+            partial_output="" if run.ok else run.answer,
+            termination_reason=reason,
+            iterations=run.turns,
+            note=(
+                f"delegated to Claude Code: {run.turns} turn(s), "
+                f"{run.tokens_reported:,} tokens reported by the sub-agent, "
+                "tool calls not checked by this graph's policy"
+            ),
+        )
 
     def _bind_tools(self) -> Any:
         """Bind the policy-filtered tool set. Denied tools are never described."""

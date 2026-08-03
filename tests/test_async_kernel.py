@@ -804,3 +804,47 @@ async def test_aupdate_state_enforces_declared_writes():
     await compiled.ainvoke({"a": 1}, thread_id="t1")
     with pytest.raises(WritePermissionError, match="undeclared"):
         await compiled.aupdate_state("t1", {"b": 5}, as_node="n")
+
+
+# -- sync/async parity: neither wrapper may lose the ending -----------------
+
+
+# Driven with `asyncio.run` rather than `@pytest.mark.asyncio`: asyncio re-raises
+# KeyboardInterrupt and SystemExit out of the task step and into the loop, so they
+# leave the run at the runner rather than at the await. Both wrappers are asserted
+# in one test so neither can quietly stop matching the other.
+@pytest.mark.parametrize("stopper", [KeyboardInterrupt, SystemExit])
+def test_both_wrappers_record_a_node_stopped_by_a_baseexception(trace, stopper):
+    """Ctrl-C is the commonest way a human ends a long run, and a
+    KeyboardInterrupt is not an Exception. The sync wrapper used to let it past
+    without a trace line, so the audit trail ended mid-node with no reason and
+    `metrics.summarize` reported zero errors for the run."""
+
+    def boom(state: S) -> dict:
+        raise stopper("operator hit ^C inside a node")
+
+    async def aboom(state: S) -> dict:
+        await asyncio.sleep(0)
+        raise stopper("operator hit ^C inside a node")
+
+    with pytest.raises(stopper):
+        _graph(boom, writes={"a"}, trace=trace).invoke({}, run_id="r-stop")
+    with pytest.raises(stopper):
+        asyncio.run(_graph(aboom, writes={"a"}, trace=trace).ainvoke({}, run_id="r-astop"))
+
+    for run_id in ("r-stop", "r-astop"):
+        errors = [e for e in trace.read_events(run_id) if e.phase == "error"]
+        assert errors, f"{run_id} recorded no terminal error event"
+        assert stopper.__name__ in errors[0].error
+
+
+@pytest.mark.asyncio
+async def test_the_async_entry_points_refuse_an_unknown_input_key_too():
+    """`invoke`/`stream` fail loudly on a typo'd input key; so must their twins."""
+    compiled = _graph(lambda s: {"a": 1}, writes={"a"})
+    with pytest.raises(WritePermissionError) as caught:
+        await compiled.ainvoke({"aa": 1})
+    assert str(caught.value) == "ainvoke() targets unknown state fields: ['aa']"
+    with pytest.raises(WritePermissionError) as caught:
+        [chunk async for chunk in compiled.astream({"aa": 1})]
+    assert str(caught.value) == "astream() targets unknown state fields: ['aa']"

@@ -299,3 +299,34 @@ def test_handshake_files_are_written_atomically(tmp_path):
     _write_atomically(target, {"fingerprint": "fp"})
     assert json.loads(target.read_text()) == {"fingerprint": "fp"}
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_plan_approve_in_json_mode_emits_one_document(tmp_path, capsys):
+    """The park notice used to print ahead of the document, so nothing parsed.
+
+    `--approve` is the flag most likely to be driven unattended: a script starts
+    a gated plan, a human answers out of band, the script reads the result. That
+    is exactly the combination whose output could not be loaded.
+    """
+    trace = tmp_path / "run" / "trace.jsonl"
+
+    code = main(
+        ["plan", "ship it", "--approve", "--approval-timeout", "0.2",
+         "--trace", str(trace), "--json"]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1, "an unanswered gate is a negative answer, not a crash"
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert "not approved" in payload["detail"]
+
+
+def test_plan_approve_in_text_mode_still_announces_how_to_answer(tmp_path, capsys):
+    """Silencing the notice in JSON mode must not silence it for a human."""
+    trace = tmp_path / "run" / "trace.jsonl"
+
+    main(["plan", "ship it", "--approve", "--approval-timeout", "0.2", "--trace", str(trace)])
+
+    assert "grapharc approve" in capsys.readouterr().out

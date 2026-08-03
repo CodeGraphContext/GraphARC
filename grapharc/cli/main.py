@@ -242,9 +242,23 @@ def _existing_trace(path: Path, *, command: str, as_json: bool) -> TraceRecorder
     Checked before constructing the recorder because `TraceRecorder.__init__`
     creates the parent directory: a typo in a read-only command should not leave
     a directory behind.
+
+    Existence is not enough. A directory, a file whose permissions forbid the
+    read, or any other `OSError` used to escape as a traceback with exit 1,
+    because the handlers below catch only `TraceReadError` — so the file is
+    opened here, where the failure is still reportable as the exit-2 document
+    the contract promises.
     """
     if not path.exists():
         return fail(f"no such trace file: {path}", as_json=as_json, command=command)
+    try:
+        path.open("rb").close()
+    except OSError as exc:
+        return fail(
+            f"unreadable trace file: {path}: {exc.strerror or exc}",
+            as_json=as_json,
+            command=command,
+        )
     return TraceRecorder(path)
 
 

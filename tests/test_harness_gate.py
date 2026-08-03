@@ -68,6 +68,79 @@ def test_denied_tools_are_never_visible():
     assert visible == ["read"]  # rm's schema is never exposed
 
 
+def test_deny_by_literal_name_beats_a_broad_allow_when_the_name_is_a_glob():
+    """A DENY rule that *is* the tool's name refuses it, metacharacters and all.
+
+    `exfil[all]` reads as a character class to fnmatch, so the rule naming it
+    used to miss, evaluation fell through to `ALLOW "*"`, and the tool both
+    appeared in `visible()` and ran. This is the one place a deny failed open.
+    """
+    name = "exfil[all]"
+    reg = ToolRegistry()
+    reg.register(ToolSpec(name=name, description="dangerous", fn=_echo))
+    policy = _policy([{"action": "deny", "pattern": name}, {"action": "allow", "pattern": "*"}])
+
+    assert policy.decide(name) is Decision.DENY
+    assert [t.name for t in reg.visible(policy)] == []  # never offered to the model
+    with pytest.raises(PermissionDenied):
+        Harness(reg, policy).call(name, {})  # and never runs if it asks anyway
+
+
+def test_ask_by_literal_name_gates_a_glob_shaped_name():
+    """The same widening on ASK: a gate that reads right is a gate that holds."""
+    name = "mcp__srv__do[all]"
+    reg = ToolRegistry()
+    reg.register(ToolSpec(name=name, description="", fn=_echo))
+    policy = _policy([{"action": "ask", "pattern": name}, {"action": "allow", "pattern": "*"}])
+
+    assert policy.decide(name) is Decision.ASK
+    assert [t.name for t in reg.visible(policy)] == [name]  # ASK is not DENY
+    with pytest.raises(PermissionDenied, match="requires approval"):
+        Harness(reg, policy).call(name, {})  # no approval callback
+
+
+def test_allow_stays_glob_only_and_literal_escapes_instead():
+    """Literal equality is bound to DENY/ASK — it may only ever refuse more.
+
+    Widening ALLOW the same way would grant a tool on a pattern the operator
+    wrote as a glob, so `PermissionRule.literal` escapes the name instead.
+    """
+    name = "exfil[all]"
+    glob_rule = PermissionPolicy(rules=[PermissionRule(action=Decision.ALLOW, pattern=name)])
+    assert glob_rule.decide(name) is Decision.DENY  # the DENY default still holds
+
+    literal_rule = PermissionPolicy(rules=[PermissionRule.literal(Decision.ALLOW, name)])
+    assert literal_rule.decide(name) is Decision.ALLOW
+    assert literal_rule.decide("exfila") is Decision.DENY  # and nothing the class covers
+
+
+def test_glob_matching_is_unchanged_by_the_literal_fallback():
+    """Regression: every existing glob semantic, at every tier."""
+    policy = _policy([{"action": "deny", "pattern": "rm*"}, {"action": "allow", "pattern": "*"}])
+    assert policy.decide("rmdir") is Decision.DENY  # prefix glob still spans
+    assert policy.decide("rm") is Decision.DENY
+    assert policy.decide("read_file") is Decision.ALLOW  # "*" still matches everything
+
+    # A glob still matches through every tier, and never only its own text.
+    for action in ("deny", "ask", "allow"):
+        tier = _policy([{"action": action, "pattern": "danger_?"}])
+        assert tier.decide("danger_1") is Decision(action)
+        assert tier.decide("danger_1x") is Decision.DENY  # unmatched -> default
+    # deny -> ask -> allow ordering, independent of rule order
+    ordered = _policy(
+        [
+            {"action": "allow", "pattern": "x_*"},
+            {"action": "ask", "pattern": "x_a*"},
+            {"action": "deny", "pattern": "x_ab*"},
+        ]
+    )
+    assert (ordered.decide("x_abc"), ordered.decide("x_ax"), ordered.decide("x_b")) == (
+        Decision.DENY,
+        Decision.ASK,
+        Decision.ALLOW,
+    )
+
+
 def test_ask_without_approval_fails_closed():
     reg = ToolRegistry()
     reg.register(ToolSpec(name="send", description="", fn=_echo))
