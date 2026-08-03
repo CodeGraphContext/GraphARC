@@ -49,6 +49,31 @@ BACKEND_VENDOR = {
     "mock": "mock",
 }
 
+#: What a *bare* backend name resolves to. A backend belongs here only when it
+#: can pick a model without being told: `claude-cli` has a documented default,
+#: and the `mock` double ignores the model segment entirely (`get_model` builds
+#: a `ScriptedChatModel` with no model argument at all). The remote catalogues
+#: are deliberately absent — `openrouter` alone fronts thousands of models and
+#: no default would be defensible, so a bare `openrouter` is an error rather
+#: than a guess about which model to bill you for.
+#:
+#: The `claude-cli` value is a second copy of `ClaudeCodeCLIChatModel.model`'s
+#: own default, kept here so this module does not import a backend just to
+#: split a string. `test_the_bare_claude_cli_default_matches_the_model_class`
+#: fails if the two ever drift, the same way CI already pins `__version__` to
+#: the packaged version.
+BARE_BACKEND_MODEL = {
+    "claude-cli": "claude-sonnet-5",
+    "mock": "mock",
+}
+
+#: A concrete spec to show someone who typed a bare backend that needs a model.
+_BARE_BACKEND_EXAMPLE = {
+    "openrouter": "openrouter/anthropic/claude-sonnet-4.5",
+    "openai": "openai/gpt-4o-mini",
+    "ollama": "ollama/llama3.1",
+}
+
 
 def split_spec(spec: str) -> tuple[str, str]:
     """Split `backend/model` — bare names get the default backend.
@@ -66,10 +91,30 @@ def split_spec(spec: str) -> tuple[str, str]:
     someone typing it means. Reaching the same model through the broker is
     still `openrouter/openai/gpt-4o-mini`, because only the first segment is
     ever read as a backend.
+
+    A **bare backend name** is read as a backend too, which it was not before:
+    the slash test above meant `claude-cli` fell through to the last line and
+    became the *model* `claude-cli`, so `--model claude-cli` shelled out to
+    `claude -p --model claude-cli` and was refused by the CLI on every call —
+    while `models --check` went on reporting the backend `usable`. `--model
+    mock` was worse than useless: it named the paid subscription backend and
+    spawned the real binary, so the double documented as "never reaches a
+    provider" reached for one. That is the same "silently folded into a model
+    name … fails much later with a confusing error" failure this function
+    already refuses for a mistyped backend *with* a slash; it just could not
+    see the case without one.
     """
     head, sep, rest = spec.partition("/")
     if sep and head in BACKENDS:
         return head, rest
+    if not sep and spec in BACKENDS:
+        if spec in BARE_BACKEND_MODEL:
+            return spec, BARE_BACKEND_MODEL[spec]
+        raise UnknownBackendError(
+            f"{spec!r} names a backend, not a model, and it has no default "
+            f"model to fall back on — write {spec}/<model>, for example "
+            f"{_BARE_BACKEND_EXAMPLE[spec]!r}"
+        )
     if sep and head not in KNOWN_AUTHORS:
         raise UnknownBackendError(
             f"unknown backend {head!r} in spec {spec!r}; expected one of: "
