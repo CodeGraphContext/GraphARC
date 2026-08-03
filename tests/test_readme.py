@@ -86,6 +86,78 @@ def test_the_python_block_reaches_no_live_backend():
         assert forbidden not in code, forbidden
 
 
+def test_the_quick_start_block_actually_runs_against_this_tree():
+    """The page's *first* code block, executed rather than admired.
+
+    It was previously LangGraph's API rather than GraphARC's — it opened with
+    `from grapharc.runtime import StateGraph`, a name this package has never
+    exported, so the very first line raised `ImportError`. The two calls after
+    it were wrong in their own right: `add_node` without `writes=` raises
+    `TypeError` (the argument is required, and per-node write permissions are
+    the project's headline claim), and `add_edge("START", ...)` raises
+    `ValueError` because `START` is a sentinel, not the string `"START"`.
+
+    Nothing caught it because nothing ran it. The admission-gate section has
+    been executed by this file since it was written; the Quick Start had the
+    same standing on the page and none of the same discipline, which is exactly
+    the drift this module's docstring describes. So: same treatment. The
+    trailing comment on the page states the printed result, and it is compared
+    against what the block really prints.
+    """
+    blocks = _blocks("Quick Start")
+    assert [lang for lang, _ in blocks] == ["python"], blocks
+    code = blocks[0][1]
+
+    # The expectation is written on the page as a trailing `# {...}` comment,
+    # so the snippet stays copy-pasteable instead of carrying a second block.
+    expected = [
+        line.lstrip("# ").strip() for line in code.splitlines() if line.startswith("# {")
+    ]
+    assert len(expected) == 1, "the Quick Start must state its printed result"
+
+    buffer = io.StringIO()
+    namespace: dict = {"__name__": "__readme__"}
+    with redirect_stdout(buffer):
+        exec(compile(code, f"{README}:quick-start", "exec"), namespace)
+
+    assert _normalise(buffer.getvalue()) == _normalise(expected[0])
+
+
+def test_the_quick_start_reaches_no_live_backend():
+    """The first snippet a visitor copies must not be able to spend money."""
+    code = _blocks("Quick Start")[0][1]
+
+    for forbidden in ("get_model(", "openrouter", "ClaudeCodeCLIChatModel", "claude-cli"):
+        assert forbidden not in code, forbidden
+
+
+def test_every_table_of_contents_link_resolves_to_a_real_heading():
+    """Two of the seven entries pointed at sections that do not exist.
+
+    `#usage` and `#documentation` were both dead — the refactor that added the
+    contents list invented them — and a dead anchor on GitHub silently does
+    nothing when clicked, so neither reading the page nor running the suite
+    surfaced it. Anchors are derived here the way GitHub derives them, and
+    every in-page link in the list has to land somewhere.
+    """
+    text = README.read_text(encoding="utf-8")
+    contents = _section("Table of Contents")
+
+    anchors = set()
+    for line in text.splitlines():
+        if not line.startswith("#"):
+            continue
+        title = line.lstrip("#").strip()
+        slug = re.sub(r"[^a-z0-9\s-]", "", title.lower())
+        anchors.add(re.sub(r"\s+", "-", slug.strip()))
+
+    linked = re.findall(r"\]\(#([a-z0-9-]+)\)", contents)
+    assert linked, "the contents list has no in-page links at all"
+
+    dead = sorted(set(linked) - anchors)
+    assert not dead, f"table of contents links to non-existent sections: {dead}"
+
+
 def _embedded_images() -> list[str]:
     """Every local image the README embeds, read off the README itself.
 
