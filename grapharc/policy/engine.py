@@ -22,6 +22,12 @@ same answer across a tool × tenant matrix.
 That compiled object is also the one unrecorded path, deliberately: a `Harness`
 holding it decides without consulting the engine, and so writes no audit
 record. Pair it with `approval_router()`, which comes back through here.
+
+`node_policy()` and `edge_policy()` do the same job for the *planner* plane,
+compiling this document's `node` and `edge` rules into the two objects
+`grapharc.planner.admission.AdmissionChecker` consults. Both halves are
+compiled: a document's node rules used to reach nothing, so a `deny` rule over
+a node kind was text rather than a rule (issue #66).
 """
 
 from __future__ import annotations
@@ -206,6 +212,41 @@ class PolicyEngine:
             if rule.matches_tenant(tenant)
         ]
         return PermissionPolicy(rules=rules, default=self._document.default)
+
+    def node_policy(self, *, tenant: str = DEFAULT_TENANT) -> Any:
+        """Compile this document's `node` rules for `tenant` into a `NodePolicy`.
+
+        The other half of what `edge_policy()` started. A document's `node`
+        rules used to reach nothing at all: `AdmissionChecker` gated kinds on
+        registry membership alone, so `no-shell-nodes` in a policy file was
+        text, not a rule (issue #66). This is the object the checker consults,
+        and it answers exactly as `check_node` does for the same tenant — a test
+        pins the two together across a kind × tenant matrix.
+
+        Same two losses as the other compiled objects: no approver role and no
+        audit record, because `NodePolicy.decide` returns a bare `Decision`.
+        Admission treats `ASK` as not-yet-permitted.
+
+        **A document with no `node` rules compiles to a policy that denies every
+        kind**, because an unmatched subject gets the document default and that
+        default is usually `deny` — the same answer `check_node` gives. That is
+        faithful rather than convenient, which is why the CLI applies this only
+        to a document that declares at least one `node` rule: saying nothing
+        about nodes is not the same statement as denying all of them, and a
+        caller compiling this by hand should decide which it meant.
+        """
+        from grapharc.planner.admission import NodePolicy, NodeRule
+
+        if not self._document.declares_tenant(tenant):
+            # `check_node` denies an undeclared tenant outright; the compiled
+            # policy has to agree, or the two answers diverge.
+            return NodePolicy(rules=(), default=Decision.DENY)
+        rules = [
+            NodeRule(action=rule.effect, match=rule.match, reason=rule.reason)
+            for rule in self._by_resource[ResourceKind.NODE]
+            if rule.matches_tenant(tenant)
+        ]
+        return NodePolicy(rules=tuple(rules), default=self._document.default)
 
     def edge_policy(self, *, tenant: str = DEFAULT_TENANT) -> Any:
         """Compile this document's `edge` rules for `tenant` into an `EdgePolicy`.

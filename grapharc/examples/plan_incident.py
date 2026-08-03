@@ -146,6 +146,7 @@ def build_loop(
     model: Any,
     *,
     edge_policy: EdgePolicy | None = None,
+    node_policy: Any = None,
     trace: TraceRecorder | None = None,
     budget: Budget | None = None,
     limits: LoopLimits | None = None,
@@ -178,6 +179,10 @@ def build_loop(
         checker=AdmissionChecker(
             registry=registry,
             edge_policy=edge_policy or default_edge_policy(),
+            # There is no default node policy: this demo's registry *is* its
+            # node allowlist. One arrives only when a policy document declares
+            # node rules, and then it gates every kind the planner proposes.
+            node_policy=node_policy,
             trace=trace,
             # This loop materializes each admitted round as a standalone
             # graph, so structural runnability is admission's business:

@@ -382,6 +382,7 @@ def build_loop(
     model: Any,
     *,
     edge_policy: Any = None,
+    node_policy: Any = None,
     trace: Any = None,
     budget: Any = None,
     limits: Any = None,
@@ -413,6 +414,9 @@ def build_loop(
         checker=AdmissionChecker(
             registry=registry,
             edge_policy=edge_policy or default_edge_policy(),
+            # None unless a policy document declared node rules; the registry is
+            # otherwise the only thing deciding which kinds may run.
+            node_policy=node_policy,
             trace=trace,
             # Rounds are materialized standalone, so "can this actually run"
             # is part of admission here: a plan with no entry, or with nodes

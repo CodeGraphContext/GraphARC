@@ -322,6 +322,38 @@ def test_the_compiled_edge_policy_answers_as_the_engine_does(tenant, workdir):
         ).effect, f"{source}->{target} for tenant {tenant!r}"
 
 
+NODE_MATRIX = ["shell_exec", "shell_", "summarise", "deploy", "unheard_of"]
+
+
+@pytest.mark.parametrize("tenant", ["default", "acme", "stranger"])
+def test_the_shipped_node_compiler_answers_as_the_engine_does(tenant, workdir):
+    """The section's node recipe uses `node_policy()`; it must not diverge."""
+    engine = PolicyEngine.from_file("policy.toml")
+    compiled = engine.node_policy(tenant=tenant)
+    for kind in NODE_MATRIX:
+        assert compiled.decide(kind) is engine.check_node(kind, tenant=tenant).effect, (
+            f"{kind!r} for tenant {tenant!r}"
+        )
+
+
+def test_the_documents_node_rule_is_what_refuses_the_kind(workdir):
+    """The claim the node recipe makes, pinned apart from its printed output."""
+    engine = PolicyEngine.from_file("policy.toml")
+    gate = AdmissionChecker(
+        registry=NodeRegistry([NodeSpec(name="shell_exec"), NodeSpec(name="summarise")]),
+        edge_policy=engine.edge_policy(),
+        node_policy=engine.node_policy(),
+    )
+
+    refused = gate.check(Subgraph(nodes=(ProposedNode(name="helper", kind="shell_exec"),)))
+    admitted = gate.check(Subgraph(nodes=(ProposedNode(name="summarise"),)))
+
+    assert [r.code for r in refused.rejections] == ["node_denied"]
+    # The rule's own reason travels into the rejection, not just its effect.
+    assert "a shell node is an unbounded tool" in refused.rejections[0].detail
+    assert admitted.admitted
+
+
 def test_an_undeclared_tenant_compiles_to_a_policy_that_denies_everything(workdir):
     namespace = _bridge_namespace(workdir)
     engine = PolicyEngine.from_file("policy.toml")

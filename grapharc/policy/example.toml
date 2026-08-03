@@ -51,6 +51,10 @@ reason = "acme's contract covers writes"
 
 
 # ---- nodes ------------------------------------------------------------------
+# A node match is an fnmatch over a registry *kind*, never over the instance
+# name a planner chose. These rules compile to the `NodePolicy` the admission
+# checker consults, so a denied kind is refused before it can be proposed into a
+# plan — renaming the instance does not change the answer.
 
 [[rule]]
 id = "no-shell-nodes"

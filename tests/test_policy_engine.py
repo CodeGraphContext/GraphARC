@@ -210,6 +210,30 @@ def test_shipped_example_document_loads_and_decides():
     assert engine.check_node("shell_worker", tenant="acme").denied
 
 
+def test_the_shipped_examples_node_rules_reach_the_admission_gate():
+    """`no-shell-nodes` is the document's canonical "what may run" rule.
+
+    It used to be inert — the compiler dropped every `node` rule (issue #66), so
+    an operator who copied the shipped example got a policy that denied nothing.
+    """
+    from grapharc.planner import AdmissionChecker, NodeRegistry, NodeSpec, Subgraph
+    from grapharc.planner.proposal import ProposedNode
+
+    engine = PolicyEngine.from_file(EXAMPLE_DOCUMENT)
+    gate = AdmissionChecker(
+        registry=NodeRegistry([NodeSpec(name="shell_exec"), NodeSpec(name="summarise")]),
+        edge_policy=engine.edge_policy(tenant="acme"),
+        node_policy=engine.node_policy(tenant="acme"),
+    )
+
+    refused = gate.check(Subgraph(nodes=(ProposedNode(name="helper", kind="shell_exec"),)))
+    admitted = gate.check(Subgraph(nodes=(ProposedNode(name="summarise"),)))
+
+    assert [r.code for r in refused.rejections] == ["node_denied"]
+    assert "a shell node is an unbounded tool" in refused.rejections[0].detail
+    assert admitted.admitted
+
+
 def test_a_loaded_document_cannot_be_edited_underneath_a_decision():
     """The digest describes the document; the document must not move after it."""
     doc = parse_document(POLICY_TOML)
@@ -863,6 +887,85 @@ def test_tool_rules_do_not_leak_into_the_edge_policy():
 
     assert policy.rules == ()
     assert policy.decide("a", "b") is Decision.DENY
+
+
+# --------------------------------------------------------------------------
+# Issue #66 — `node_policy()`. `check_node` was correct and had no runtime
+# caller: a document's `node` rules were compiled by nobody, so `no-shell-nodes`
+# in a policy file governed nothing and a plan proposing a denied kind ran it.
+# Same shape as the `edge_policy()` tests above: the compiled object has to
+# agree with the engine, and the document has to be what refuses the node.
+# --------------------------------------------------------------------------
+
+_NODE_MATRIX = ["shell_worker", "shell_", "summarise", "deploy_prod", "unheard_of"]
+
+
+@pytest.mark.parametrize("tenant", ["default", "acme", "globex", "not-a-customer"])
+def test_the_compiled_node_policy_agrees_with_the_engine(engine, tenant):
+    """Same tenant, same answer, for every kind in the matrix."""
+    policy = engine.node_policy(tenant=tenant)
+    for kind in _NODE_MATRIX:
+        assert policy.decide(kind) is engine.check_node(kind, tenant=tenant).effect, (
+            f"{kind!r} for {tenant!r}"
+        )
+
+
+def test_an_undeclared_tenant_compiles_to_a_node_policy_that_permits_nothing(engine):
+    policy = engine.node_policy(tenant="not-a-customer")
+
+    assert policy.rules == ()
+    assert policy.default is Decision.DENY
+    assert policy.decide("anything") is Decision.DENY
+
+
+def test_the_compiled_node_policy_carries_the_documents_reason(engine):
+    """The words an operator wrote have to survive the compile, or a refusal
+    can only say what happened and never why."""
+    rule = engine.node_policy().rule_for("shell_worker")
+
+    assert rule is not None
+    assert rule.action is Decision.DENY
+    assert engine.check_node("shell_worker").rule_id == "no-shell"
+
+
+def test_a_document_with_no_node_rules_compiles_to_its_own_default():
+    """Faithful to `check_node`, which is the whole point of the compile."""
+    engine = PolicyEngine.from_toml(
+        'version = "1"\ndefault = "deny"\n'
+        '[[rule]]\nid = "e"\nresource = "edge"\nmatch = "*->*"\neffect = "allow"\n'
+    )
+    policy = engine.node_policy()
+
+    assert policy.rules == ()
+    assert policy.decide("triage") is engine.check_node("triage").effect is Decision.DENY
+
+
+def test_the_document_stops_a_planner_running_a_denied_node_kind():
+    """End to end, and the exact shape of issue #66: the TOML file refuses it."""
+    from grapharc.planner import AdmissionChecker, NodeRegistry, NodeSpec, Subgraph
+    from grapharc.planner.proposal import ProposedNode
+
+    engine = PolicyEngine.from_toml(
+        'version = "1"\ndefault = "deny"\n'
+        '[[rule]]\nid = "no-deploy-node"\nresource = "node"\nmatch = "deploy"\n'
+        'effect = "deny"\nreason = "deploying from a plan is never permitted"\n'
+        '[[rule]]\nid = "others"\nresource = "node"\nmatch = "*"\neffect = "allow"\n'
+        '[[rule]]\nid = "edges"\nresource = "edge"\nmatch = "*->*"\neffect = "allow"\n'
+    )
+    gate = AdmissionChecker(
+        registry=NodeRegistry([NodeSpec(name="triage"), NodeSpec(name="deploy")]),
+        edge_policy=engine.edge_policy(),
+        node_policy=engine.node_policy(),
+    )
+
+    # Renamed instance, denied kind — the rule is about what a node *is*.
+    refused = gate.check(Subgraph(nodes=(ProposedNode(name="ship", kind="deploy"),)))
+    admitted = gate.check(Subgraph(nodes=(ProposedNode(name="triage"),)))
+
+    assert not refused.admitted
+    assert [r.code for r in refused.rejections] == ["node_denied"]
+    assert "deploying from a plan is never permitted" in refused.rejections[0].detail
+    assert admitted.admitted
 
 
 def test_the_document_stops_a_planner_wiring_a_denied_transition():

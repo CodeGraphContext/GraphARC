@@ -341,7 +341,10 @@ Everything here works and nothing calls it.
       to an unknown tenant a load error and a request naming one a recorded
       denial.
 - [x] **7.5 — The document reaches the gate.** `edge_policy(tenant=…)`
-      compiles `edge` rules into the `EdgePolicy` `AdmissionChecker` consults,
+      compiles `edge` rules into the `EdgePolicy` `AdmissionChecker` consults
+      and `node_policy(tenant=…)` compiles `node` rules into the `NodePolicy`
+      beside it — the node half reached nothing at all until issue #66, so a
+      `deny` rule over a kind was text and the kind still ran —
       and `grapharc plan --policy` is a shipped caller, so this package is no
       longer imported by nothing. What the compiled object still cannot carry is
       what `permission_policy()` cannot either: the approver role and the audit
