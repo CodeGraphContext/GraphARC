@@ -34,7 +34,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -44,6 +44,9 @@ from grapharc.observe.trace import TraceRecorder
 from grapharc.runtime.budget import Budget, BudgetExceeded, BudgetMeter
 from grapharc.runtime.graph import END, START, RunContext
 from grapharc.runtime.parsing import extract_json
+
+if TYPE_CHECKING:  # `admission` imports this module, so the dependency is one-way
+    from grapharc.planner.admission import EdgePolicy, NodePolicy
 
 # Node and kind names live in trace lines, Mermaid labels and fnmatch patterns.
 # The charset excludes `>` and whitespace so an "a -> b" edge rendering can
@@ -291,6 +294,16 @@ DEFAULT_PLANNER_SYSTEM_PROMPT = (
 
 _NO_CATALOG = "(no catalog supplied; the admission registry decides what is allowed)"
 
+#: Introduces the compiled policies' deny rules, when a planner was given the
+#: policies its proposals will be checked against. The catalog says which kinds
+#: exist; this says which of them may not be wired, which is the other half of
+#: the same question and the half a model cannot guess. The wording says who
+#: enforces it, because the disclosure must not read as the rule itself.
+_DENIED_HEADER = (
+    "Denied by policy. The admission checker refuses these; it is deterministic "
+    "code and this list is only telling you in advance:"
+)
+
 
 #: Exception *names* that mean "the backend was not reached", matched by name
 #: so this module needs no provider SDK imported to recognise them. Substrings
@@ -330,6 +343,26 @@ def _catalog_text(catalog: Mapping[str, str] | Sequence[str] | None) -> str:
     else:
         items = sorted((str(k), "") for k in catalog)
     return "\n".join(f"- {name}: {desc}" if desc else f"- {name}" for name, desc in items)
+
+
+def _denial_text(edge_policy: EdgePolicy | None, node_policy: NodePolicy | None) -> str:
+    """The policies' deny rules as a prompt section, or "" when there is nothing to say.
+
+    Duck-typed on `disclosure()` rather than on the concrete classes: this module
+    is imported *by* `admission`, so it cannot import the policy types back, and
+    an operator's own policy object with the same method is disclosed the same
+    way. A policy with no deny rules contributes nothing — an empty header would
+    read as "nothing is denied", which for a default-deny policy is a lie.
+    """
+    lines: list[str] = []
+    for policy in (edge_policy, node_policy):
+        disclose = getattr(policy, "disclosure", None)
+        if disclose is None:
+            continue
+        lines.extend(line for line in disclose() if line not in lines)
+    if not lines:
+        return ""
+    return "\n".join([_DENIED_HEADER, *(f"- {line}" for line in lines)])
 
 
 def _message_text(message: BaseMessage) -> str:
@@ -379,6 +412,13 @@ class PlannerNode:
         planner = PlannerNode(model, catalog=registry.catalog())
         g.add_node("planner", planner, writes=planner.writes)
 
+    Pass the gates too — `edge_policy=`, `node_policy=` — and their deny rules
+    are rendered into the system prompt beside the catalog, so the model learns
+    "no edge may enter `deploy`" before round one instead of inferring it from
+    three `edge_denied` refusals. That is **disclosure and nothing else**: this
+    class still cannot decide anything, the checker is unchanged, and a model
+    that proposes the denied edge regardless is refused exactly as before.
+
     **It cannot execute what it proposes**, and that is structural rather than
     promised: the only callables it holds are the chat model and the caller's
     own `prompt_fn` state reader. It is given no node registry, no harness and
@@ -400,6 +440,8 @@ class PlannerNode:
         *,
         name: str = "planner",
         catalog: Mapping[str, str] | Sequence[str] | None = None,
+        edge_policy: EdgePolicy | None = None,
+        node_policy: NodePolicy | None = None,
         system_prompt: str = DEFAULT_PLANNER_SYSTEM_PROMPT,
         instructions: str = "",
         task_field: str = "task",
@@ -412,6 +454,13 @@ class PlannerNode:
         self.model = model
         self.name = name
         self.catalog = catalog
+        # The gates this planner's proposals will be checked against, held only
+        # so their deny rules can be *disclosed* in the prompt. Nothing here
+        # consults them: `propose` never calls `decide`, and a proposal that
+        # walks straight into a denial is still produced and still refused by
+        # `AdmissionChecker`. Leave them None and the prompt is unchanged.
+        self.edge_policy = edge_policy
+        self.node_policy = node_policy
         self.system_prompt = system_prompt
         self.instructions = instructions
         self.task_field = task_field
@@ -528,6 +577,14 @@ class PlannerNode:
 
     def _messages(self, task: str, feedback: str) -> list[BaseMessage]:
         system = f"{self.system_prompt}\n\nAvailable node kinds:\n{_catalog_text(self.catalog)}"
+        # Immediately after the catalog, because the two are one statement: here
+        # is what exists, and here is what may not be wired. A model shown only
+        # the first reads a registered-but-denied kind as an invitation, proposes
+        # it, is refused with a check name it cannot generalise from, and does it
+        # again — three rounds of real inference to learn one sentence.
+        denied = _denial_text(self.edge_policy, self.node_policy)
+        if denied:
+            system = f"{system}\n\n{denied}"
         if self.instructions:
             system = f"{system}\n\n{self.instructions}"
         messages: list[BaseMessage] = [SystemMessage(content=system), HumanMessage(content=task)]
