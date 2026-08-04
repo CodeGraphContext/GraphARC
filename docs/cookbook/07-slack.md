@@ -114,10 +114,11 @@ Configuration is environment-only, read once at startup:
 | `GRAPHARC_SLACK_LIVE_INTERVAL` | `2.5` | seconds between two edits of the status message |
 | `GRAPHARC_SLACK_LIVE_URL` | unset | base URL of a `grapharc serve --live-root` the requester can reach; posts a "watch live" link |
 
-The bot reads tokens from the process environment only. The `.env`
-upward-directory search that the model gateway performs is deliberately not
-used here: a bot that a whole workspace can drive must not discover
-credentials in a file the operator did not point it at.
+The bot reads tokens from the process environment only. The model gateway's
+`.env` loader is deliberately not used here — even though it now reads the
+working directory alone rather than searching upward: a bot that a whole
+workspace can drive must not discover credentials in a file the operator did
+not point it at, and its working directory is somewhere other things write.
 
 ## Live progress
 

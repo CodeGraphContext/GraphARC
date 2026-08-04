@@ -53,6 +53,14 @@ usually leaks:
   safe (`policy/unresolved_endpoint_kind`); pass `known_nodes` as a
   `{name: kind}` mapping to say what those nodes are.
 
+**Disclosure is not enforcement.** `EdgePolicy.disclosure()` and
+`NodePolicy.disclosure()` render a policy's deny rules as sentences a planner
+can be *shown* before it proposes anything, which is what
+`grapharc.planner.proposal.PlannerNode` puts in its system prompt. Nothing in
+this module reads them back, no check consults them, and a model that ignores
+them — or never saw them — is refused by byte-identical code. Telling a planner
+the rule is a courtesy that saves rounds; the gate is what decides.
+
 What this module does *not* do. It does not build a runnable graph — admission
 authorises a shape, and turning one into work is `grapharc.planner.materialize`,
 which takes the `AdmissionResult` this returns and refuses to build anything
@@ -275,6 +283,12 @@ class EdgeRule(BaseModel):
     `source` and `target` are patterns over **registry kinds** — plus the
     literal `START`/`END` sentinels, which no node may be named. They are never
     matched against a planner's instance name.
+
+    `reason` is the operator's own words, carried from the policy document that
+    compiled to this rule, exactly as `NodeRule.reason` is. A refusal quotes it
+    so a planner reads *why* rather than only `edge_denied`, and
+    `EdgePolicy.disclosure()` puts it in front of the model before the first
+    round. A rule without one still refuses; nothing decides on this string.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -282,6 +296,7 @@ class EdgeRule(BaseModel):
     action: Decision
     source: str = "*"
     target: str = "*"
+    reason: str = ""
 
 
 class EdgePolicy(BaseModel):
@@ -305,8 +320,8 @@ class EdgePolicy(BaseModel):
     rules: tuple[EdgeRule, ...] = ()
     default: Decision = Decision.DENY
 
-    def decide(self, source_kind: str, target_kind: str) -> Decision:
-        """Decide one transition. Both arguments are kinds (or a sentinel)."""
+    def rule_for(self, source_kind: str, target_kind: str) -> EdgeRule | None:
+        """The rule that decides this transition, or None when the default applies."""
         for tier in (Decision.DENY, Decision.ASK, Decision.ALLOW):
             for rule in self.rules:
                 if (
@@ -314,8 +329,36 @@ class EdgePolicy(BaseModel):
                     and fnmatch(source_kind, rule.source)
                     and fnmatch(target_kind, rule.target)
                 ):
-                    return tier
-        return self.default
+                    return rule
+        return None
+
+    def decide(self, source_kind: str, target_kind: str) -> Decision:
+        """Decide one transition. Both arguments are kinds (or a sentinel)."""
+        rule = self.rule_for(source_kind, target_kind)
+        return self.default if rule is None else rule.action
+
+    def disclosure(self) -> tuple[str, ...]:
+        """The deny rules as sentences a planner can be shown before it proposes.
+
+        **Disclosure, not enforcement.** Nothing reads this back: `decide` is
+        the only thing that decides, and a planner handed these lines and
+        ignoring them is refused exactly as one that never saw them. It exists
+        because `edge_denied` on round three is a fact the model could have had
+        on round one — the observed failure was a run that proposed an edge into
+        a denied kind every round until the loop gave up, unable to infer "no
+        edge may enter this, ever" from a check name.
+
+        Deny rules only. An allow rule and the default say what is *permitted*,
+        which the catalog and the structural rules already cover, and listing
+        them would turn a short warning into a policy dump the model has to
+        read past. `ask` is left out for a different reason: its remedy is to
+        obtain approval, not to propose something else.
+        """
+        return _denial_lines(
+            (_edge_subject(rule.source, rule.target), rule.reason)
+            for rule in self.rules
+            if rule.action is Decision.DENY
+        )
 
 
 class NodeRule(BaseModel):
@@ -370,6 +413,19 @@ class NodePolicy(BaseModel):
         """Decide one node kind. The argument is a kind, never an instance name."""
         rule = self.rule_for(kind)
         return self.default if rule is None else rule.action
+
+    def disclosure(self) -> tuple[str, ...]:
+        """The deny rules as sentences a planner can be shown. See `EdgePolicy.disclosure`.
+
+        A denied kind is worth stating for the same reason a denied edge is: the
+        registry lists it as proposable — it is registered — and the document
+        then forbids it, so the catalog alone reads as an invitation.
+        """
+        return _denial_lines(
+            (_node_subject(rule.match), rule.reason)
+            for rule in self.rules
+            if rule.action is Decision.DENY
+        )
 
 
 class AdmissionLimits(BaseModel):
@@ -684,7 +740,8 @@ class AdmissionChecker:
                         self._unresolved_endpoints(subject, edge, source_kind, target_kind)
                     )
                     continue
-                decision = self.edge_policy.decide(source_kind, target_kind)
+                rule = self.edge_policy.rule_for(source_kind, target_kind)
+                decision = self.edge_policy.default if rule is None else rule.action
                 if decision is Decision.ALLOW:
                     continue
                 denied = decision is Decision.DENY
@@ -692,17 +749,23 @@ class AdmissionChecker:
                     f"{_describe(edge.source, source_kind)} -> "
                     f"{_describe(edge.target, target_kind)}"
                 )
+                # The operator's own words, when the rule carried any — the same
+                # courtesy `_check_node_policy` extends. A planner told only
+                # `edge_denied` has to guess how wide the denial is; told "deploys
+                # are the operator's decision" it can stop proposing one.
+                because = f": {rule.reason}" if rule is not None and rule.reason else ""
                 out.append(
                     Rejection(
                         check=Check.POLICY,
                         code="edge_denied" if denied else "edge_needs_approval",
                         subject=subject,
                         detail=(
-                            f"the edge policy denies this transition: {transition}"
+                            f"the edge policy denies this transition: "
+                            f"{transition}{because}"
                             if denied
                             else (
                                 "the edge policy requires approval for this "
-                                f"transition: {transition}"
+                                f"transition: {transition}{because}"
                             )
                         ),
                         remedy=(
@@ -969,6 +1032,46 @@ def _reachable_from_start(sub: Subgraph) -> set[str]:
 
 def _scoped(path: str, subject: str) -> str:
     return f"{path}/{subject}" if path else subject
+
+
+def _pattern_text(pattern: str) -> str:
+    """A rule's pattern as prose: a bare kind is quoted, a glob is described as one."""
+    return (
+        f"kinds matching {pattern!r}"
+        if any(char in pattern for char in "*?[")
+        else repr(pattern)
+    )
+
+
+def _edge_subject(source: str, target: str) -> str:
+    """What one edge deny rule is about, in the plural so a line reads as a warning."""
+    if source == "*" and target == "*":
+        return "all edges"
+    if source == "*":
+        return f"edges into {_pattern_text(target)}"
+    if target == "*":
+        return f"edges out of {_pattern_text(source)}"
+    return f"edges from {_pattern_text(source)} to {_pattern_text(target)}"
+
+
+def _node_subject(match: str) -> str:
+    return "all node kinds" if match == "*" else f"nodes of kind {_pattern_text(match)}"
+
+
+def _denial_lines(subjects: Iterable[tuple[str, str]]) -> tuple[str, ...]:
+    """`(subject, reason)` pairs -> one line each, in rule order, without repeats.
+
+    Two rules can render the same sentence — a document scoped per tenant is the
+    ordinary way — and saying it twice would only cost the reader attention.
+    """
+    lines: list[str] = []
+    for subject, reason in subjects:
+        line = f"{subject} are denied by policy — do not propose them"
+        if reason.strip():
+            line = f"{line}: {reason.strip()}"
+        if line not in lines:
+            lines.append(line)
+    return tuple(lines)
 
 
 def _describe(endpoint: str, kind: str) -> str:

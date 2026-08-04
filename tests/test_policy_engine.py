@@ -877,6 +877,18 @@ def test_each_side_of_an_edge_rule_is_matched_separately():
     assert policy.decide("other", "triage") is Decision.ALLOW
 
 
+def test_the_compiled_edge_policy_carries_the_documents_reason(engine):
+    """Issue #45: the words an operator wrote are what a refusal quotes and what
+    the planner is told up front. Dropped at compile time, both could only say
+    `edge_denied`."""
+    rule = engine.edge_policy().rule_for("plan", "deploy_prod")
+
+    assert rule is not None
+    assert rule.action is Decision.DENY
+    assert rule.reason == "the production deploy node is entered by an operator"
+    assert rule.reason in engine.edge_policy().disclosure()[0]
+
+
 def test_tool_rules_do_not_leak_into_the_edge_policy():
     """Widening what an agent may call must not widen what a planner may wire."""
     engine = PolicyEngine.from_toml(

@@ -1133,6 +1133,195 @@ def test_the_catalog_is_put_in_front_of_the_model():
     assert "summarise: summarise description" in system
 
 
+# -- issue #45: the policy is disclosed to the planner, and only disclosed -----
+#
+# The catalog said which kinds exist and nothing said which transitions were
+# denied, so a model proposed an edge into a denied kind every round until the
+# loop gave up: `edge_denied` names the check, not the rule, and "no edge may
+# enter deploy, ever" is not inferable from it. These tests pin both halves —
+# the disclosure is in the prompt, and it is *only* a disclosure.
+
+
+def _system_prompt(planner: PlannerNode, model: ScriptedChatModel, task: str = "go") -> str:
+    planner.propose(task)
+    return str(model.calls[0][0].content)
+
+
+def test_the_edge_policys_denials_are_put_in_front_of_the_model():
+    reg = registry("build", "deploy")
+    model = ScriptedChatModel(responses=[json.dumps(RENAMED_PLAN_JSON)])
+
+    system = _system_prompt(
+        PlannerNode(model, catalog=reg.catalog(), edge_policy=DENY_DEPLOY), model, "ship it"
+    )
+
+    assert "edges into 'deploy' are denied by policy — do not propose them" in system
+    # And the catalog still lists the kind: it is registered, an operator did
+    # allow it to be proposed, and it is the *edge* that is refused.
+    assert "deploy: deploy description" in system
+
+
+def test_a_disclosed_denial_carries_the_operators_own_words():
+    policy = EdgePolicy(
+        rules=(
+            EdgeRule(
+                action="deny", target="deploy", reason="a deploy is the operator's decision"
+            ),
+            EdgeRule(action="allow"),
+        )
+    )
+    model = ScriptedChatModel(responses=[json.dumps(RENAMED_PLAN_JSON)])
+
+    system = _system_prompt(
+        PlannerNode(model, catalog=registry("build", "deploy").catalog(), edge_policy=policy),
+        model,
+        "ship it",
+    )
+
+    assert (
+        "edges into 'deploy' are denied by policy — do not propose them: "
+        "a deploy is the operator's decision" in system
+    )
+
+
+def test_denied_node_kinds_are_disclosed_beside_the_denied_edges():
+    node_policy = NodePolicy(
+        rules=(
+            NodeRule(action="deny", match="deploy", reason="not from a plan"),
+            NodeRule(action="allow"),
+        )
+    )
+    model = ScriptedChatModel(responses=[json.dumps(RENAMED_PLAN_JSON)])
+
+    system = _system_prompt(
+        PlannerNode(
+            model,
+            catalog=registry("build", "deploy").catalog(),
+            edge_policy=DENY_DEPLOY,
+            node_policy=node_policy,
+        ),
+        model,
+        "ship it",
+    )
+
+    assert (
+        "nodes of kind 'deploy' are denied by policy — do not propose them: not from a plan"
+        in system
+    )
+    assert "edges into 'deploy' are denied by policy" in system
+
+
+def test_a_policy_that_denies_nothing_adds_nothing_to_the_prompt():
+    """Allow rules and the default are the catalog's business, not a warning's."""
+    reg = registry("fetch", "summarise")
+    told = ScriptedChatModel(responses=[json.dumps(PLAN_JSON)])
+    untold = ScriptedChatModel(responses=[json.dumps(PLAN_JSON)])
+
+    with_policy = _system_prompt(
+        PlannerNode(told, catalog=reg.catalog(), edge_policy=ALLOW_ALL), told
+    )
+    without = _system_prompt(PlannerNode(untold, catalog=reg.catalog()), untold)
+
+    assert "denied by policy" not in with_policy
+    assert with_policy == without  # the unpolicied prompt is byte-identical to before
+
+
+def test_disclosure_does_not_move_the_enforcement_into_the_prompt():
+    """A planner told about the denial and proposing it anyway is refused identically.
+
+    The constraint the fix is subject to: enforcement stays in the checker. Two
+    planners, one shown the deny rule and one not, produce the same proposal
+    here — and the gate has to return the same rejections for both, down to the
+    text, or the disclosure has started deciding something.
+    """
+    reg = registry("build", "deploy")
+    reply = json.dumps(RENAMED_PLAN_JSON)
+    told = PlannerNode(
+        ScriptedChatModel(responses=[reply]), catalog=reg.catalog(), edge_policy=DENY_DEPLOY
+    )
+    untold = PlannerNode(ScriptedChatModel(responses=[reply]), catalog=reg.catalog())
+    gate = checker(reg, edge_policy=DENY_DEPLOY)
+
+    disclosed = gate.check(told.propose("ship it").proposal)
+    blind = gate.check(untold.propose("ship it").proposal)
+
+    assert not disclosed.admitted
+    assert disclosed.failed_checks() == (Check.POLICY,)
+    assert [r.model_dump() for r in disclosed.rejections] == [
+        r.model_dump() for r in blind.rejections
+    ]
+    assert reg.get("deploy").factory is _explode  # it was there to be called
+
+
+def test_a_denied_edge_is_refused_with_the_rules_reason_not_only_its_code():
+    """`edge_denied` is what happened; the reason is why, and the planner needs both."""
+    policy = EdgePolicy(
+        rules=(
+            EdgeRule(action="deny", target="deploy", reason="Deploy changes are dangerous"),
+            EdgeRule(action="allow"),
+        )
+    )
+
+    result = checker(registry("build", "deploy"), edge_policy=policy).check(
+        linear("build", "deploy")
+    )
+
+    reason = result.reasons(Check.POLICY)[0]
+    assert reason.code == "edge_denied"
+    assert "Deploy changes are dangerous" in reason.detail
+    assert "Deploy changes are dangerous" in result.feedback()
+
+
+def test_a_rule_without_a_reason_still_refuses_and_says_only_what_it_knows():
+    result = checker(registry("build", "deploy"), edge_policy=DENY_DEPLOY).check(
+        linear("build", "deploy")
+    )
+
+    reason = result.reasons(Check.POLICY)[0]
+    assert reason.code == "edge_denied"
+    assert reason.detail.endswith("kind 'deploy' (proposed as 'deploy')")
+
+
+def test_a_disclosure_describes_the_rule_it_was_compiled_from():
+    """Every shape of deny rule renders as something a model can act on."""
+    policy = EdgePolicy(
+        rules=(
+            EdgeRule(action="deny", target="deploy"),
+            EdgeRule(action="deny", source="deploy"),
+            EdgeRule(action="deny", source="triage", target="verify"),
+            EdgeRule(action="deny", target="risky_*"),
+            EdgeRule(action="ask", target="patch"),
+            EdgeRule(action="allow"),
+        )
+    )
+
+    assert policy.disclosure() == (
+        "edges into 'deploy' are denied by policy — do not propose them",
+        "edges out of 'deploy' are denied by policy — do not propose them",
+        "edges from 'triage' to 'verify' are denied by policy — do not propose them",
+        "edges into kinds matching 'risky_*' are denied by policy — do not propose them",
+    )
+    # An `ask` is not a "do not propose": its remedy is an approval, not another
+    # proposal. And a policy with nothing denied has nothing to disclose.
+    assert ALLOW_ALL.disclosure() == ()
+    assert NodePolicy(rules=(NodeRule(action="deny", match="*"),)).disclosure() == (
+        "all node kinds are denied by policy — do not propose them",
+    )
+
+
+def test_a_repeated_denial_is_disclosed_once():
+    """Two rules, one sentence: a per-tenant document renders duplicates."""
+    policy = EdgePolicy(
+        rules=(
+            EdgeRule(action="deny", target="deploy"),
+            EdgeRule(action="deny", target="deploy"),
+            EdgeRule(action="allow"),
+        )
+    )
+
+    assert len(policy.disclosure()) == 1
+
+
 def test_a_rejection_can_be_fed_back_for_a_second_attempt():
     reg = registry("fetch", "summarise")
     bad = {

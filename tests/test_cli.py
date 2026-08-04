@@ -1582,6 +1582,119 @@ def test_run_honours_the_run_id_it_was_given(tmp_path, capsys):
     assert payload["nodes_executed"] == 3
 
 
+# -- a run id names one run ---------------------------------------------------
+
+
+def test_a_reused_run_id_is_refused_before_the_second_run_writes_anything(tmp_path, capsys):
+    """Two runs under one id merge, and every reader then reports the blend as
+    one run: doubled tokens from `metrics`, a welded path from `viz`."""
+    trace = tmp_path / "t.jsonl"
+    first, _, _ = call(
+        ["plan", "goal one", "--trace", str(trace), "--run-id", "r1"], capsys
+    )
+    assert first == 0
+    before = TraceRecorder(trace).read_events("r1")
+
+    code, _, err = call(["plan", "goal two", "--trace", str(trace), "--run-id", "r1"], capsys)
+
+    assert code == 2
+    assert "r1" in err and str(trace) in err
+    assert "--run-id" in err, "the message has to say how to proceed"
+    after = TraceRecorder(trace).read_events("r1")
+    assert [e.model_dump() for e in after] == [e.model_dump() for e in before]
+
+
+def test_a_reused_run_id_fails_as_one_json_document(tmp_path, capsys):
+    trace = tmp_path / "t.jsonl"
+    call(["plan", "goal one", "--trace", str(trace), "--run-id", "r1"], capsys)
+
+    code, payload, err = call_json(
+        ["plan", "goal two", "--trace", str(trace), "--run-id", "r1"], capsys
+    )
+
+    assert code == 2
+    assert payload["ok"] is False
+    assert payload["command"] == "plan"
+    assert payload["run_id"] == "r1"
+    assert payload["trace"] == str(trace)
+    assert err == ""
+
+
+def test_run_refuses_a_reused_run_id_before_the_admission_event(tmp_path, capsys):
+    """`run` writes its verdict under the id, so `--check-only` collides too."""
+    graph = _write_graph(tmp_path, _LEGAL_GRAPH)
+    trace = tmp_path / "t.jsonl"
+    call(["run", str(graph), "--trace", str(trace), "--run-id", "chosen"], capsys)
+    before = len(TraceRecorder(trace).read_events("chosen"))
+
+    code, _, err = call(
+        ["run", str(graph), "--check-only", "--trace", str(trace), "--run-id", "chosen"], capsys
+    )
+
+    assert code == 2
+    assert "chosen" in err
+    assert len(TraceRecorder(trace).read_events("chosen")) == before
+
+
+def test_agent_refuses_a_reused_run_id(tmp_path, capsys):
+    """Checked before the model is built, so the refusal costs no backend call."""
+    trace = tmp_path / "t.jsonl"
+    TraceRecorder(trace).event(
+        run_id="a1", graph="cli-agent", node="agent", phase="start", step=1
+    )
+
+    code, _, err = call(
+        ["agent", "do the thing", "--workspace", str(tmp_path),
+         "--trace", str(trace), "--run-id", "a1"],
+        capsys,
+    )
+
+    assert code == 2
+    assert "a1" in err and "1 event" in err
+
+
+def test_different_run_ids_in_one_trace_stay_supported(tmp_path, capsys):
+    """`grapharc diff` reads two runs out of one file; that is the pattern the
+    guard must not touch. The file being appendable is correct — the id being
+    reused is the defect."""
+    trace = tmp_path / "t.jsonl"
+
+    assert call(["plan", "goal one", "--trace", str(trace), "--run-id", "r1"], capsys)[0] == 0
+    assert call(["plan", "goal two", "--trace", str(trace), "--run-id", "r2"], capsys)[0] == 0
+
+    assert TraceRecorder(trace).run_ids() == ["r1", "r2"]
+
+
+def test_a_generated_run_id_is_never_guarded(tmp_path, capsys):
+    """Fresh by construction, so it must not pay for a scan of the file either."""
+    trace = tmp_path / "t.jsonl"
+
+    assert call(["plan", "goal one", "--trace", str(trace)], capsys)[0] == 0
+    assert call(["plan", "goal two", "--trace", str(trace)], capsys)[0] == 0
+
+    assert len(TraceRecorder(trace).run_ids()) == 2
+
+
+def test_the_guard_counts_a_line_it_can_read_and_skips_the_rest(tmp_path):
+    """A torn line is the readers' business to report. The guard looks for one
+    id, so it skips what it cannot parse rather than raising over it — and it
+    reports nothing at all for a file that is not there."""
+    from grapharc.cli.runid import count_events
+
+    trace = tmp_path / "t.jsonl"
+    assert count_events(trace, "r1") == 0
+    assert count_events(tmp_path, "r1") == 0, "a directory is not a trace"
+
+    TraceRecorder(trace).event(run_id="r1", graph="g", node="n", phase="start", step=1)
+    with trace.open("a", encoding="utf-8") as handle:
+        handle.write("not json at all\n\n")
+    TraceRecorder(trace).event(run_id="r2", graph="g", node="n", phase="start", step=1)
+
+    assert count_events(trace, "r1") == 1
+    assert count_events(trace, "r2") == 1
+    assert count_events(trace, "r3") == 0
+
+
 def test_check_only_refuses_a_topology_that_passes_the_gate_but_cannot_be_built(
     tmp_path, capsys
 ):

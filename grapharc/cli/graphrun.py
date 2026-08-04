@@ -44,6 +44,7 @@ from grapharc.cli.config import load as load_settings
 from grapharc.cli.generate import resolve_or_generate_policy
 from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit, fail
 from grapharc.cli.plan import PlanSetupError, resolve_registry
+from grapharc.cli.runid import refuse_reused_run_id
 
 #: Stage names `demo` owns. Kept so `grapharc run stage0` — which worked before
 #: the split — fails with a redirection rather than an argparse complaint about
@@ -162,6 +163,14 @@ def run_graph(
 
     schema = state_schema or IncidentState
     trace_path = trace_path or Path(tempfile.mkdtemp(prefix="grapharc-run-")) / "trace.jsonl"
+    # Ahead of the recorder, and ahead of the admission check that writes the
+    # first event: an id already in this file would merge this run with an
+    # earlier one, and `--check-only` writes its verdict under that id too.
+    reused = refuse_reused_run_id(
+        trace_path, run_id, command="run", as_json=as_json, graph=graph_path
+    )
+    if reused is not None:
+        return reused
     trace = TraceRecorder(trace_path)
     checker = AdmissionChecker(
         registry=registry,

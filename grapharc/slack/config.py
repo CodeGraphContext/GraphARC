@@ -1,11 +1,12 @@
 """What the bot needs from its environment, read once at startup.
 
 Tokens come from process environment variables only. The gateway's `.env`
-loader is deliberately not used here: it searches parent directories upward
-(the subject of issue #20), and a bot that anyone in a Slack workspace can
-drive must not pick up credentials from a file the operator did not point it
-at. `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are exported in the shell that
-starts the bot, and nowhere else.
+loader is deliberately not used here even now that it reads one directory
+rather than walking upward (issue #20): a bot that anyone in a Slack workspace
+can drive must not pick up credentials from a file the operator did not point
+it at, and the bot's working directory is somewhere other things write.
+`SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are exported in the shell that starts
+the bot, and nowhere else.
 """
 
 from __future__ import annotations

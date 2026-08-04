@@ -233,13 +233,22 @@ def build_loop(
     goal_reached=None,
     on_exhausted: str = "raise",
     checker: AdmissionChecker | None = None,
+    disclose: bool = False,
     **loop_kwargs,
 ):
     """A whole cycle wired the way an operator would wire it."""
     bodies = bodies if bodies is not None else Bodies()
     reg = reg if reg is not None else registry(bodies)
     model = ScriptedChatModel(responses=responses, on_exhausted=on_exhausted)
-    planner = PlannerNode(model, catalog=reg.catalog(), trace=trace)
+    planner = PlannerNode(
+        model,
+        catalog=reg.catalog(),
+        # Off unless a test asks, so every prompt assertion above stays about
+        # what it was written about. The shipped builders pass the policy here;
+        # `disclose=True` is that wiring, and it changes the prompt only.
+        edge_policy=policy if disclose else None,
+        trace=trace,
+    )
     loop = GovernedLoop(
         planner=planner,
         checker=checker if checker is not None else gate(reg, policy=policy, trace=trace),
@@ -1571,3 +1580,54 @@ def test_a_merely_bad_reply_still_gets_its_retries():
     result = loop.run("goal")
     assert result.stop is LoopStop.PLANNING_FAILED
     assert len(result.rounds) == 3  # the full allowance, as before
+
+
+# -- issue #45: the loop's planner is told the policy before round 1 ----------
+
+
+def test_the_shipped_loop_discloses_its_edge_policy_to_the_planner():
+    """The observed failure, wired exactly as `grapharc plan` wires it.
+
+    A real model burned three rounds proposing an edge into `deploy` — denied
+    by the policy every time — because the prompt listed `deploy` in the catalog
+    and never said no edge may enter it. The deny rule now travels with the
+    catalog. The scripted planner still proposes the deploy (it is a fixed
+    script), and round 1 is still refused, which is the point: the disclosure is
+    a courtesy and the checker is the gate.
+    """
+    from grapharc.examples import plan_incident
+
+    model = ScriptedChatModel(responses=plan_incident.scripted_planner_replies())
+    result = plan_incident.build_loop(model).run(
+        "find the cause", plan_incident.IncidentState(goal="g")
+    )
+
+    system = str(model.calls[0][0].content)
+    assert "edges into 'deploy' are denied by policy — do not propose them" in system
+    assert "deploy: push to production" in system  # the catalog is unchanged
+
+    # Enforcement is where it was: round 1 proposed the denied edge anyway and
+    # was refused by the checker, round 2 replanned without it and ran.
+    assert [r.code for r in result.rejections()] == ["edge_denied"]
+    assert result.stop is LoopStop.GOAL_MET
+
+
+def test_the_disclosure_is_not_what_refuses_the_edge():
+    """Strip the disclosure and the verdict is byte-identical.
+
+    The planner is handed the same policy object the checker holds, so the only
+    thing that could differ between these two runs is the prompt. If the
+    rejections ever diverge, enforcement has leaked into prompt text.
+    """
+    denied = [plan(("ship", "deploy"))] * 3
+    told, model_told, _ = build_loop(denied, policy=DENY_DEPLOY, disclose=True)
+    untold, model_untold, _ = build_loop(denied, policy=DENY_DEPLOY)
+
+    with_disclosure = told.run("goal")
+    without = untold.run("goal")
+
+    assert "denied by policy" in str(model_told.calls[0][0].content)
+    assert "denied by policy" not in str(model_untold.calls[0][0].content)
+    assert [r.model_dump() for r in with_disclosure.rejections()] == [
+        r.model_dump() for r in without.rejections()
+    ]

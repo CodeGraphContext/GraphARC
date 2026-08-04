@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import functools
 import inspect
 import threading
 import time
@@ -44,7 +45,8 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from typing import Any, Literal
+from enum import Enum
+from typing import Any, Literal, get_args, get_origin, get_type_hints
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
@@ -287,6 +289,41 @@ def _short_repr(value: Any, limit: int = 120) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+def _declared_return_values(router: Callable[..., Any]) -> tuple[Any, ...] | None:
+    """The values a router *declares* it returns, or None when it declares none.
+
+    Two annotations say something a mapping can be held against: a `Literal` of
+    the event names, and an `Enum` whose members are them. `str`, no annotation
+    at all, a forward reference that will not resolve, a callable object with no
+    annotations to read — none of those is an opinion about the mapping, so they
+    are skipped rather than guessed at. A check that invented a requirement
+    would be worse than the gap it closed.
+    """
+    try:
+        annotation = get_type_hints(router).get("return")
+    except Exception:  # noqa: BLE001 — an unresolvable annotation is simply no answer
+        return None
+    if get_origin(annotation) is Literal:
+        return get_args(annotation)
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return tuple(annotation)
+    return None
+
+
+def _in_mapping(key: Any, mapping: dict[str, str]) -> bool:
+    """Whether `mapping[key]` would resolve — the lookup LangGraph itself does.
+
+    Hashability is the question, not equality: an unhashable key raises on the
+    lookup rather than missing it, and `Enum` hashes by member name while
+    `StrEnum` compares by value, so a member can equal a key it does not find.
+    Both are answered the way the branch machinery will answer them.
+    """
+    try:
+        return key in mapping
+    except TypeError:
+        return False
+
+
 def _first_error(field: str, exc: ValidationError) -> str:
     """Pydantic's first complaint, with the path inside the value it happened at."""
     first = exc.errors()[0]
@@ -368,12 +405,31 @@ class GraphARC:
         router: Callable[[Any], str],
         mapping: dict[str, str],
     ) -> GraphARC:
-        """Route on a validated event name returned by deterministic `router` code."""
+        """Route on a validated event name returned by deterministic `router` code.
+
+        The mapping is topology, and topology is checked where it is declared:
+        an empty mapping is refused, every target must name a node this graph
+        has (or `END`), and a router that says what it returns — a `Literal` or
+        an `Enum` return annotation — has those members held against the
+        mapping's keys. A router that declares nothing is left alone; guessing
+        what a function might return is not a check.
+
+        What cannot be settled here is the key an undeclared router actually
+        returns at run time. LangGraph resolves it with a plain `mapping[key]`
+        lookup inside its branch machinery, so a typo used to surface as a bare
+        `KeyError` several frames from the router that caused it. The router is
+        wrapped so it raises `GraphRoutingError` instead, naming the node, the
+        key and the keys there are — the same failure the kernel raises for
+        every other transition it cannot make.
+        """
         if self.dag:
             raise GraphCycleError(
                 f"graph {self.name!r} is dag=True: conditional edges are not allowed"
             )
-        self._graph.add_conditional_edges(source, router, mapping)
+        self._check_mapping(source, router, mapping)
+        self._graph.add_conditional_edges(
+            source, self._checked_router(source, router, mapping), mapping
+        )
         self._conditional_edges.extend(
             (source, target) for target in dict.fromkeys(mapping.values())
         )
@@ -476,6 +532,93 @@ class GraphARC:
     def _destinations(self) -> str:
         """The destinations this graph can actually route to, for an error message."""
         return ", ".join([*(repr(name) for name in sorted(self._nodes)), "END"])
+
+    def _check_mapping(
+        self, source: str, router: Callable[..., Any], mapping: dict[str, str]
+    ) -> None:
+        """Everything about a conditional edge that is knowable when it is added."""
+        who = f"the conditional edge on node {source!r}"
+        if not mapping:
+            raise GraphRoutingError(
+                f"{who} was given an empty mapping, so there is no key its router "
+                f"could return that leads anywhere; LangGraph would accept the edge "
+                f"and fail on the first branch taken. Valid destinations: "
+                f"{self._destinations()}"
+            )
+        unreachable = [
+            (key, target)
+            for key, target in mapping.items()
+            if not (target == END or target in self._nodes)
+        ]
+        if unreachable:
+            pairs = ", ".join(
+                f"{_short_repr(key)} -> {_short_repr(target)}" for key, target in unreachable
+            )
+            raise GraphRoutingError(
+                f"{who} maps to {'a destination' if len(unreachable) == 1 else 'destinations'} "
+                f"graph {self.name!r} does not have: {pairs}. LangGraph resolves a branch "
+                f"target when a run reaches it, so this would surface mid-run rather than "
+                f"here. Valid destinations: {self._destinations()}"
+            )
+        declared = _declared_return_values(router) or ()
+        unmapped = [value for value in declared if not _in_mapping(value, mapping)]
+        if unmapped:
+            raise GraphRoutingError(
+                f"{who} has a router declaring it returns "
+                f"{', '.join(_short_repr(value) for value in declared)}, but "
+                f"{', '.join(_short_repr(value) for value in unmapped)} "
+                f"{'is' if len(unmapped) == 1 else 'are'} not "
+                f"{'a key' if len(unmapped) == 1 else 'keys'} of its mapping; a return "
+                f"the mapping has no entry for is a branch the run cannot take. Keys: "
+                f"{', '.join(_short_repr(key) for key in mapping)}"
+            )
+
+    def _checked_router(
+        self, source: str, router: Callable[..., Any], mapping: dict[str, str]
+    ) -> Callable[..., Any]:
+        """Wrap `router` so an unmapped return is a GraphARC error, not a `KeyError`.
+
+        `functools.wraps` is not decoration here: LangGraph names the branch
+        after the callable's `__name__` and reads its annotations to infer the
+        branch's input schema, so an anonymous wrapper would quietly rename the
+        branch and drop that inference. The signature is `*args`/`**kwargs` for
+        the same reason — `wraps` makes `inspect.signature` report the router's
+        own parameters, and LangGraph passes `config` to a router that asks for
+        one.
+        """
+        who = f"the router on node {source!r}"
+
+        def check(result: Any) -> Any:
+            # LangGraph accepts one key or a sequence of them, and lets a `Send`
+            # through to its own dispatch untouched; every other element is
+            # resolved against the mapping, which is where the KeyError is.
+            for key in result if isinstance(result, (list, tuple)) else [result]:
+                if isinstance(key, Send):
+                    continue
+                if not _in_mapping(key, mapping):
+                    raise GraphRoutingError(
+                        f"{who} returned {_short_repr(key)}, which is not a key of the "
+                        f"mapping the edge was declared with; LangGraph looks a branch "
+                        f"key up in that mapping, so this would surface as a bare "
+                        f"KeyError from inside the branch machinery instead of naming "
+                        f"the router that produced it. Keys: "
+                        f"{', '.join(_short_repr(k) for k in mapping)}"
+                    )
+            return result
+
+        if inspect.iscoroutinefunction(router):
+
+            @functools.wraps(router)
+            async def routed(*args: Any, **kwargs: Any) -> Any:
+                return check(await router(*args, **kwargs))
+
+        else:
+
+            @functools.wraps(router)
+            def routed(*args: Any, **kwargs: Any) -> Any:
+                return check(router(*args, **kwargs))
+
+        return routed
 
     def _check_send_payload(self, who: str, send: Send) -> None:
         """Hold a `Send.arg` to the worker's declared `input_schema`.
@@ -710,7 +853,12 @@ class GraphARC:
             try:
                 result, delta = self._check_result(f"node {name!r}", writes, result)
             except (WritePermissionError, StateTypeError, GraphRoutingError) as err:
-                emit("error", duration_ms=duration_ms, error=str(err))
+                emit(
+                    "error",
+                    duration_ms=duration_ms,
+                    error=str(err),
+                    tokens=ctx.meter.tokens - tokens_before,
+                )
                 raise
 
         # Tokens are charged mid-node by the usage callback, so this is the
@@ -718,7 +866,16 @@ class GraphARC:
         try:
             ctx.meter.check_tokens()
         except BudgetExceeded as exc:
-            emit("error", duration_ms=duration_ms, error=f"budget: {exc.reason}")
+            # Stamped with what the node spent, exactly as `end` is. Without it
+            # the run stopped *for overspending* and then reported spending
+            # nothing, which is the audit trail losing the one number the stop
+            # was about.
+            emit(
+                "error",
+                duration_ms=duration_ms,
+                error=f"budget: {exc.reason}",
+                tokens=ctx.meter.tokens - tokens_before,
+            )
             raise
 
         # The provider's own price for every model call made inside this node,
@@ -765,8 +922,14 @@ class GraphARC:
                 except BaseException as exc:
                     # BaseException, not Exception: an async node is stopped by
                     # cancellation, which is not an Exception, and a stop with no
-                    # trace line is a stop nobody can audit afterwards.
-                    emit("error", duration_ms=(time.perf_counter() - t0) * 1000, error=repr(exc))
+                    # trace line is a stop nobody can audit afterwards. Carries
+                    # the node's spend for the same reason `end` does.
+                    emit(
+                        "error",
+                        duration_ms=(time.perf_counter() - t0) * 1000,
+                        error=repr(exc),
+                        tokens=ctx.meter.tokens - tokens_before,
+                    )
                     raise
                 return self._leave(
                     name,
@@ -800,7 +963,12 @@ class GraphARC:
                 # ^C, which is a KeyboardInterrupt and not an Exception, and a
                 # stop with no trace line is a stop nobody can audit afterwards.
                 # The exception is re-raised untouched; only the record is new.
-                emit("error", duration_ms=(time.perf_counter() - t0) * 1000, error=repr(exc))
+                emit(
+                    "error",
+                    duration_ms=(time.perf_counter() - t0) * 1000,
+                    error=repr(exc),
+                    tokens=ctx.meter.tokens - tokens_before,
+                )
                 raise
             return self._leave(
                 name,
