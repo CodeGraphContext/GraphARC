@@ -53,6 +53,56 @@ def test_process_env_beats_the_file(tmp_path, monkeypatch):
     assert config.openrouter_api_key(env_file=env) == "from-env"
 
 
+def test_a_parent_directory_dotenv_is_never_read(tmp_path, monkeypatch):
+    """The rule `grapharc.toml` follows, on the file that spends money.
+
+    The loader used to walk to `/`, so a run started three directories below a
+    `.env` — a scratch subdirectory under a client checkout, a `$HOME` one on a
+    shared box — silently billed against a key the operator never put in scope.
+    Nothing prints which file paid, so there was no way to notice. The start
+    directory is now the only directory consulted.
+    """
+    for name in config.OPENROUTER_KEYS:
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / ".env").write_text("OPENROUTER_API_KEY=sk-or-parent\n", encoding="utf-8")
+    deep = tmp_path / "deeply" / "nested" / "project"
+    deep.mkdir(parents=True)
+
+    assert config.find_env_file(deep) is None
+    monkeypatch.chdir(deep)
+    assert config.find_env_file() is None
+    assert config.openrouter_api_key() is None
+
+    # ... and the one directory that *is* consulted still is.
+    (deep / ".env").write_text("OPENROUTER_API_KEY=sk-or-here\n", encoding="utf-8")
+    assert config.find_env_file() == (deep / ".env").resolve()
+    assert config.openrouter_api_key() == "sk-or-here"
+
+
+def test_an_explicit_env_file_is_read_wherever_it_lives(tmp_path, monkeypatch):
+    """The escape hatch for a file outside the working directory: name it."""
+    for name in config.OPENROUTER_KEYS:
+        monkeypatch.delenv(name, raising=False)
+    elsewhere = tmp_path / "secrets"
+    elsewhere.mkdir()
+    (elsewhere / ".env").write_text("OPENROUTER_API_KEY=sk-or-named\n", encoding="utf-8")
+    run_from = tmp_path / "project"
+    run_from.mkdir()
+    monkeypatch.chdir(run_from)
+
+    assert config.openrouter_api_key(env_file=elsewhere / ".env") == "sk-or-named"
+
+
+def test_a_process_variable_beats_a_dotenv_in_the_working_directory(tmp_path, monkeypatch):
+    """Narrowing discovery did not reorder precedence: the environment wins."""
+    (tmp_path / ".env").write_text("OPENROUTER_API_KEY=sk-or-from-file\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-from-env")
+
+    assert config.find_env_file() == (tmp_path / ".env").resolve()
+    assert config.openrouter_api_key() == "sk-or-from-env"
+
+
 def test_missing_key_returns_none_not_a_crash(tmp_path, monkeypatch):
     for name in config.OPENROUTER_KEYS:
         monkeypatch.delenv(name, raising=False)
@@ -72,7 +122,7 @@ def test_redact_never_leaks_a_usable_key(secret):
 def test_constructing_without_a_key_explains_how_to_fix_it(tmp_path, monkeypatch):
     for name in config.OPENROUTER_KEYS:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.chdir(tmp_path)  # no .env anywhere up the tree
+    monkeypatch.chdir(tmp_path)  # an empty directory, so no .env to find
     with pytest.raises(OpenRouterError, match="OPENROUTER_API_KEY"):
         OpenRouterChatModel("openai/gpt-4o-mini")
 

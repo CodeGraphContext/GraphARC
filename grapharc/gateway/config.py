@@ -5,6 +5,18 @@ of each key because real projects are inconsistent about them — a key named
 `open-router-api-key` cannot be a shell variable at all, so the file has to be
 parsed rather than sourced.
 
+**The `.env` is read from one directory and no other** — the working directory,
+or whatever `start` names — which is the same rule `grapharc.toml` follows, and
+for a stronger reason. The config layer refuses an upward search because a run
+must never be silently governed by a policy file in a directory the operator did
+not know about; this file *spends money*, so a key discovered three directories
+up is the worse version of that failure. It used to walk to `/`, which meant a
+`.env` in `$HOME` billed every experiment on the box to that key, and `redact`
+being the only thing that ever prints a key meant nothing revealed which file
+paid. The escape hatches are explicit and unchanged: a real environment variable
+still wins over any file, and a caller can still name a file anywhere with
+`env_file=`.
+
 Secrets are returned, never logged. Anything that renders a config for humans
 goes through `redact`.
 
@@ -92,13 +104,9 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 
 def find_env_file(start: Path | None = None) -> Path | None:
-    """Nearest `.env` walking up from `start` (default: cwd)."""
-    here = (start or Path.cwd()).resolve()
-    for directory in (here, *here.parents):
-        candidate = directory / ".env"
-        if candidate.is_file():
-            return candidate
-    return None
+    """The `.env` in `start` itself (default: cwd), or None. Parents are not read."""
+    candidate = (start or Path.cwd()).resolve() / ".env"
+    return candidate if candidate.is_file() else None
 
 
 def get_secret(names: tuple[str, ...], *, env_file: Path | None = None) -> str | None:

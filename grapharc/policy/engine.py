@@ -285,7 +285,16 @@ class PolicyEngine:
                 continue
             source, _, target = rule.match.partition(EDGE_ARROW)
             rules.append(
-                EdgeRule(action=rule.effect, source=source.strip(), target=target.strip())
+                EdgeRule(
+                    action=rule.effect,
+                    source=source.strip(),
+                    target=target.strip(),
+                    # Carried, as `node_policy()` carries it: the document's own
+                    # words are what a refusal quotes and what a planner is told
+                    # up front, and a rule that arrives without them leaves both
+                    # saying only `edge_denied`.
+                    reason=rule.reason,
+                )
             )
         return EdgePolicy(rules=tuple(rules), default=self._document.default)
 

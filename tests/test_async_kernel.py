@@ -169,6 +169,47 @@ async def test_a_budget_stops_an_async_stream_too():
 
 
 @pytest.mark.asyncio
+async def test_an_async_router_returning_an_unmapped_key_raises_a_grapharc_error():
+    """The declaration-time mapping check is shape-blind; this one is not.
+
+    An `async def` router has to be wrapped in an async wrapper or LangGraph
+    would await the check's return value instead of the router's.
+    """
+
+    async def step(state: S) -> dict:
+        await asyncio.sleep(0)
+        return {"a": state.a + 1}
+
+    async def route(state: S) -> str:
+        await asyncio.sleep(0)
+        return "dnoe"
+
+    g = GraphARC(S, name="loop")
+    g.add_node("step", step, writes={"a"})
+    g.add_edge(START, "step")
+    g.add_conditional_edge("step", route, {"again": "step", "done": END})
+    with pytest.raises(GraphRoutingError, match="'dnoe'"):
+        await g.compile().ainvoke({"a": 0})
+
+
+@pytest.mark.asyncio
+async def test_an_async_router_that_maps_still_routes():
+    async def step(state: S) -> dict:
+        await asyncio.sleep(0)
+        return {"a": state.a + 1}
+
+    async def route(state: S) -> str:
+        await asyncio.sleep(0)
+        return "done" if state.a >= 2 else "again"
+
+    g = GraphARC(S, name="loop")
+    g.add_node("step", step, writes={"a"})
+    g.add_edge(START, "step")
+    g.add_conditional_edge("step", route, {"again": "step", "done": END})
+    assert (await g.compile().ainvoke({"a": 0}))["a"] == 2
+
+
+@pytest.mark.asyncio
 async def test_astream_yields_one_update_per_node():
     async def one(state: S) -> dict:
         await asyncio.sleep(0)
