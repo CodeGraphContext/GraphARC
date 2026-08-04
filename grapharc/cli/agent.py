@@ -22,6 +22,7 @@ from typing import Any
 
 from grapharc.cli import optional, style
 from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit, fail
+from grapharc.cli.runid import refuse_reused_run_id
 
 # Entry points accepted from `grapharc.tools`, in preference order: a registrar
 # that fills a registry, and a factory that returns specs. Both are supported
@@ -173,6 +174,11 @@ def run_agent(
     workspace = Path(workspace).expanduser().resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     trace_path = Path(trace_path) if trace_path else workspace / "trace.jsonl"
+    # While `run_id` still says whether the operator chose one: the generated
+    # id below is fresh by construction and has nothing to collide with.
+    reused = refuse_reused_run_id(trace_path, run_id, command="agent", as_json=as_json, task=task)
+    if reused is not None:
+        return reused
     run_id = run_id or f"agent-{uuid.uuid4().hex[:8]}"
 
     try:

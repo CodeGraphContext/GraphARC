@@ -1,7 +1,8 @@
 """Unit tests for the runtime discipline layer: write permissions, DAG mode, budgets, traces."""
 
 import operator
-from typing import Annotated
+from enum import StrEnum
+from typing import Annotated, Literal
 
 import pytest
 from pydantic import BaseModel, Field, ValidationError
@@ -12,6 +13,7 @@ from grapharc.runtime.graph import (
     START,
     GraphARC,
     GraphCycleError,
+    GraphRoutingError,
     MissingRunContextError,
     StateTypeError,
     WritePermissionError,
@@ -67,6 +69,127 @@ def test_dag_mode_rejects_conditional_edges():
     g.add_node("x", lambda s: None, writes=set())
     with pytest.raises(GraphCycleError, match="conditional"):
         g.add_conditional_edge("x", lambda s: "x", {"x": "x"})
+
+
+# -- conditional edges are checked where they are declared ---------------------
+
+
+def _spinner(name: str = "t") -> GraphARC:
+    g = GraphARC(S, name=name)
+    g.add_node("spin", lambda s: {"a": s.a + 1}, writes={"a"})
+    g.add_edge(START, "spin")
+    return g
+
+
+def test_a_mapping_target_nobody_added_raises_when_the_edge_is_added():
+    """The whole point: this used to be a KeyError three nodes into a run."""
+    g = _spinner()
+    with pytest.raises(GraphRoutingError) as exc:
+        g.add_conditional_edge("spin", lambda s: "go", {"go": "sipn"})
+    message = str(exc.value)
+    assert "'spin'" in message, "the error has to name the edge's source"
+    assert "'sipn'" in message, "and the target it cannot reach"
+    assert "'go' -> 'sipn'" in message
+
+
+def test_every_unreachable_target_is_named_at_once():
+    g = _spinner()
+    with pytest.raises(GraphRoutingError, match="destinations") as exc:
+        g.add_conditional_edge("spin", lambda s: "go", {"go": "nope", "stop": "also_nope"})
+    assert "'go' -> 'nope'" in str(exc.value)
+    assert "'stop' -> 'also_nope'" in str(exc.value)
+
+
+def test_an_empty_mapping_is_refused():
+    g = _spinner()
+    with pytest.raises(GraphRoutingError, match="empty mapping"):
+        g.add_conditional_edge("spin", lambda s: "go", {})
+
+
+def test_a_correct_mapping_is_unaffected():
+    g = _spinner()
+    g.add_conditional_edge(
+        "spin", lambda s: "stop" if s.a >= 3 else "again", {"again": "spin", "stop": END}
+    )
+    assert g.compile().invoke({"a": 0})["a"] == 3
+
+
+def test_a_router_declaring_a_literal_has_its_members_checked():
+    def route(s) -> Literal["again", "stop"]:
+        return "again"
+
+    g = _spinner()
+    with pytest.raises(GraphRoutingError, match="declaring it returns") as exc:
+        g.add_conditional_edge("spin", route, {"again": "spin"})
+    assert "'stop' is not a key" in str(exc.value)
+
+
+def test_a_router_declaring_an_enum_has_its_members_checked():
+    class Stop(StrEnum):
+        again = "again"
+        stop = "stop"
+
+    def route(s) -> Stop:
+        return Stop.again
+
+    g = _spinner()
+    with pytest.raises(GraphRoutingError, match="declaring it returns"):
+        g.add_conditional_edge("spin", route, {Stop.again: "spin"})
+
+    ok = _spinner()
+    ok.add_conditional_edge("spin", route, {Stop.again: "spin", Stop.stop: END})
+
+
+def test_a_router_declaring_a_literal_that_matches_is_accepted():
+    def route(s) -> Literal["again", "stop"]:
+        return "stop" if s.a >= 2 else "again"
+
+    g = _spinner()
+    g.add_conditional_edge("spin", route, {"again": "spin", "stop": END})
+    assert g.compile().invoke({"a": 0})["a"] == 2
+
+
+def test_a_router_that_declares_nothing_is_left_alone():
+    """A `str` return says nothing about the mapping; guessing is not checking."""
+
+    def route(s) -> str:
+        return "stop" if s.a >= 1 else "again"
+
+    g = _spinner()
+    g.add_conditional_edge("spin", route, {"again": "spin", "stop": END})
+    assert g.compile().invoke({"a": 0})["a"] == 1
+
+
+def test_an_unmapped_router_return_is_a_grapharc_error_not_a_keyerror():
+    """What cannot be settled at declaration time still must not be a bare KeyError."""
+    g = _spinner()
+    g.add_conditional_edge("spin", lambda s: "stpo", {"again": "spin", "stop": END})
+    with pytest.raises(GraphRoutingError) as exc:
+        g.compile().invoke({"a": 0})
+    message = str(exc.value)
+    assert "'stpo'" in message
+    assert "'spin'" in message, "the router that produced it has to be named"
+    assert "'again', 'stop'" in message, "and the keys there were"
+
+
+def test_an_unmapped_key_inside_a_returned_list_is_caught_too():
+    g = _spinner()
+    g.add_node("other", lambda s: {"b": 1}, writes={"b"})
+    g.add_edge("other", END)
+    g.add_conditional_edge("spin", lambda s: ["stop", "elsewhere"], {"stop": "other"})
+    with pytest.raises(GraphRoutingError, match="elsewhere"):
+        g.compile().invoke({"a": 0})
+
+
+def test_the_wrapped_router_keeps_the_name_langgraph_branches_by():
+    """`functools.wraps` is load-bearing: LangGraph names the branch after it."""
+
+    def pick_a_branch(s) -> str:
+        return "stop"
+
+    g = _spinner()
+    g.add_conditional_edge("spin", pick_a_branch, {"stop": END})
+    assert "pick_a_branch" in g._graph.branches["spin"]
 
 
 def test_budget_hard_ceiling_cannot_be_looped_past():

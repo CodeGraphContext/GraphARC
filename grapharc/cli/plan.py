@@ -39,6 +39,7 @@ from grapharc.cli.config import ConfigError, Settings
 from grapharc.cli.config import load as load_settings
 from grapharc.cli.generate import resolve_or_generate_policy
 from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit, fail
+from grapharc.cli.runid import refuse_reused_run_id
 
 DEFAULT_REGISTRY = "grapharc.examples.plan_incident:build_registry"
 
@@ -260,6 +261,15 @@ def plan(
     from grapharc.runtime.budget import Budget
 
     trace_path = trace_path or Path(tempfile.mkdtemp(prefix="grapharc-plan-")) / "trace.jsonl"
+
+    # Before the setup, because this one is about the file the setup would start
+    # writing into: a run id already in that file merges this plan with an
+    # earlier one under a single name.
+    reused = refuse_reused_run_id(
+        trace_path, run_id, command="plan", as_json=as_json, goal=goal
+    )
+    if reused is not None:
+        return reused
 
     # Everything that can be wrong about the setup is decided before a model is
     # asked anything, so a bad flag cannot half-execute a plan.

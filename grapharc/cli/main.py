@@ -703,7 +703,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--tenant", default=None, metavar="NAME", help="tenant to compile --policy for"
     )
     run.add_argument("--trace", type=Path, default=None, help="trace JSONL output path")
-    run.add_argument("--run-id", default=None, help="name this run")
+    run.add_argument(
+        "--run-id", default=None, help="name this run; refused if --trace already holds it"
+    )
     run.add_argument(
         "--max-tokens",
         type=int,
@@ -773,7 +775,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--tenant", default=None, metavar="NAME", help="tenant to compile --policy for"
     )
     plan.add_argument("--trace", type=Path, default=None, help="trace JSONL output path")
-    plan.add_argument("--run-id", default=None, help="name this run")
+    plan.add_argument(
+        "--run-id", default=None, help="name this run; refused if --trace already holds it"
+    )
     plan.add_argument(
         "--max-rounds", type=int, default=None,
         help="planning rounds the loop may take (default: 8)",
@@ -822,7 +826,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="directory the tools work in (default: a fresh temp dir)",
     )
     agent.add_argument("--trace", type=Path, default=None, help="default: <workspace>/trace.jsonl")
-    agent.add_argument("--run-id", default=None, help="name this run (default: agent-<random>)")
+    agent.add_argument(
+        "--run-id",
+        default=None,
+        help="name this run, refused if --trace already holds it (default: agent-<random>)",
+    )
     agent.add_argument(
         "--allow",
         action="append",
