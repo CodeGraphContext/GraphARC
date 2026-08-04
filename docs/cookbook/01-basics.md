@@ -741,11 +741,15 @@ No model output is ever consulted to pick an edge, so no amount of prose in a mo
 reply can steer the graph — a model that writes `ROUTE TO: all_verified` into a
 state field is writing a string, not choosing a branch.
 
-One gap to know: `add_conditional_edge` passes your router and mapping straight
-through to LangGraph, and GraphARC does **not** check that the router's return
-values are keys of the mapping. A typo shows up as a `KeyError` at run time, not
-when the edge is added. `StopReason` is a `StrEnum`, so using its members as your
-mapping keys is a cheap way to make that typo impossible.
+What `add_conditional_edge` checks, and when: the mapping is read at declaration
+time, so an empty one is refused, a target naming a node you never added raises
+there and then, and a router annotated `-> Literal["again", "stop"]` (or with an
+`Enum` return type) has those members held against your mapping's keys. A router
+that declares nothing is left alone — the key it returns is only knowable when it
+returns one — but that case is no longer a bare `KeyError` from inside LangGraph:
+it raises `GraphRoutingError` naming the node, the key and the keys you declared.
+`StopReason` is a `StrEnum`, so annotating your router with it moves that last
+check to declaration time too.
 
 ---
 
@@ -1523,5 +1527,7 @@ but repeated here because they are the ones that surprise people:
    node writes — only the field's annotation is enforced, which does include a
    nested model's own validators. Rebuild the model at your program's boundary, or
    keep the invariant one level down.
-2. `add_conditional_edge` does not verify that your router's return values are keys
-   of your mapping. A typo is a run-time `KeyError`.
+2. `add_conditional_edge` checks its mapping when the edge is added — the targets,
+   and a router that annotates what it returns. A router that annotates nothing is
+   not second-guessed, so the key it returns is checked when it returns one; that
+   is a `GraphRoutingError` naming the router, not a bare `KeyError`.

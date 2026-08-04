@@ -30,6 +30,7 @@ from pathlib import Path
 
 from grapharc.cli import style
 from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit, fail
+from grapharc.cli.runid import refuse_reused_run_id
 
 #: What a bare run may use, mirroring the harness default of "the core tools,
 #: shell included". An explicit `--allow` replaces this outright.
@@ -209,6 +210,11 @@ def run_delegated(
     workspace = Path(workspace).expanduser().resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     trace_path = Path(trace_path) if trace_path else workspace / "trace.jsonl"
+    # `--executor claude-cli` resolves its own trace path, so it owns the same
+    # guard `run_agent` applies to the sandboxed path.
+    reused = refuse_reused_run_id(trace_path, run_id, command="agent", as_json=as_json, task=task)
+    if reused is not None:
+        return reused
     run_id = run_id or f"agent-{uuid.uuid4().hex[:8]}"
 
     allowed = list(allow) if allow and allow != ["*"] else list(DEFAULT_DELEGATED_TOOLS)
