@@ -316,7 +316,8 @@ class Verdict(BaseModel):
 
 # The dummy key is only so this snippet runs offline; nothing below opens a
 # socket. Drop `api_key=` and the backend reads OPENROUTER_API_KEY from the
-# environment or the nearest .env.
+# environment, or from a .env in the directory you run from — parent
+# directories are never searched.
 model = get_model("openrouter/openai/gpt-4o-mini", api_key="sk-or-not-a-real-key")
 
 print(model._llm_type, "|", model.model_name)

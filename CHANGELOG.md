@@ -7,6 +7,10 @@ and "used to be true" — the two things a reader most needs kept apart.
 
 Entries are newest-last within a release, matching the order they were written.
 
+## Unreleased
+
+- the `.env` credential loader **walked up parent directories to `/`**, while the config layer next door refuses exactly that on principle — so the file that *spends money* was discovered more eagerly than the one that *constrains* a run. A run started in a scratch subdirectory picked up an `OPENROUTER_API_KEY` from any ancestor: a `.env` in `$HOME` billed every user's experiment on a shared box to that key, a demo checked out under a client project quietly used the client's key, and since `redact()` is the only thing that ever prints a key, nothing in normal operation said *which file paid*. The rationale `cli/config.py` wrote down for `grapharc.toml` — "a run must never be silently governed by a file in a directory you didn't know about" — applies with more force to the file that pays than to the file that restrains, so `find_env_file` now reads the start directory (default: the working directory) and no ancestor of it. **This is a behaviour change:** anyone relying on a parent-directory `.env` must move it into the directory they run from, `export` the variable, or pass `env_file=` naming the file. Neither escape hatch moved — a real environment variable still beats any file, and an explicit `env_file=` still reads a file anywhere on disk — and no "search boundary" was added in place of the walk, because stopping at a git root is still an upward search.
+
 ## 0.1.3
 
 - `grapharc plan` drives the governed loop; `PolicyEngine.edge_policy()` compiles the TOML document into the gate `AdmissionChecker` consults, and `grapharc plan --policy` is the caller; `grapharc demo --memory PATH` hands the shipped graphs the durable SQLite store.

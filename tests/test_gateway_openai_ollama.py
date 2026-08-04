@@ -31,7 +31,7 @@ OLLAMA_ENV = (*config.OLLAMA_KEYS, *config.OLLAMA_BASE_URL_KEYS)
 
 @pytest.fixture
 def no_credentials(monkeypatch, tmp_path):
-    """No key in the environment and no .env anywhere up the tree."""
+    """No key in the environment, and a working directory holding no .env."""
     for name in (*OPENAI_ENV, *OLLAMA_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
