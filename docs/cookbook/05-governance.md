@@ -901,6 +901,49 @@ The default planner system prompt already tells the model that renaming a
 refused node is a wasted turn (`DEFAULT_PLANNER_SYSTEM_PROMPT`). That is a
 courtesy to save a round trip. It is not the enforcement — the gate is.
 
+Hand the planner the gates as well and the same courtesy covers the policy.
+Every `deny` rule is rendered under the catalog, carrying the rule's own
+`reason` when the document wrote one:
+
+```python
+from grapharc.harness.permissions import Decision
+from grapharc.planner import EdgePolicy, EdgeRule, PlannerNode
+from grapharc.testing import ScriptedChatModel
+
+policy = EdgePolicy(
+    rules=(
+        EdgeRule(
+            action=Decision.DENY,
+            target="deploy",
+            reason="a deploy is the operator's decision",
+        ),
+        EdgeRule(action=Decision.ALLOW),
+    )
+)
+catalog = {"build": "compile the change", "deploy": "push to production"}
+model = ScriptedChatModel(responses=['{"nodes": [], "edges": []}'])
+
+PlannerNode(model, catalog=catalog, edge_policy=policy).propose("ship it")
+
+system = str(model.calls[0][0].content)
+print(system.split("Available node kinds:")[1].strip())
+```
+
+```
+- build: compile the change
+- deploy: push to production
+
+Denied by policy. The admission checker refuses these; it is deterministic code and this list is only telling you in advance:
+- edges into 'deploy' are denied by policy — do not propose them: a deploy is the operator's decision
+```
+
+Without those two lines a model reads a registered-but-denied kind as an
+invitation, proposes it, gets `edge_denied` back — a check name, which says
+nothing about how wide the denial is — and proposes it again. One real run
+spent all three of its rounds finding that out. The gate is untouched by the
+disclosure: `PlannerNode` still decides nothing, and a proposal that walks into
+a denial anyway is refused by exactly the code that refused it before.
+
 ### With a real model
 
 Swap the scripted model for a real one; nothing else changes.

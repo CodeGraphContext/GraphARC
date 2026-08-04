@@ -414,13 +414,25 @@ def build_loop(
 
     registry = registry or build_registry(model)
     registry.freeze()
+    # One object, disclosed to the planner and applied by the checker. Resolving
+    # the default twice would build two, and a prompt describing a different
+    # object from the one the gate applies is worse than no disclosure at all.
+    edge_policy = edge_policy or default_edge_policy()
     return GovernedLoop(
         planner=PlannerNode(
-            model, name="stdlib", catalog=registry.catalog(), trace=trace
+            model,
+            name="stdlib",
+            catalog=registry.catalog(),
+            # The deny rules, in front of the model before round 1. Disclosure
+            # only — the checker below is what refuses, whether or not the model
+            # read this.
+            edge_policy=edge_policy,
+            node_policy=node_policy,
+            trace=trace,
         ),
         checker=AdmissionChecker(
             registry=registry,
-            edge_policy=edge_policy or default_edge_policy(),
+            edge_policy=edge_policy,
             # None unless a policy document declared node rules; the registry is
             # otherwise the only thing deciding which kinds may run.
             node_policy=node_policy,

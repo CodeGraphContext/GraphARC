@@ -165,6 +165,11 @@ def build_loop(
     # Frozen: a driver that checks "against the same registry" every round means
     # the same object, and a node body could otherwise widen it between rounds.
     registry.freeze()
+    # Resolved once so the planner is *told* about exactly the policy the checker
+    # will *apply*. Two calls to `default_edge_policy()` would be two objects,
+    # and a disclosure describing a different object than the gate enforces is
+    # worse than no disclosure at all.
+    edge_policy = edge_policy or default_edge_policy()
     return GovernedLoop(
         # The planner and the materializer get the recorder too. Without it the
         # run's own trace held only `admission`/`round`/`stop`: no `plan` event
@@ -174,11 +179,20 @@ def build_loop(
         # own start/end pairs" was true of a hand-wired loop and false of the
         # shipped one, which is the one `grapharc plan` drives.
         planner=PlannerNode(
-            model, name="incident", catalog=registry.catalog(), trace=trace
+            model,
+            name="incident",
+            catalog=registry.catalog(),
+            # Disclosure, not enforcement: the planner is shown the deny rules so
+            # it need not learn them one refusal at a time. The scripted planner
+            # below proposes a `deploy` anyway, and round 1 is still refused —
+            # which is the demo's whole point, and stays true with a real model.
+            edge_policy=edge_policy,
+            node_policy=node_policy,
+            trace=trace,
         ),
         checker=AdmissionChecker(
             registry=registry,
-            edge_policy=edge_policy or default_edge_policy(),
+            edge_policy=edge_policy,
             # There is no default node policy: this demo's registry *is* its
             # node allowlist. One arrives only when a policy document declares
             # node rules, and then it gates every kind the planner proposes.
