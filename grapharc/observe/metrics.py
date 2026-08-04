@@ -53,7 +53,14 @@ def summarize(recorder: TraceRecorder, run_id: str) -> RunMetrics | None:
     # Work the reconstruction could not place inside any node. Disjoint from
     # `ends` by construction, so adding it cannot double-count a node total.
     orphans = replay(recorder, run_id).orphan_sub_events
-    measured = [*ends, *orphans]
+    # `errors` are measured too, and for the same reason `ends` are: the kernel
+    # stamps a node's terminal event with what that node spent, whichever way it
+    # ended. Counting only `end` meant a run *stopped for overspending* reported
+    # `tokens: 0` — the audit trail losing precisely the spend that triggered
+    # enforcement. Sub-events inside a node are a breakdown of its total rather
+    # than an addition to it, so the disjointness that makes `ends + orphans`
+    # safe holds here unchanged.
+    measured = [*ends, *errors, *orphans]
     reason = None
     # Scanned across every event, not just `end`: an agent writes its
     # `termination_reason` on a `stop` event, and that is still why it stopped.

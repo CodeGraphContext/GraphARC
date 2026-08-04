@@ -136,8 +136,12 @@ class ReplayedRun(BaseModel):
         token it spent in `orphan_sub_events`, and reporting zero for it was
         the audit trail contradicting itself. The two sets are disjoint, so
         nothing is counted twice.
+
+        A node that *failed* counts too. Its terminal `error` event carries what
+        it spent, exactly as an `end` does, so excluding it here reported zero
+        tokens for a run the budget stopped for spending too many.
         """
-        return sum(e.tokens for e in self.executions if e.ok) + sum(
+        return sum(e.tokens for e in self.executions) + sum(
             e.tokens or 0 for e in self.orphan_sub_events
         )
 
