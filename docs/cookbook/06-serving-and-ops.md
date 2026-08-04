@@ -1322,6 +1322,23 @@ status — each time the file grows. The server recomputes the snapshot;
 the page only renders it. Add `&run=ID` to pin one run in a file that holds
 several; without it the view follows the newest.
 
+A planner run has no graph for as long as it takes the model to propose one,
+so the snapshot also carries a `planning` block — round number, proposal size,
+admitted or rejected with the checks that failed, planner tokens spent — and
+the page renders it as a panel from the `plan`, `admission` and `round` events
+already in the trace. A run refused on every round (`admission_refused`) never
+produces a topology at all; it shows its rounds and its stop reason instead of
+an empty page. A round that has begun and not closed also counts as activity,
+because a planner mid-inference writes nothing for a minute at a time.
+
+`GET /live/view?trace=REL&replay=1` replays a finished trace instead of
+rendering its final state: the recorded events are walked in timestamp order
+and each one emits the snapshot a live run would have sent, so nodes go amber
+then green in the order and at the pace they really ran. `&speed=N` divides the
+wall clock, and a whole replay is capped at 40 seconds however slow the
+recording was, so yesterday's 40-minute incident trace is watchable. Without
+the parameter nothing changes: one snapshot per file change, as before.
+
 This composes with the Slack bot, which gives every tracing command a trace
 path under its working directory: run `grapharc serve --live-root` over that
 same directory, set `GRAPHARC_SLACK_LIVE_URL`, and the bot posts a
@@ -1338,7 +1355,26 @@ response; the exposure is what `viz` already prints. The bind stays
 `127.0.0.1` unless you say otherwise; binding wider prints a warning, because
 reachability is meant to come from a tunnel or tailnet in front, optionally
 with `--live-token TOKEN` (or `GRAPHARC_LIVE_TOKEN`) required on every
-`/live` request. The diagram renders with mermaid.js from a pinned CDN; with
+`/live` request.
+
+**Where that token is allowed to travel matters.** A URL is copied into places
+with much weaker access control than the traces it protects: the uvicorn
+request line, an nginx access log, browser history, and the referrer of
+anything the page links out to. So the token goes in an
+`Authorization: Bearer TOKEN` header, or in the cookie that `POST /live/auth`
+sets when you paste it into the sign-in page a browser gets instead of a 401.
+`?token=` is accepted on `/live/api/stream` and nowhere else — a browser
+`EventSource` cannot set a header, so that one route has no alternative — and
+any other `/live` route refuses a query-string token with a 401 that says so
+rather than accepting the secret into your logs. The tradeoff that remains:
+the SSE request line still carries the token, so if you terminate TLS at nginx
+and log request URIs, scrub `token=` from that one path (or log
+`$request_method $uri` rather than `$request`). The cookie is a digest of the
+token, not the token, is `HttpOnly` and `SameSite=Strict`, and is scoped to
+`/live`. Sign-in and the SSE exemption both apply only when a token is
+configured at all; without one, nothing about `/live` is authenticated.
+
+The diagram renders with mermaid.js from a pinned CDN; with
 no CDN reachable the page falls back to the raw Mermaid source plus the same
 mermaid.live fragment link the Slack bot posts.
 
