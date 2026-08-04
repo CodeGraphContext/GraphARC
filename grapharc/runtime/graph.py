@@ -710,7 +710,12 @@ class GraphARC:
             try:
                 result, delta = self._check_result(f"node {name!r}", writes, result)
             except (WritePermissionError, StateTypeError, GraphRoutingError) as err:
-                emit("error", duration_ms=duration_ms, error=str(err))
+                emit(
+                    "error",
+                    duration_ms=duration_ms,
+                    error=str(err),
+                    tokens=ctx.meter.tokens - tokens_before,
+                )
                 raise
 
         # Tokens are charged mid-node by the usage callback, so this is the
@@ -718,7 +723,16 @@ class GraphARC:
         try:
             ctx.meter.check_tokens()
         except BudgetExceeded as exc:
-            emit("error", duration_ms=duration_ms, error=f"budget: {exc.reason}")
+            # Stamped with what the node spent, exactly as `end` is. Without it
+            # the run stopped *for overspending* and then reported spending
+            # nothing, which is the audit trail losing the one number the stop
+            # was about.
+            emit(
+                "error",
+                duration_ms=duration_ms,
+                error=f"budget: {exc.reason}",
+                tokens=ctx.meter.tokens - tokens_before,
+            )
             raise
 
         # The provider's own price for every model call made inside this node,
@@ -765,8 +779,14 @@ class GraphARC:
                 except BaseException as exc:
                     # BaseException, not Exception: an async node is stopped by
                     # cancellation, which is not an Exception, and a stop with no
-                    # trace line is a stop nobody can audit afterwards.
-                    emit("error", duration_ms=(time.perf_counter() - t0) * 1000, error=repr(exc))
+                    # trace line is a stop nobody can audit afterwards. Carries
+                    # the node's spend for the same reason `end` does.
+                    emit(
+                        "error",
+                        duration_ms=(time.perf_counter() - t0) * 1000,
+                        error=repr(exc),
+                        tokens=ctx.meter.tokens - tokens_before,
+                    )
                     raise
                 return self._leave(
                     name,
@@ -800,7 +820,12 @@ class GraphARC:
                 # ^C, which is a KeyboardInterrupt and not an Exception, and a
                 # stop with no trace line is a stop nobody can audit afterwards.
                 # The exception is re-raised untouched; only the record is new.
-                emit("error", duration_ms=(time.perf_counter() - t0) * 1000, error=repr(exc))
+                emit(
+                    "error",
+                    duration_ms=(time.perf_counter() - t0) * 1000,
+                    error=repr(exc),
+                    tokens=ctx.meter.tokens - tokens_before,
+                )
                 raise
             return self._leave(
                 name,

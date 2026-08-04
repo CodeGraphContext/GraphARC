@@ -565,6 +565,7 @@ def test_the_trace_carries_what_the_page_says_each_phase_carries(tmp_path):
             "node": "count",
             "phase": "error",
             "step": 2,
+            "tokens": 0,
             "error": "ValueError('the counter is not implemented yet')",
         },
     ]
