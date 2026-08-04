@@ -289,7 +289,7 @@ def test_the_status_message_advertises_the_live_url_when_configured(tmp_path):
     assert "(if the live server is up)" in sink.posted[0]
 
 
-def test_the_final_message_keeps_the_diagram_and_run_page_links(tmp_path):
+def test_the_final_message_keeps_the_run_page_link(tmp_path):
     """Finishing a run must not be what makes its links disappear."""
     sink = RecordingSink()
     config = _config(tmp_path, live_url_base="https://laptop.example")
@@ -297,14 +297,36 @@ def test_the_final_message_keeps_the_diagram_and_run_page_links(tmp_path):
     assert reply == ""
     final = sink.updated[-1]
     assert "did its job" in final
-    assert "mermaid.live/view#pako:" in final, "the final diagram link is kept"
     assert "run page: https://laptop.example/live/view?trace=" in final
+    # The operator's own page is the link; mermaid.live is only the fallback.
+    assert "mermaid.live" not in final
 
 
 def test_the_blocking_path_also_gets_the_final_links(tmp_path):
     reply = handle_text_live("demo stage0", _config(tmp_path, live=False), RecordingSink())
     assert "did its job" in reply
     assert "mermaid.live/view#pako:" in reply
+
+
+def test_the_progress_message_links_the_live_view_when_configured(tmp_path):
+    def write(recorder, run_id):
+        recorder.event(run_id=run_id, graph="g", node="n1", phase="start", step=1)
+
+    run = _run_from(tmp_path, write)
+    with_view = render_progress(
+        run,
+        argv=["run", "g.toml"],
+        elapsed_s=1.0,
+        diagram="flowchart TD\n  a --> b",
+        view_url="https://laptop.example/live/view?trace=t.jsonl",
+    )
+    assert "<https://laptop.example/live/view?trace=t.jsonl|open live view>" in with_view
+    assert "mermaid.live" not in with_view
+    # Without a configured view, the mermaid.live fallback still stands.
+    without = render_progress(
+        run, argv=["run", "g.toml"], elapsed_s=1.0, diagram="flowchart TD\n  a --> b"
+    )
+    assert "mermaid.live/view#pako:" in without
 
 
 def test_a_refusal_is_still_a_returned_message(tmp_path):

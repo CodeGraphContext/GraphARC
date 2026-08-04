@@ -32,7 +32,7 @@ configuration only — it sends no request.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from grapharc.gateway.config import ollama_api_key, ollama_base_url
 from grapharc.gateway.openai_compat import OpenAICompatChatModel
@@ -49,6 +49,14 @@ class OllamaError(Exception):
 
 class OllamaChatModel(OpenAICompatChatModel):
     """A LangChain chat model over a local Ollama server."""
+
+    #: Read by `PlannerNode` (duck-typed, like `disclosure()`): Ollama compiles
+    #: a strict `json_schema` into its grammar-constrained decoder, and
+    #: `Subgraph`'s schema — recursive, every field required, docstring-laden —
+    #: reliably breaks small models there; `json_mode` suppresses the reasoning
+    #: phase models like qwen3 plan with. The text path with the slim proposal
+    #: shape is the one that works, so this backend asks for it.
+    reliable_structured_output: ClassVar[bool] = False
 
     def __init__(self, model: str, /, **kwargs: Any) -> None:
         if not model:

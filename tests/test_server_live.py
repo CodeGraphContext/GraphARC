@@ -227,6 +227,34 @@ def test_snapshot_agrees_with_viz_and_metrics(tmp_path):
     assert snapshot.mermaid_live_url and "#pako:" in snapshot.mermaid_live_url
 
 
+def test_snapshot_carries_a_positioned_graph_that_agrees_with_the_overlay(tmp_path):
+    write_run(tmp_path / "t.jsonl", "r1", done=True)
+    snapshot = build_snapshot(tmp_path, "t.jsonl", None)
+    assert snapshot.graph is not None
+    drawn = {n.id: n for n in snapshot.graph.nodes if n.role == "node"}
+    # Same statuses the Mermaid class overlay assigns (all done here).
+    assert {n.status for n in drawn.values()} == {"done"}
+    # Positioned: the layout ran, and the recorded spend reached the node.
+    assert all(n.w > 0 and n.h > 0 for n in drawn.values())
+    assert snapshot.graph.width > 0 and snapshot.graph.height > 0
+    assert any(n.cost_usd for n in drawn.values())
+    assert any(n.tokens for n in drawn.values())
+
+
+def test_the_graph_snapshot_is_in_the_stream_and_replay_frames(tmp_path):
+    write_run(tmp_path / "t.jsonl", "r1", done=True)
+    with live_client(tmp_path) as client:
+        with client.stream("GET", "/live/api/stream?trace=t.jsonl") as response:
+            response.read()
+            live_frames = read_sse(response)
+        replayed = client.get("/live/api/stream?trace=t.jsonl&replay=1&speed=500")
+    live_snapshot = next(f[1] for f in live_frames if f[0] == "snapshot")
+    assert live_snapshot["graph"]["kind"] == "path"
+    assert live_snapshot["graph"]["nodes"]
+    replay_snapshots = [s for kind, s in read_sse(replayed) if kind == "snapshot"]
+    assert all(s["graph"] is not None for s in replay_snapshots)
+
+
 def test_a_missing_file_is_a_waiting_snapshot_not_an_error(tmp_path):
     snapshot = build_snapshot(tmp_path, "not-yet/t.jsonl", None)
     assert snapshot.run_id is None
@@ -328,6 +356,35 @@ def test_confinement_failures_are_404_on_every_route(tmp_path):
         for raw in ("../outside.jsonl", "/etc/passwd", "t.txt"):
             assert client.get(f"/live/view?trace={raw}").status_code == 404
             assert client.get(f"/live/api/stream?trace={raw}").status_code == 404
+
+
+def test_static_assets_serve_with_their_types_and_nothing_else(tmp_path):
+    with live_client(tmp_path) as client:
+        css = client.get("/live/static/view.css")
+        assert css.status_code == 200
+        assert css.headers["content-type"].startswith("text/css")
+        js = client.get("/live/static/view.js")
+        assert js.status_code == 200
+        assert js.headers["content-type"].startswith("text/javascript")
+        # The allowlist is the route: page templates and traversal are 404s.
+        for name in ("view.html", "signin.html", "../live.py", "%2e%2e/live.py"):
+            assert client.get(f"/live/static/{name}").status_code == 404
+
+
+def test_the_view_makes_no_external_request(tmp_path):
+    """The page must render with the network cable pulled: no CDN, no import
+    from another origin, in any byte the live routes serve."""
+    write_run(tmp_path / "t.jsonl", "r1", done=True)
+    with live_client(tmp_path) as client:
+        pages = [
+            client.get("/live").text,
+            client.get("/live/view?trace=t.jsonl").text,
+            client.get("/live/static/view.css").text,
+            client.get("/live/static/view.js").text,
+        ]
+    for page in pages:
+        assert "cdn.jsdelivr" not in page
+        assert "https://" not in page.replace("https://mermaid.live", "")
 
 
 def test_state_delta_contents_never_reach_a_live_byte(tmp_path):
@@ -680,3 +737,82 @@ def test_create_app_mounts_live_only_when_asked(tmp_path):
     with TestClient(create_app(live_root=tmp_path)) as client:
         assert client.get("/live").status_code == 200
         assert client.get("/healthz").status_code == 200  # existing API untouched
+
+
+# ---------------------------------------------------------------------------
+# The goal and the approve command reach the page — deliberately.
+# ---------------------------------------------------------------------------
+
+
+def _write_parked_planner_run(path, run_id="r1", *, answered=False, goal="GOAL-SENTINEL"):
+    """A loop-shaped trace: labelled topology, then an approval request."""
+    recorder = TraceRecorder(path)
+    recorder.event(
+        run_id=run_id, graph="round-1", node="topology", phase="topology", step=0,
+        state_delta={
+            "nodes": ["triage", "verify"],
+            "edges": [["__start__", "triage", "static"], ["triage", "verify", "static"],
+                      ["verify", "__end__", "static"]],
+            "round": 1, "proposal_id": "p1", "fingerprint": "f1", "goal": goal,
+        },
+    )
+    recorder.event(
+        run_id=run_id, graph="loop", node="loop:approval", phase="approval_request",
+        step=0,
+        state_delta={"round": 1, "proposal_id": "p1", "fingerprint": "f1",
+                     "nodes": ["triage", "verify"], "edges": [], "goal": goal},
+    )
+    if answered:
+        recorder.event(
+            run_id=run_id, graph="loop", node="loop:approval", phase="approval_response",
+            step=0,
+            state_delta={"round": 1, "proposal_id": "p1", "decision": "approved",
+                         "detail": ""},
+        )
+    return recorder
+
+
+def test_the_goal_is_lifted_and_shown_on_purpose(tmp_path):
+    """The goal is the operator's own words about the run, not something a
+    node wrote — it is the second state field (after termination_reason)
+    shown by convention."""
+    _write_parked_planner_run(tmp_path / "t.jsonl")
+    snapshot = build_snapshot(tmp_path, "t.jsonl", None)
+    assert snapshot.goal == "GOAL-SENTINEL"
+    # What the SSE frame serializes is what the page reads.
+    assert snapshot.model_dump(mode="json")["goal"] == "GOAL-SENTINEL"
+
+
+def test_a_goal_in_an_ordinary_delta_is_not_lifted(tmp_path):
+    recorder = TraceRecorder(tmp_path / "t.jsonl")
+    recorder.event(run_id="r1", graph="g", node="n1", phase="start", step=1)
+    recorder.event(
+        run_id="r1", graph="g", node="n1", phase="end", step=1,
+        state_delta={"goal": "NODE-WRITTEN", "termination_reason": "completed"},
+    )
+    snapshot = build_snapshot(tmp_path, "t.jsonl", None)
+    assert snapshot.goal is None
+
+
+def test_the_approve_command_is_shown_only_while_parked(tmp_path):
+    parked = tmp_path / "parked"
+    _write_parked_planner_run(parked / "t.jsonl")
+    snapshot = build_snapshot(tmp_path, "parked/t.jsonl", None)
+    assert snapshot.awaiting_approval is True
+    assert snapshot.approve_command == f"grapharc approve {parked}"
+
+    answered = tmp_path / "answered"
+    _write_parked_planner_run(answered / "t.jsonl", answered=True)
+    snapshot = build_snapshot(tmp_path, "answered/t.jsonl", None)
+    assert snapshot.awaiting_approval is False
+    assert snapshot.approve_command is None
+
+
+def test_replay_frames_never_carry_the_approve_command(tmp_path):
+    _write_parked_planner_run(tmp_path / "t.jsonl", answered=True)
+    write_run(tmp_path / "t.jsonl", "r1", done=True)
+    with live_client(tmp_path) as client:
+        replayed = client.get("/live/api/stream?trace=t.jsonl&replay=1&speed=500")
+    for kind, s in read_sse(replayed):
+        if kind == "snapshot":
+            assert s["approve_command"] is None

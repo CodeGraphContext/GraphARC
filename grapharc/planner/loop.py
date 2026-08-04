@@ -105,7 +105,7 @@ from grapharc.planner.admission import (
     RemainingBudget,
 )
 from grapharc.planner.materialize import MaterializationError, Materializer
-from grapharc.planner.proposal import PlanningOutcome, Subgraph
+from grapharc.planner.proposal import PROPOSAL_EXAMPLE, PlanningOutcome, Subgraph
 from grapharc.runtime.budget import Budget, BudgetExceeded, BudgetMeter
 from grapharc.runtime.graph import RunContext, topology_delta
 
@@ -127,6 +127,10 @@ class LoopStop(StrEnum):
     # The planner was admitted while proposing nothing, and no goal check said
     # the goal was met. It has run out of work; that is an answer, not a fault.
     NO_FURTHER_WORK = "no_further_work"
+    # Plan-only mode: an admitted, materialisable graph exists and — by
+    # request — nothing was executed. `grapharc plan` stops here; `grapharc
+    # go` picks the saved plan up.
+    PLANNED = "planned"
     MAX_ROUNDS = "max_rounds"
     BUDGET_EXHAUSTED = "budget_exhausted"
     NO_PROGRESS = "no_progress"
@@ -145,7 +149,11 @@ class LoopStop(StrEnum):
 # Stops that mean the run did what it was asked, for the trace's `error` field:
 # everything else is recorded as a refusal so an audit can find it by grepping
 # for errors rather than by knowing this enum.
-_CLEAN_STOPS = frozenset({LoopStop.GOAL_MET, LoopStop.NO_FURTHER_WORK})
+_CLEAN_STOPS = frozenset({LoopStop.GOAL_MET, LoopStop.NO_FURTHER_WORK, LoopStop.PLANNED})
+
+#: How much of an unusable planner reply the retry note echoes back. Bounded
+#: because the note rides in the next round's prompt.
+_SNIPPET_LIMIT = 400
 
 
 class Planner(Protocol):
@@ -325,6 +333,11 @@ class GovernedLoop:
         # charges nothing — thinking time is not the run's spend. None means
         # what it always meant: admission is the only gate.
         self.approval = approval
+        # Plan-only: stop each run at its first admitted, materialised
+        # graph instead of executing it. Set by `grapharc plan` after
+        # construction (an attribute, not a ctor param, so every shipped
+        # build_loop factory keeps its signature).
+        self.plan_only = False
         self._halt = threading.Event()
         self._halt_reason = ""
 
@@ -429,9 +442,20 @@ class GovernedLoop:
 
             if not outcome.ok or outcome.proposal is None:
                 unplanned_in_a_row += 1
+                # The retry note shows the model what it actually said and what
+                # was wanted. The bare error string alone ("no JSON object
+                # found…") left a local model guessing at the shape and burning
+                # its three allowed failures on the same mistake; the snippet
+                # is truncated because the note lands verbatim in the next
+                # prompt — the same bound the rejection log keeps.
+                snippet = (outcome.raw or "").strip()
+                if len(snippet) > _SNIPPET_LIMIT:
+                    snippet = snippet[:_SNIPPET_LIMIT] + " …[truncated]"
                 note = (
-                    "Your previous reply could not be used as a proposal: "
-                    f"{outcome.error}. Reply with the proposal object and nothing else."
+                    f"Your previous reply could not be used as a proposal: {outcome.error}.\n"
+                    + (f"It began:\n---\n{snippet}\n---\n" if snippet else "")
+                    + "Reply with exactly one JSON object in this shape and nothing else:\n"
+                    + PROPOSAL_EXAMPLE
                 )
                 if unplanned_in_a_row >= self.limits.max_consecutive_planning_failures:
                     stop = LoopStop.PLANNING_FAILED
@@ -482,7 +506,13 @@ class GovernedLoop:
 
             before = self._progress_of(current)
             attempt = self._execute(
-                verdict, proposal, current, meter=meter, ctx=ctx, round_number=round_number
+                verdict,
+                proposal,
+                current,
+                meter=meter,
+                ctx=ctx,
+                round_number=round_number,
+                goal=goal,
             )
             current = attempt.state
             progressed = attempt.executed and self._progress_of(current) != before
@@ -605,6 +635,7 @@ class GovernedLoop:
         meter: BudgetMeter,
         ctx: RunContext,
         round_number: int,
+        goal: str = "",
     ) -> _Execution:
         """Build and run the admitted subgraph. Spend is charged back either way.
 
@@ -637,12 +668,32 @@ class GovernedLoop:
                     "round": round_number,
                     "proposal_id": proposal.proposal_id,
                     "fingerprint": proposal.fingerprint(),
+                    # The operator's own question, so a live view can say what
+                    # this graph is *for*. Deliberate exposure of operator-
+                    # supplied text — never something a node wrote.
+                    "goal": goal,
                 },
+            )
+
+        if self.plan_only:
+            # The graph is admitted, materialisable, and on the trace — which
+            # is exactly what "planned" means. Executing it is `grapharc go`'s
+            # job, in its own process, whenever the operator says. The
+            # approval gate is skipped on purpose: a plan that executes
+            # nothing has nothing to approve; the act of running `go` *is*
+            # the approval.
+            return _Execution(
+                state=state,
+                executed=False,
+                hard_stop=LoopStop.PLANNED,
+                execution_error="awaiting `grapharc go`",
             )
 
         if self.approval is not None:
             parked = time.monotonic()
-            decision = self._request_approval(proposal, verdict, ctx, round_number)
+            decision = self._request_approval(
+                proposal, verdict, ctx, round_number, goal=goal
+            )
             # The wait charges nothing, seconds included: `elapsed_seconds` is
             # wall clock from run() start, and without this credit a human who
             # took longer than `max_seconds` to say yes handed the round a
@@ -701,6 +752,7 @@ class GovernedLoop:
         verdict: AdmissionResult,
         ctx: RunContext,
         round_number: int,
+        goal: str = "",
     ) -> str:
         """Ask the configured gate; both the question and the answer are audited.
 
@@ -719,6 +771,7 @@ class GovernedLoop:
                 "fingerprint": proposal.fingerprint(),
                 "nodes": [n.name for n in proposal.nodes],
                 "edges": [[e.source, e.target] for e in proposal.edges],
+                "goal": goal,
             },
         )
         try:

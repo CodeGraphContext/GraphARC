@@ -74,9 +74,11 @@ from grapharc.planner.materialize import (
 )
 from grapharc.planner.proposal import (
     DEFAULT_PLANNER_SYSTEM_PROMPT,
+    PROPOSAL_EXAMPLE,
     PlannerConfigError,
     PlannerNode,
     PlanningOutcome,
+    PlanProposal,
     ProposedEdge,
     ProposedNode,
     Subgraph,
@@ -84,6 +86,7 @@ from grapharc.planner.proposal import (
 
 __all__ = [
     "DEFAULT_PLANNER_SYSTEM_PROMPT",
+    "PROPOSAL_EXAMPLE",
     "AdmissionChecker",
     "AdmissionLimits",
     "AdmissionRejected",
@@ -108,6 +111,7 @@ __all__ = [
     "Planner",
     "PlannerConfigError",
     "PlannerNode",
+    "PlanProposal",
     "PlanningOutcome",
     "ProposedEdge",
     "ProposedNode",

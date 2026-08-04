@@ -96,7 +96,8 @@ def handle_text_live(text: str, config: SlackBotConfig, sink: LiveSink | None) -
             return False
 
     settings = LiveSettings(update_interval=config.live_interval_seconds)
-    with LiveTail(tpath, argv, _update, settings):
+    view_url = live_view_url(argv, base=config.live_url_base, workdir=config.workdir)
+    with LiveTail(tpath, argv, _update, settings, view_url=view_url):
         result = run_command(
             argv, workdir=config.workdir, timeout_seconds=config.timeout_seconds
         )
@@ -113,27 +114,30 @@ def _with_final_links(
     config: SlackBotConfig,
     prior_runs: frozenset[str] = frozenset(),
 ) -> str:
-    """Keep the diagram and run-page links on the *final* message.
+    """Keep the run-page (or diagram) link on the *final* message.
 
     The final result edits over the live status message, which is where the
     "watch live" link lived — without this, finishing a run is what makes its
-    links disappear. Both are best-effort: a link that cannot be computed is
+    links disappear. The operator's own run page is the primary link; the
+    mermaid.live fragment link is the fallback for a bot with no live server
+    configured. Both are best-effort: a link that cannot be computed is
     simply absent.
     """
     if tpath is None:
         return final
     lines = [final]
-    try:
-        recorder = TailRecorder(tpath)
-        new_runs = [r for r in recorder.run_ids() if r not in prior_runs]
-        if new_runs:
-            diagram = to_mermaid(recorder, new_runs[-1])
-            lines.append(f"<{mermaid_live_url(diagram)}|final diagram>")
-    except Exception:
-        pass
     url = live_view_url(argv, base=config.live_url_base, workdir=config.workdir)
     if url:
         lines.append(f"run page: {url}")
+    else:
+        try:
+            recorder = TailRecorder(tpath)
+            new_runs = [r for r in recorder.run_ids() if r not in prior_runs]
+            if new_runs:
+                diagram = to_mermaid(recorder, new_runs[-1])
+                lines.append(f"<{mermaid_live_url(diagram)}|final diagram>")
+        except Exception:
+            pass
     return "\n".join(lines)
 
 

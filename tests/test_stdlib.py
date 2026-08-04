@@ -343,3 +343,34 @@ def test_phases_return_only_their_own_addition(tmp_path):
     body = _collect_context(None)
     delta = body(WorkState(findings=["already here"]))
     assert len(delta["findings"]) == 1, delta
+
+
+def test_the_planner_is_told_the_run_completes_via_summarize():
+    """The completion rule is deterministic code; a planner that was never
+    told it burns rounds on investigate-only plans that cannot finish."""
+    from grapharc.stdlib import build_loop
+    from grapharc.testing import ScriptedChatModel
+
+    loop = build_loop(ScriptedChatModel(responses=["{}"]))
+    assert "summarize" in loop.planner.instructions
+    assert "complete" in loop.planner.instructions
+    catalog = dict(loop.planner.catalog)
+    assert "the run is complete" in catalog["summarize"]
+
+
+def test_build_registry_workspace_confines_tools_and_the_listing(tmp_path):
+    from grapharc.stdlib import build_registry
+    from grapharc.testing import ScriptedChatModel
+
+    (tmp_path / "only-file.txt").write_text("hello")
+    registry = build_registry(ScriptedChatModel(responses=[]), workspace=tmp_path)
+    spec = registry.get("collect_context")
+    body = spec.factory(spec)
+
+    class _State:
+        goal = ""
+        findings: list = []
+        notes: list = []
+
+    delta = body(_State())
+    assert "only-file.txt" in delta["findings"][0]

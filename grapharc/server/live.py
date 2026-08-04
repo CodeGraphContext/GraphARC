@@ -12,8 +12,10 @@ frame carries the rendered Mermaid source and summary numbers, never raw trace
 events. That is a security decision as much as a simplicity one — `state_delta`
 can hold anything a run's nodes wrote, and its *contents* are deliberately not
 served. The exposure is the same as the `viz`/`metrics` commands': node names,
-error labels, counts, and the one state field `summarize` lifts out of the
-delta — `termination_reason`, a short reason string by convention.
+error labels, counts, and two state fields shown by convention —
+`termination_reason` (a short reason string) and `goal` (the operator's own
+question, from the loop's labelled topology/approval events; text the operator
+typed, never something a node wrote).
 
 Reachability is the operator's problem by design: bind stays loopback unless
 they choose otherwise, and the recommended remote path is a tunnel or tailnet
@@ -30,8 +32,10 @@ places with weaker access control than the traces.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import html
+import importlib.resources
 import math
 import secrets
 from datetime import datetime
@@ -44,9 +48,11 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
+from grapharc.observe.layout import layout_graph
 from grapharc.observe.metrics import RunMetrics, summarize, to_mermaid
 from grapharc.observe.replay import replay
 from grapharc.observe.trace import TailRecorder, TraceEvent
+from grapharc.observe.viewmodel import GraphSnapshot, build_graph_view
 from grapharc.slack.format import mermaid_live_url
 
 #: How often the stream re-stats the trace file. Coarser than the session
@@ -82,6 +88,29 @@ REPLAY_MAX_SECONDS = 40.0
 REPLAY_MAX_FRAMES = 400
 #: Clamp on `speed=`; past this the replay is instant anyway.
 REPLAY_MAX_SPEED = 10_000.0
+
+
+#: The static assets the router serves, and as what. An allowlist, not a
+#: directory walk: any other name under /live/static is a 404, so the route
+#: can never be talked into serving a neighbouring file.
+STATIC_ASSETS = {
+    "view.css": "text/css; charset=utf-8",
+    "view.js": "text/javascript; charset=utf-8",
+}
+
+
+@functools.cache
+def _static(name: str) -> str:
+    """One page or asset from the packaged static directory.
+
+    `importlib.resources`, not a path relative to `__file__`: the files must
+    load from an installed wheel, not only from a checkout.
+    """
+    return (
+        importlib.resources.files("grapharc.server")
+        .joinpath("static", name)
+        .read_text(encoding="utf-8")
+    )
 
 
 class LivePathError(Exception):
@@ -157,6 +186,19 @@ class LiveSnapshot(BaseModel):
     #: None for a run that never planned — an ordinary graph invocation renders
     #: exactly as it did before this field existed.
     planning: PlanningView | None = None
+    #: The structured, positioned graph the SVG view draws — same exposure as
+    #: `mermaid` (names, statuses, counts, spend, error labels), never deltas.
+    graph: GraphSnapshot | None = None
+    #: The operator's own question, lifted from the loop's topology/
+    #: approval_request deltas the way `termination_reason` is lifted by
+    #: `summarize` — the second state field shown by convention, and the only
+    #: other one: it is text the operator typed, never something a node wrote.
+    goal: str | None = None
+    #: The command that answers a parked run, shown only while one is parked.
+    #: Reveals the trace's directory to authenticated viewers — accepted: it is
+    #: the one string correct from any shell on this machine, the view is
+    #: loopback/token/tunnel-gated, and it vanishes once the run is answered.
+    approve_command: str | None = None
 
 
 def _as_int(value: Any, fallback: int = 0) -> int:
@@ -260,7 +302,15 @@ def build_snapshot(root: Path, rel: str, run_id: str | None) -> LiveSnapshot:
         size, quiet_for = stat.st_size, time() - stat.st_mtime
     except OSError:
         size, quiet_for = 0, float("inf")
-    return compose_snapshot(rel, recorder, events, run_id, size=size, quiet_for=quiet_for)
+    return compose_snapshot(
+        rel,
+        recorder,
+        events,
+        run_id,
+        size=size,
+        quiet_for=quiet_for,
+        trace_dir=path.parent,
+    )
 
 
 def compose_snapshot(
@@ -271,6 +321,7 @@ def compose_snapshot(
     *,
     size: int,
     quiet_for: float,
+    trace_dir: Path | None = None,
 ) -> LiveSnapshot:
     """The snapshot for one already-read set of events. Pure; run it in a thread.
 
@@ -287,6 +338,7 @@ def compose_snapshot(
 
     mermaid = to_mermaid(recorder, chosen)
     run = replay(recorder, chosen)
+    graph = layout_graph(build_graph_view(run))
     # Finished means: something wrote a termination reason, OR a driver wrote
     # its terminal `stop` event — the planner writes the latter and never the
     # former, and keying on `termination_reason` alone held the SSE stream
@@ -326,6 +378,19 @@ def compose_snapshot(
             awaiting = False
     if awaiting and not done:
         active = True
+    # The goal, from the loop's labelled events only. Last one wins — a
+    # multi-round run restates it, and the current round's is the answer.
+    goal = None
+    for event in run_events:
+        if event.phase in ("topology", "approval_request"):
+            value = (event.state_delta or {}).get("goal")
+            if value:
+                goal = str(value)
+    approve_command = (
+        f"grapharc approve {trace_dir}"
+        if awaiting and not done and trace_dir is not None
+        else None
+    )
     return LiveSnapshot(
         trace=rel,
         run_id=chosen,
@@ -341,6 +406,9 @@ def compose_snapshot(
         done=done,
         awaiting_approval=awaiting,
         planning=planning,
+        graph=graph,
+        goal=goal,
+        approve_command=approve_command,
     )
 
 
@@ -541,7 +609,8 @@ def live_router(
 
     def _sign_in(target: str, reason: str) -> HTMLResponse:
         page = (
-            SIGNIN_HTML.replace("__REASON__", html.escape(reason))
+            _static("signin.html")
+            .replace("__REASON__", html.escape(reason))
             .replace("__NEXT__", html.escape(target, quote=True))
         )
         return HTMLResponse(page, status_code=401)
@@ -604,7 +673,7 @@ def live_router(
                 f"<td>{runs}</td><td>{item['size']}</td></tr>"
             )
         body = "\n".join(rows) or '<tr><td colspan="3">no trace files yet</td></tr>'
-        return HTMLResponse(INDEX_HTML.replace("__ROWS__", body))
+        return HTMLResponse(_static("index.html").replace("__ROWS__", body))
 
     @router.get("/api/runs")
     def runs(request: Request) -> dict[str, Any]:
@@ -619,7 +688,20 @@ def live_router(
         if refusal:
             return _sign_in(_return_to(request), refusal)
         _resolved(trace)
-        return HTMLResponse(VIEW_HTML)
+        return HTMLResponse(_static("view.html"))
+
+    @router.get("/static/{name}", include_in_schema=False)
+    def static_asset(name: str) -> Response:
+        """CSS/JS for the pages above. Deliberately outside the token gate:
+        these are the same bytes anyone can read in the published wheel, and
+        the sign-in page itself needs its stylesheet before any credential
+        exists. The allowlist is the whole route — no path from here reaches
+        the filesystem or the trace root.
+        """
+        content_type = STATIC_ASSETS.get(name)
+        if content_type is None:
+            raise HTTPException(status_code=404, detail="no such asset")
+        return Response(_static(name), media_type=content_type)
 
     @router.get("/api/stream")
     async def stream(
@@ -751,200 +833,11 @@ def live_router(
     return router
 
 
-# The pages are plain strings with sentinel replacement, not str.format —
-# JS/CSS braces would fight the format machinery. Self-contained except for
-# the pinned mermaid CDN import; without it (offline viewer, blocked CDN) the
-# page falls back to the raw Mermaid source plus the mermaid.live link that
-# every snapshot carries.
-
-INDEX_HTML = """<!doctype html>
-<html><head><meta charset="utf-8"><title>grapharc live</title>
-<meta http-equiv="refresh" content="5">
-<style>
- body{font-family:system-ui,sans-serif;margin:2rem;color:#222}
- table{border-collapse:collapse}
- td,th{padding:.3rem .8rem;border-bottom:1px solid #ddd;text-align:left}
-</style></head><body>
-<h1>grapharc live</h1>
-<p>Trace files under the live root, newest first. This page refreshes itself.</p>
-<table><tr><th>trace</th><th>runs</th><th>bytes</th></tr>
-__ROWS__
-</table></body></html>
-"""
-
-SIGNIN_HTML = """<!doctype html>
-<html><head><meta charset="utf-8"><title>grapharc live · sign in</title>
-<meta name="referrer" content="no-referrer">
-<style>
- body{font-family:system-ui,sans-serif;margin:2rem;color:#222;max-width:34rem}
- input{font:inherit;padding:.35rem .5rem;width:20rem;max-width:100%}
- button{font:inherit;padding:.35rem .9rem}
- .why{color:#666;font-size:.9rem;margin-top:1.4rem;line-height:1.45}
-</style></head><body>
-<h1>grapharc live</h1>
-<p>__REASON__</p>
-<form method="post" action="/live/auth">
- <input type="hidden" name="next" value="__NEXT__">
- <label>token <input type="password" name="token" autofocus autocomplete="off"></label>
- <button type="submit">sign in</button>
-</form>
-<p class="why">The token is exchanged for a cookie scoped to <code>/live</code>,
-so it never appears in a URL — where it would be copied into access logs,
-browser history and referrer headers. Scripts can send
-<code>Authorization: Bearer TOKEN</code> instead.</p>
-</body></html>
-"""
-
-VIEW_HTML = """<!doctype html>
-<html><head><meta charset="utf-8"><title>grapharc live view</title>
-<meta name="referrer" content="no-referrer">
-<style>
- body{font-family:system-ui,sans-serif;margin:1.5rem;color:#222}
- header{display:flex;gap:1rem;align-items:baseline;flex-wrap:wrap}
- #status{font-weight:600}
- #graph{margin:1rem 0;overflow-x:auto}
- #graph svg{max-width:100%}
- pre{background:#f6f6f6;padding:1rem;overflow-x:auto}
- table{border-collapse:collapse}
- td,th{padding:.25rem .7rem;border-bottom:1px solid #ddd;text-align:left}
- .muted{color:#777}
- #planning{margin:1rem 0}
- #planning h2{font-size:1rem;margin:.2rem 0 .5rem}
- #planning .stop{margin:.5rem 0 0;color:#b02a37}
- #planning td.rejected,#planning td.refused{color:#b02a37}
- #planning tr.inflight td{background:#fff3cd}
- #badge{padding:.05rem .45rem;border:1px solid #b8860b;border-radius:.6rem;
-        color:#8a6d0b;font-size:.8rem}
-</style></head><body>
-<header>
- <span id="status">connecting…</span>
- <span id="run" class="muted"></span>
- <span id="badge" hidden>replay</span>
- <a id="mlive" target="_blank" rel="noopener noreferrer" hidden>open in mermaid.live</a>
-</header>
-<div id="graph">waiting for the run to start…</div>
-<div id="planning" hidden></div>
-<pre id="src" hidden></pre>
-<table id="stats"></table>
-<script type="module">
-let mermaid = null;
-try {
-  mermaid = (await import("https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs")).default;
-  mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
-} catch { /* no CDN: the raw source and the mermaid.live link stay visible */ }
-
-const status = document.getElementById("status");
-const runEl = document.getElementById("run");
-const graph = document.getElementById("graph");
-const src = document.getElementById("src");
-const mlive = document.getElementById("mlive");
-const stats = document.getElementById("stats");
-const panel = document.getElementById("planning");
-const badge = document.getElementById("badge");
-let seq = 0;
-
-if (new URLSearchParams(location.search).get("replay")) badge.hidden = false;
-
-// Every cell is written with textContent: round labels, statuses and rejection
-// codes come out of a trace file this server merely reads.
-function cell(tag, text, className) {
-  const el = document.createElement(tag);
-  el.textContent = text;
-  if (className) el.className = className;
-  return el;
-}
-
-function renderPlanning(p) {
-  panel.innerHTML = "";
-  if (!p || (!p.rounds.length && !p.stop)) { panel.hidden = true; return; }
-  panel.append(cell("h2", p.has_topology ? "planning history" : "planning"));
-  const table = document.createElement("table");
-  const head = document.createElement("tr");
-  for (const h of ["round", "status", "nodes", "why", "tokens"]) head.append(cell("th", h));
-  table.append(head);
-  for (const r of p.rounds) {
-    const tr = document.createElement("tr");
-    if (r.in_flight) tr.className = "inflight";
-    tr.append(cell("td", "round " + r.round));
-    tr.append(cell("td", r.in_flight ? (r.status || "planning…") : (r.status || "—"),
-                   r.status === "rejected" ? "rejected" : ""));
-    tr.append(cell("td", String(r.nodes || 0)));
-    const why = [...(r.rejections || []), ...(r.failed_checks || [])];
-    tr.append(cell("td", why.length ? [...new Set(why)].join(", ") : (r.error || "—")));
-    tr.append(cell("td", String(r.tokens || 0)));
-    table.append(tr);
-  }
-  panel.append(table);
-  if (p.stop) {
-    panel.append(cell("p", "stopped: " + p.stop + (p.stop_detail ? " — " + p.stop_detail : ""),
-                      "stop"));
-  }
-  panel.hidden = false;
-}
-
-function renderStats(s) {
-  const rows = [];
-  const add = (k, v) => { if (v !== null && v !== undefined && v !== "") rows.push([k, v]); };
-  if (s.stats) {
-    add("graph", s.stats.graph);
-    add("nodes executed", s.stats.nodes_executed);
-    add("errors", s.stats.errors);
-    add("tokens", s.stats.tokens);
-    add("events", s.stats.events);
-    add("termination", s.stats.termination_reason);
-  }
-  add("cost (USD)", s.cost_usd);
-  add("wall ms", s.wall_ms);
-  add("last event", s.last_event_ts);
-  stats.innerHTML = "";
-  for (const [k, v] of rows) {
-    const tr = document.createElement("tr");
-    const th = document.createElement("th"); th.textContent = k;
-    const td = document.createElement("td"); td.textContent = String(v);
-    tr.append(th, td); stats.append(tr);
-  }
-}
-
-const es = new EventSource("/live/api/stream" + location.search);
-es.addEventListener("snapshot", async (e) => {
-  const s = JSON.parse(e.data);
-  // Planning with no graph yet is the run so far, not a run that has not
-  // started: rounds, refusals and tokens are already on disk at this point.
-  const planning = s.planning && !s.planning.has_topology;
-  runEl.textContent = s.run_id ? "run " + s.run_id : "";
-  status.textContent = s.done ? "finished"
-    : (s.awaiting_approval ? "awaiting approval"
-    : (s.active ? (planning ? "planning" : "running")
-    : (s.run_id ? "idle" : "waiting")));
-  renderStats(s);
-  renderPlanning(s.planning);
-  if (planning && !s.done) {
-    // The "no graph ran" placeholder is an answer for a finished run, not for
-    // one whose planner is still thinking.
-    graph.textContent = "planning…";
-    src.hidden = true;
-    return;
-  }
-  if (!s.mermaid) return;
-  src.textContent = s.mermaid;
-  if (s.mermaid_live_url) { mlive.href = s.mermaid_live_url; mlive.hidden = false; }
-  if (mermaid) {
-    try {
-      const { svg } = await mermaid.render("live" + (seq++), s.mermaid);
-      graph.innerHTML = svg;
-      src.hidden = true;
-    } catch { graph.textContent = ""; src.hidden = false; }
-  } else {
-    graph.textContent = "";
-    src.hidden = false;
-  }
-});
-es.addEventListener("done", () => { es.close(); status.textContent = "finished"; });
-es.onerror = () => {
-  if (es.readyState === EventSource.CONNECTING) status.textContent = "reconnecting…";
-};
-</script></body></html>
-"""
+# The pages live in `static/` as real files, packaged with the wheel and
+# loaded through `_static`. They keep sentinel replacement (`__ROWS__`,
+# `__REASON__`, `__NEXT__`), not str.format — JS/CSS braces would fight the
+# format machinery. Fully self-contained: no CDN, no external request; the
+# mermaid.live link every snapshot carries remains the degraded path.
 
 __all__ = [
     "ACTIVE_WINDOW_SECONDS",

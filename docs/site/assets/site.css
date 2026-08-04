@@ -1,0 +1,415 @@
+/* GraphARC site. Layout first; the hero animation keyframes live at the
+ * bottom inside a prefers-reduced-motion: no-preference query — the SVG
+ * markup is authored in its final "proof frame" state, so with animations
+ * off (or this file missing) the hero is a meaningful still. */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--g-bg);
+  color: var(--g-text);
+  font-family: var(--g-font-sans);
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+a { color: var(--g-blue-hi); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code {
+  font-family: var(--g-font-mono);
+  font-size: 0.9em;
+  background: var(--g-surface);
+  border: 1px solid var(--g-border);
+  border-radius: var(--g-radius-chip);
+  padding: 0.1em 0.35em;
+}
+h1, h2, h3 { line-height: 1.2; letter-spacing: -0.02em; }
+h2 { font-size: 1.6rem; margin: 0 0 var(--g-space-2); }
+
+.skip {
+  position: absolute;
+  left: -999px;
+  top: 0;
+  background: var(--g-card);
+  padding: var(--g-space-2) var(--g-space-4);
+}
+.skip:focus { left: var(--g-space-2); z-index: 10; }
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: var(--g-max-content);
+  margin: 0 auto;
+  padding: var(--g-space-4) var(--g-space-6);
+}
+.top img { height: 40px; width: auto; }
+.top nav { display: flex; gap: var(--g-space-6); }
+.top nav a { color: var(--g-text-2); }
+.top nav a:hover { color: var(--g-text); }
+
+main > section {
+  max-width: var(--g-max-content);
+  margin: 0 auto;
+  padding: var(--g-space-16) var(--g-space-6);
+}
+.section-sub { color: var(--g-text-2); max-width: var(--g-max-prose); margin-top: 0; }
+
+/* ------------------------------------------------------------------ hero */
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  gap: var(--g-space-12);
+  align-items: center;
+  padding-top: var(--g-space-12);
+}
+.eyebrow {
+  color: var(--g-text-2);
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+  margin: 0 0 var(--g-space-4);
+}
+.hero h1 {
+  font-size: clamp(2rem, 5vw, 3.25rem);
+  font-weight: 700;
+  margin: 0 0 var(--g-space-4);
+  background: var(--g-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.hero .sub { color: var(--g-text-2); margin: 0 0 var(--g-space-6); }
+.cta { display: flex; gap: var(--g-space-3); flex-wrap: wrap; }
+.button {
+  display: inline-block;
+  padding: 0.55rem 1.3rem;
+  border-radius: var(--g-radius-chip);
+  border: 1px solid var(--g-border-hi);
+  color: var(--g-text);
+  font-weight: 600;
+}
+.button:hover { border-color: var(--g-blue); text-decoration: none; }
+.button.primary {
+  background: var(--g-gradient);
+  border: none;
+  color: #06090f;
+}
+.hero-art svg { width: 100%; height: auto; display: block; }
+.art-controls { text-align: right; margin: var(--g-space-2) 0 0; }
+.art-controls button {
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--g-text-3);
+  background: none;
+  border: 1px solid var(--g-border);
+  border-radius: var(--g-radius-chip);
+  padding: 0.15rem 0.7rem;
+  cursor: pointer;
+}
+.art-controls button:hover { color: var(--g-text); border-color: var(--g-border-hi); }
+
+@media (max-width: 900px) {
+  .hero { grid-template-columns: 1fr; gap: var(--g-space-8); }
+}
+
+/* --------------------------------------------------------- hero SVG marks */
+
+#run text {
+  font-family: var(--g-font-mono);
+  font-size: 13px;
+  fill: var(--g-text-2);
+  text-anchor: middle;
+}
+#run .planner rect { fill: var(--g-card); stroke: var(--g-violet-hi); stroke-width: 1.5; }
+#run .planner text { fill: var(--g-violet-hi); }
+#run .gate-bar { stroke: url(#arc); stroke-width: 4; stroke-linecap: round; }
+#run .gate-label { font-size: 10px; letter-spacing: 0.12em; fill: var(--g-text-3); text-transform: uppercase; }
+
+#run .prop rect {
+  fill: none;
+  stroke: var(--g-status-proposed);
+  stroke-width: 1.3;
+  stroke-dasharray: 4 3;
+}
+#run .prop text { font-size: 11px; fill: var(--g-status-proposed); }
+#run .prop { opacity: 0; } /* proposals are transient; final frame shows none */
+
+#run .chip rect { fill: var(--g-surface); stroke-width: 1.3; }
+#run .chip text { font-size: 11px; letter-spacing: 0.02em; }
+#run .chip-rejected rect { stroke: var(--g-status-rejected); }
+#run .chip-rejected text { fill: var(--g-status-rejected); }
+#run .chip-admitted { opacity: 0; }
+#run .chip-admitted rect { stroke: var(--g-status-done); }
+#run .chip-admitted text { fill: var(--g-status-done); }
+#run .chip-stop rect { stroke: var(--g-status-done); fill: none; }
+#run .chip-stop text { fill: var(--g-status-done); font-size: 12px; }
+
+#run .wire { fill: none; stroke: #3d4250; stroke-width: 1.4; }
+#run .node rect {
+  fill: rgba(52, 211, 153, 0.07);
+  stroke: var(--g-status-done);
+  stroke-width: 1.5;
+}
+#run .node text { fill: var(--g-text); font-size: 12.5px; }
+#run .node .spend { font-size: 10px; fill: var(--g-teal); }
+
+#run .meter .track { fill: var(--g-border); }
+#run .meter .fill { fill: var(--g-budget-fill); transform-box: fill-box; transform-origin: left; }
+#run .meter .readout { font-size: 11px; fill: var(--g-text-2); text-anchor: end; }
+
+/* ----------------------------------------------------------------- cards */
+
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--g-space-6); margin-top: var(--g-space-8); }
+.card {
+  background: var(--g-card);
+  border: 1px solid var(--g-border);
+  border-radius: var(--g-radius-card);
+  padding: var(--g-space-6);
+  border-top: 3px solid transparent;
+  background-clip: padding-box;
+  position: relative;
+}
+.card::before {
+  content: "";
+  position: absolute;
+  inset: -1px -1px auto -1px;
+  height: 3px;
+  border-radius: var(--g-radius-card) var(--g-radius-card) 0 0;
+  background: var(--g-gradient);
+}
+.card h3 { margin-top: 0; }
+.card p { color: var(--g-text-2); margin-bottom: 0; }
+
+@media (max-width: 900px) { .cards { grid-template-columns: 1fr; } }
+
+/* ------------------------------------------------------------- comparison */
+
+.compare {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--g-space-4);
+  margin-top: var(--g-space-8);
+}
+.compare article {
+  background: var(--g-surface);
+  border: 1px solid var(--g-border);
+  border-radius: var(--g-radius-card);
+  padding: var(--g-space-4) var(--g-space-4) var(--g-space-2);
+}
+.compare article.self { border-color: var(--g-teal); background: var(--g-card); }
+.compare h3 { margin: 0 0 var(--g-space-2); font-size: 1rem; }
+.compare p { color: var(--g-text-2); font-size: 0.92rem; }
+
+@media (max-width: 900px) {
+  .compare { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 560px) {
+  .compare { grid-template-columns: 1fr; }
+}
+
+/* ------------------------------------------------------------- quickstart */
+
+.term {
+  background: var(--g-card);
+  border: 1px solid var(--g-border);
+  border-radius: var(--g-radius-card);
+  margin: var(--g-space-4) 0;
+  position: relative;
+  overflow: hidden;
+}
+.term-bar { display: flex; gap: 6px; padding: 10px 14px 0; }
+.term-bar span { width: 10px; height: 10px; border-radius: 50%; background: var(--g-border-hi); }
+.term pre { margin: 0; padding: var(--g-space-4); overflow-x: auto; }
+.term code { background: none; border: none; padding: 0; font-size: 0.88rem; color: var(--g-text); }
+.term .cm { color: var(--g-text-3); }
+.term.output pre { padding-top: var(--g-space-4); }
+.term .rej { color: var(--g-status-rejected); font-weight: 600; }
+.term .adm { color: var(--g-status-done); font-weight: 600; }
+.term .copy {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--g-text-3);
+  background: var(--g-surface);
+  border: 1px solid var(--g-border);
+  border-radius: var(--g-radius-chip);
+  padding: 0.1rem 0.6rem;
+  cursor: pointer;
+}
+.term .copy:hover { color: var(--g-text); }
+
+.demo { margin: var(--g-space-8) 0 0; }
+.demo video { max-width: 100%; height: auto; border-radius: var(--g-radius-card); border: 1px solid var(--g-border); }
+.demo figcaption { color: var(--g-text-2); font-size: 0.9rem; margin-top: var(--g-space-2); }
+
+/* ----------------------------------------------------------------- status */
+
+.status {
+  background: var(--g-surface);
+  border-radius: var(--g-radius-card);
+  max-width: var(--g-max-content);
+}
+.status p { max-width: var(--g-max-prose); color: var(--g-text-2); }
+
+/* ----------------------------------------------------------------- footer */
+
+footer {
+  max-width: var(--g-max-content);
+  margin: 0 auto;
+  padding: var(--g-space-12) var(--g-space-6) var(--g-space-16);
+  color: var(--g-text-3);
+  font-size: 0.9rem;
+}
+footer nav { display: flex; gap: var(--g-space-4); flex-wrap: wrap; margin: var(--g-space-3) 0; }
+footer nav a { color: var(--g-text-2); }
+
+/* ==================================================== the hero animation
+ *
+ * One 12s clock shared by every element — delays are keyframe percentages,
+ * so the scene can never drift out of sync. Everything uses
+ * animation-fill-mode: both, and each keyframe set begins from the element's
+ * pre-run state, overriding the static final-frame styling above only while
+ * animations actually run.
+ */
+
+@media (prefers-reduced-motion: no-preference) {
+  #run .scene,
+  #run .prop, #run .gate, #run .gate-bar,
+  #run .chip-rejected, #run .chip-admitted, #run .chip-stop,
+  #run .wire, #run .node rect, #run .node .spend,
+  #run .meter .fill, #run .meter .readout {
+    animation-duration: 12s;
+    animation-iteration-count: infinite;
+    animation-fill-mode: both;
+    animation-timing-function: ease-in-out;
+  }
+  /* replay/pause hooks (site.js) */
+  #run.reset * { animation: none !important; }
+  #run.offscreen * { animation-play-state: paused; }
+
+  #run .scene { animation-name: g-scene; }
+  #run .prop-1 { animation-name: g-prop1; }
+  #run .prop-2 { animation-name: g-prop2; }
+  #run .gate { animation-name: g-gate-shake; }
+  #run .gate-bar { animation-name: g-gate; }
+  #run .chip-rejected { animation-name: g-chip-rej; transform-box: fill-box; transform-origin: center; }
+  #run .chip-admitted { animation-name: g-chip-adm; transform-box: fill-box; transform-origin: center; }
+  #run .chip-stop { animation-name: g-chip-stop; transform-box: fill-box; transform-origin: center; }
+  #run .wire { animation-name: g-wire; }
+  #run .meter .fill { animation-name: g-meter; }
+  #run .meter .readout { animation-name: g-fade-late; }
+  #run .n-a rect { animation-name: g-run-a; }
+  #run .n-b rect { animation-name: g-run-b; }
+  #run .n-c rect { animation-name: g-run-b; }
+  #run .n-d rect { animation-name: g-run-d; }
+  #run .n-e rect { animation-name: g-run-e; }
+  #run .n-f rect { animation-name: g-run-f; }
+  #run .n-a .spend { animation-name: g-spend-a; }
+  #run .n-b .spend, #run .n-c .spend { animation-name: g-spend-b; }
+  #run .n-d .spend { animation-name: g-spend-d; }
+  #run .n-e .spend { animation-name: g-spend-e; }
+  #run .n-f .spend { animation-name: g-spend-f; }
+
+  @keyframes g-scene {
+    0% { opacity: 0.25; } 2% { opacity: 1; } 96% { opacity: 1; } 100% { opacity: 0.25; }
+  }
+
+  /* proposal 1 flies to the gate, recoils, dissolves. Nothing ran: the
+     meter (below) stays at zero until the admitted graph executes. */
+  @keyframes g-prop1 {
+    0%, 2% { opacity: 0; transform: translateX(-28px); }
+    4% { opacity: 1; transform: translateX(-22px); }
+    8%, 10% { opacity: 1; transform: translateX(28px); }
+    13%, 100% { opacity: 0; transform: translateX(2px); }
+  }
+  @keyframes g-prop2 {
+    0%, 25% { opacity: 0; transform: translateX(-28px); }
+    27% { opacity: 1; transform: translateX(-22px); }
+    31%, 35% { opacity: 1; transform: translateX(28px); }
+    40%, 100% { opacity: 0; transform: translateX(34px); }
+  }
+  @keyframes g-gate {
+    0%, 8% { stroke: url(#arc); }
+    9%, 12% { stroke: var(--g-status-rejected); }
+    14%, 32% { stroke: url(#arc); }
+    33%, 37% { stroke: var(--g-status-done); }
+    39%, 100% { stroke: url(#arc); }
+  }
+  @keyframes g-gate-shake {
+    0%, 8.5%, 12%, 100% { transform: translateX(0); }
+    9.5% { transform: translateX(-3px); }
+    10.5% { transform: translateX(3px); }
+    11.2% { transform: translateX(-2px); }
+  }
+  @keyframes g-chip-rej {
+    0%, 13% { opacity: 0; transform: scale(0.85); }
+    15%, 100% { opacity: 1; transform: scale(1); }
+  }
+  @keyframes g-chip-adm {
+    0%, 36% { opacity: 0; transform: scale(0.85); }
+    38%, 44% { opacity: 1; transform: scale(1); }
+    47%, 100% { opacity: 0; transform: scale(1); }
+  }
+  @keyframes g-chip-stop {
+    0%, 84% { opacity: 0; transform: scale(0.85); }
+    86%, 100% { opacity: 1; transform: scale(1); }
+  }
+  @keyframes g-wire {
+    0%, 42% { opacity: 0; }
+    46%, 100% { opacity: 1; }
+  }
+
+  /* the admitted nodes: ghost in blue, run amber, land green */
+  @keyframes g-run-a {
+    0%, 38% { opacity: 0; stroke: var(--g-status-admitted); fill: var(--g-card); }
+    44%, 45% { opacity: 1; stroke: var(--g-status-admitted); fill: var(--g-card); }
+    47%, 52% { opacity: 1; stroke: var(--g-status-running); fill: rgba(251, 191, 36, 0.10); }
+    54%, 100% { opacity: 1; stroke: var(--g-status-done); fill: rgba(52, 211, 153, 0.07); }
+  }
+  @keyframes g-run-b {
+    0%, 38% { opacity: 0; stroke: var(--g-status-admitted); fill: var(--g-card); }
+    44%, 53% { opacity: 1; stroke: var(--g-status-admitted); fill: var(--g-card); }
+    55%, 61% { opacity: 1; stroke: var(--g-status-running); fill: rgba(251, 191, 36, 0.10); }
+    63%, 100% { opacity: 1; stroke: var(--g-status-done); fill: rgba(52, 211, 153, 0.07); }
+  }
+  @keyframes g-run-d {
+    0%, 38% { opacity: 0; stroke: var(--g-status-admitted); fill: var(--g-card); }
+    44%, 62% { opacity: 1; stroke: var(--g-status-admitted); fill: var(--g-card); }
+    64%, 69% { opacity: 1; stroke: var(--g-status-running); fill: rgba(251, 191, 36, 0.10); }
+    71%, 100% { opacity: 1; stroke: var(--g-status-done); fill: rgba(52, 211, 153, 0.07); }
+  }
+  @keyframes g-run-e {
+    0%, 38% { opacity: 0; stroke: var(--g-status-admitted); fill: var(--g-card); }
+    44%, 70% { opacity: 1; stroke: var(--g-status-admitted); fill: var(--g-card); }
+    72%, 76% { opacity: 1; stroke: var(--g-status-running); fill: rgba(251, 191, 36, 0.10); }
+    78%, 100% { opacity: 1; stroke: var(--g-status-done); fill: rgba(52, 211, 153, 0.07); }
+  }
+  @keyframes g-run-f {
+    0%, 38% { opacity: 0; stroke: var(--g-status-admitted); fill: var(--g-card); }
+    44%, 77% { opacity: 1; stroke: var(--g-status-admitted); fill: var(--g-card); }
+    79%, 83% { opacity: 1; stroke: var(--g-status-running); fill: rgba(251, 191, 36, 0.10); }
+    85%, 100% { opacity: 1; stroke: var(--g-status-done); fill: rgba(52, 211, 153, 0.07); }
+  }
+
+  /* spend chips fade in as each node lands */
+  @keyframes g-spend-a { 0%, 54% { opacity: 0; } 57%, 100% { opacity: 1; } }
+  @keyframes g-spend-b { 0%, 63% { opacity: 0; } 66%, 100% { opacity: 1; } }
+  @keyframes g-spend-d { 0%, 71% { opacity: 0; } 74%, 100% { opacity: 1; } }
+  @keyframes g-spend-e { 0%, 78% { opacity: 0; } 81%, 100% { opacity: 1; } }
+  @keyframes g-spend-f { 0%, 85% { opacity: 0; } 88%, 100% { opacity: 1; } }
+
+  /* the meter fills in steps — spend is per node, not a smooth ramp */
+  @keyframes g-meter {
+    0%, 53% { transform: scaleX(0); }
+    54%, 62% { transform: scaleX(0.14); }
+    63%, 70% { transform: scaleX(0.46); }
+    71%, 77% { transform: scaleX(0.62); }
+    78%, 84% { transform: scaleX(0.80); }
+    85%, 100% { transform: scaleX(1); }
+  }
+  @keyframes g-fade-late { 0%, 52% { opacity: 0; } 56%, 100% { opacity: 1; } }
+}

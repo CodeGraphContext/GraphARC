@@ -311,7 +311,7 @@ def test_plan_approve_in_json_mode_emits_one_document(tmp_path, capsys):
     trace = tmp_path / "run" / "trace.jsonl"
 
     code = main(
-        ["plan", "ship it", "--approve", "--approval-timeout", "0.2",
+        ["plan", "ship it", "--scripted", "--go", "--approve", "--approval-timeout", "0.2",
          "--trace", str(trace), "--json"]
     )
     captured = capsys.readouterr()
@@ -327,6 +327,16 @@ def test_plan_approve_in_text_mode_still_announces_how_to_answer(tmp_path, capsy
     """Silencing the notice in JSON mode must not silence it for a human."""
     trace = tmp_path / "run" / "trace.jsonl"
 
-    main(["plan", "ship it", "--approve", "--approval-timeout", "0.2", "--trace", str(trace)])
+    main([
+        "plan",
+        "ship it",
+        "--scripted",
+        "--go",
+        "--approve",
+        "--approval-timeout",
+        "0.2",
+        "--trace",
+        str(trace),
+    ])
 
     assert "grapharc approve" in capsys.readouterr().out

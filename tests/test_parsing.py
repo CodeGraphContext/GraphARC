@@ -124,3 +124,88 @@ def test_verifier_accepts_a_fenced_reply():
     )
     assert verdict.accepted is True
     assert verdict.reason == "stated verbatim"
+
+
+# -- reasoning blocks, multiple fences, and the one permitted repair ---------
+
+
+def test_a_think_block_is_stripped_before_extraction():
+    from grapharc.runtime.parsing import extract_json
+
+    reply = '<think>I should answer with an object.</think>{"answer": 1}'
+    assert extract_json(reply) == {"answer": 1}
+
+
+def test_a_longer_draft_inside_think_does_not_beat_the_real_answer():
+    from grapharc.runtime.parsing import extract_json
+
+    # The draft is longer than the answer; before think-stripping it won the
+    # objects-longest-first ranking and the model's actual reply was discarded.
+    draft = '{"nodes": [{"name": "a"}, {"name": "b"}, {"name": "c"}], "draft": true}'
+    reply = f"<think>maybe {draft}</think>\n" '{"nodes": [{"name": "final"}]}'
+    assert extract_json(reply) == {"nodes": [{"name": "final"}]}
+
+
+def test_a_fenced_draft_inside_think_does_not_win_over_the_visible_answer():
+    from grapharc.runtime.parsing import extract_json
+
+    reply = (
+        '<think>```json\n{"draft": true}\n```</think>\n'
+        'Here you go: {"final": true}'
+    )
+    assert extract_json(reply) == {"final": True}
+
+
+def test_a_reply_that_is_entirely_think_block_is_still_scanned():
+    from grapharc.runtime.parsing import extract_json
+
+    assert extract_json('<think>{"only": "copy"}</think>') == {"only": "copy"}
+
+
+def test_an_orphan_closing_think_tag_is_ignored():
+    from grapharc.runtime.parsing import extract_json
+
+    assert extract_json('</think>\n{"answer": 2}') == {"answer": 2}
+
+
+def test_an_unclosed_think_block_falls_back_to_the_original_text():
+    from grapharc.runtime.parsing import extract_json
+
+    # Truncated reply: the block opens and never closes; the answer inside is
+    # still reachable through the fallback tier.
+    assert extract_json('<think>so {"answer": 3} is right') == {"answer": 3}
+
+
+def test_a_think_tag_inside_a_json_string_survives():
+    from grapharc.runtime.parsing import extract_json
+
+    reply = '{"note": "models emit <think>stuff</think> sometimes"}'
+    assert extract_json(reply) == {"note": "models emit <think>stuff</think> sometimes"}
+
+
+def test_a_junk_first_fence_does_not_strand_a_later_valid_fence():
+    from grapharc.runtime.parsing import extract_json
+
+    reply = (
+        "```\nnot json at all\n```\n"
+        'and the answer:\n```json\n{"answer": 4}\n```'
+    )
+    assert extract_json(reply) == {"answer": 4}
+
+
+def test_a_trailing_comma_is_repaired_only_when_nothing_parses_without_it():
+    from grapharc.runtime.parsing import extract_json
+
+    assert extract_json('{"nodes": [{"name": "a"},], "edges": [],}') == {
+        "nodes": [{"name": "a"}],
+        "edges": [],
+    }
+
+
+def test_repair_never_touches_comma_bracket_sequences_inside_strings():
+    from grapharc.runtime.parsing import extract_json
+
+    # The ",]" inside the string is data; only the structural trailing comma
+    # outside it may be removed.
+    reply = '{"text": "a,] b", "items": [1, 2,]}'
+    assert extract_json(reply) == {"text": "a,] b", "items": [1, 2]}

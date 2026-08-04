@@ -143,25 +143,36 @@ _PROMPTS = {
 }
 
 
-def _collect_context(spec: Any) -> Any:
-    """List the workspace, so a run has somewhere to start with no model."""
+def _collect_context_for(workspace: Any = None) -> Any:
+    """A factory listing *the run's* workspace, so a run has somewhere to
+    start with no model. Parameterised rather than hard-coded to `Path.cwd()`:
+    a `--workspace` that moved the tools but not this listing would report a
+    directory the agents cannot reach — the one lie a context phase must not
+    tell."""
 
-    def body(state: WorkState) -> dict:
-        from pathlib import Path
+    def factory(spec: Any) -> Any:
+        def body(state: WorkState) -> dict:
+            from pathlib import Path
 
-        root = Path.cwd()
-        names = sorted(
-            str(p.relative_to(root))
-            for p in root.iterdir()
-            if not p.name.startswith(".")
-        )[:50]
-        found = f"workspace contains {len(names)} visible entries: {', '.join(names)}"
-        # Only the new item: `findings` carries an `operator.add` reducer, so
-        # returning the accumulated list would append it to itself.
-        return {"findings": [found]}
+            root = Path(workspace) if workspace is not None else Path.cwd()
+            names = sorted(
+                str(p.relative_to(root))
+                for p in root.iterdir()
+                if not p.name.startswith(".")
+            )[:50]
+            found = f"workspace contains {len(names)} visible entries: {', '.join(names)}"
+            # Only the new item: `findings` carries an `operator.add` reducer,
+            # so returning the accumulated list would append it to itself.
+            return {"findings": [found]}
 
-    body.writes = {"findings"}
-    return body
+        body.writes = {"findings"}
+        return body
+
+    return factory
+
+
+#: The unparameterised form, kept for direct importers.
+_collect_context = _collect_context_for()
 
 
 def _checkpoint(spec: Any) -> Any:
@@ -266,7 +277,9 @@ def default_harness(tools: tuple[str, ...], workspace: Any = None) -> Any:
     return Harness(registry=registry, policy=policy, executor=LocalExecutor())
 
 
-def build_registry(model: Any = None, *, harness_for: Any = None) -> Any:
+def build_registry(
+    model: Any = None, *, harness_for: Any = None, workspace: Any = None
+) -> Any:
     """The shipped registry. Deterministic kinds always; agent kinds with a model.
 
     With no model the agent-backed kinds are **left out entirely** rather than
@@ -274,15 +287,19 @@ def build_registry(model: Any = None, *, harness_for: Any = None) -> Any:
     `unknown kind` and the list of what is allowed — which tells the truth. A
     registered-but-bodyless kind would instead pass the gate and fail at
     materialisation, which is a worse error at a later moment.
+
+    `workspace` confines the agent kinds' tools — and the `collect_context`
+    listing — to one directory instead of the process cwd. Ignored when the
+    caller supplies its own `harness_for`, which already decided that.
     """
     from grapharc.planner import CostEstimate, NodeRegistry, NodeSpec
 
-    harness_for = harness_for or default_harness
+    harness_for = harness_for or (lambda tools: default_harness(tools, workspace))
     specs = [
         NodeSpec(
             name="collect_context",
             description="list the workspace so later phases have somewhere to start",
-            factory=_collect_context,
+            factory=_collect_context_for(workspace),
             worst_case=CostEstimate(iterations=1),
         ),
         NodeSpec(
@@ -293,6 +310,15 @@ def build_registry(model: Any = None, *, harness_for: Any = None) -> Any:
         ),
     ]
     if model is not None:
+        # The catalog is what a planner actually chooses from, so `summarize`
+        # states the completion rule outright rather than leaving the model to
+        # infer it from failed rounds.
+        described = {
+            "summarize": (
+                "write the final human-facing report; the run is complete "
+                "once this has run"
+            ),
+        }
         for kind, tokens in (
             ("investigate", 4000),
             ("apply_change", 6000),
@@ -302,7 +328,7 @@ def build_registry(model: Any = None, *, harness_for: Any = None) -> Any:
             specs.append(
                 NodeSpec(
                     name=kind,
-                    description=_PROMPTS[kind].split(".")[0],
+                    description=described.get(kind, _PROMPTS[kind].split(".")[0]),
                     factory=_agent_factory(model, harness_for, kind),
                     worst_case=CostEstimate(iterations=1, tokens=tokens),
                 )
@@ -327,6 +353,24 @@ def default_edge_policy() -> Any:
 def catalog_for_prompt(model: Any = None) -> dict[str, str]:
     """Kind -> description, for handing to a model that must choose among them."""
     return build_registry(model).catalog()
+
+
+#: Told to the planner verbatim. The completion rule below is deterministic
+#: code the model cannot argue with; a model that was never told it burned its
+#: rounds on investigate-only plans that could never finish, then stopped on
+#: `no_progress` with the work done and the run reported failed.
+_PLANNER_INSTRUCTIONS = (
+    "The run is judged complete by deterministic code when a report lands in "
+    "`notes`, and only `apply_change` and `summarize` write there. "
+    "Investigation alone never finishes the run: end every plan with a "
+    "`summarize` node that takes an edge from your other phases and writes "
+    "the final report. A goal with several independent parts requires one "
+    "`investigate` node PER part — named after its part, e.g. "
+    "investigate_repo, investigate_docs — all taking an edge from the same "
+    "predecessor so they execute in parallel, with `summarize` joining "
+    "them. A single combined investigate node for a multi-part goal is "
+    "wrong: it serializes work the goal asked to run simultaneously."
+)
 
 
 def goal_met(state: Any) -> bool:
@@ -429,6 +473,7 @@ def build_loop(
             edge_policy=edge_policy,
             node_policy=node_policy,
             trace=trace,
+            instructions=_PLANNER_INSTRUCTIONS,
         ),
         checker=AdmissionChecker(
             registry=registry,

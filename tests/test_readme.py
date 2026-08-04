@@ -50,20 +50,33 @@ def test_the_section_still_holds_the_two_blocks_this_file_checks():
     assert langs == ["bash", "", "python", ""], langs
 
 
-def test_the_shell_block_is_the_command_and_the_output_it_really_prints(capsys):
+def test_the_shell_block_is_the_command_and_the_output_it_really_prints(
+    capsys, tmp_path, monkeypatch
+):
     shell, expected, *_ = (body for _, body in _blocks(SECTION))
     command = shell.strip()
 
     assert command.startswith("grapharc plan "), command
-    goal = command.removeprefix("grapharc plan ").strip().strip('"')
+    import shlex
 
-    code = main(["plan", goal])
+    argv = shlex.split(command)[1:]  # drop the program name; keep flags intact
+
+    # A scratch cwd: run output must not depend on the developer's checkout —
+    # a leftover `.grapharc/` policy cache or a running live server would flip
+    # the policy/watch lines and fail the byte comparison for the wrong reason.
+    monkeypatch.chdir(tmp_path)
+    code = main(argv)
     printed = capsys.readouterr().out
 
     assert code == 0
-    # The trace path is a fresh temp dir on every run, so the page does not
-    # quote it. Everything above it is fixed and is compared exactly.
-    kept = [line for line in printed.splitlines() if not line.startswith("trace     :")]
+    # The trace path (and the watch line derived from it) varies per run and
+    # per machine, so the page does not quote either. Everything else is fixed
+    # and is compared exactly.
+    kept = [
+        line
+        for line in printed.splitlines()
+        if not line.startswith(("trace     :", "watch     :"))
+    ]
     assert _normalise("\n".join(kept)) == _normalise(expected)
 
 

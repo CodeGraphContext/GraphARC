@@ -238,6 +238,11 @@ def test_wheel_ships_every_file_in_the_package(tmp_path):
     for subpackage in ("planner", "policy", "server", "session", "tools"):
         assert f"grapharc/{subpackage}/__init__.py" in packaged
 
+    # Non-Python package data: the live view's frontend is real files, and a
+    # wheel that drops them serves a 500 where the dashboard should be.
+    for asset in ("view.html", "view.css", "view.js", "index.html", "signin.html"):
+        assert f"grapharc/server/static/{asset}" in packaged
+
 
 def test_manifest_in_mirrors_the_hatch_sdist_allowlist():
     """MANIFEST.in is not read by hatchling, so nothing else stops it lying."""

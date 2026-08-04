@@ -28,7 +28,6 @@ stopped short for a recorded reason (refused, out of budget, out of rounds),
 
 from __future__ import annotations
 
-import importlib
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,10 +41,390 @@ from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit, fail
 from grapharc.cli.runid import refuse_reused_run_id
 
 DEFAULT_REGISTRY = "grapharc.examples.plan_incident:build_registry"
+STDLIB_REGISTRY = "grapharc.stdlib:build_registry"
+PLAN_FILENAME = "plan.json"
+
+
+def resolve_registry_target(
+    configured: str | None, *, scripted: bool, use_default: bool
+) -> str:
+    """Which registry governs this run, by one visible chain.
+
+    Flag/config first, always. Then, unconfigured: a `registry.py` in this
+    directory is *yours* and wins — that is what `grapharc init` scaffolds
+    and what an operator expects to be running. `--default` forces the
+    built-in general-purpose kinds past all of that. With nothing at all:
+    the built-ins for real runs; the shipped rehearsal registry for
+    `--scripted`, whose canned replies exist to demonstrate a refusal.
+    """
+    if use_default:
+        return STDLIB_REGISTRY
+    if configured:
+        return configured
+    if Path("registry.py").is_file():
+        return "registry.py:build_registry"
+    if scripted:
+        return DEFAULT_REGISTRY
+    return STDLIB_REGISTRY
+
+
+def default_trace_path() -> Path:
+    """`.grapharc/runs/<utc-stamp>-<6 hex>/trace.jsonl` under cwd.
+
+    The same shape the Slack gate mints, and — deliberately — inside the
+    directory `grapharc serve --live-root .grapharc/runs` serves, so a default
+    run is watchable without anyone passing `--trace`. The random suffix keeps
+    two plans started in the same second apart. Falls back to the old tempdir
+    when cwd is unwritable: a read-only checkout must not make `plan` exit 2
+    over a file the operator never asked for.
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    run_dir = Path(".grapharc") / "runs" / f"{stamp}-{uuid.uuid4().hex[:6]}"
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return Path(tempfile.mkdtemp(prefix="grapharc-plan-")) / "trace.jsonl"
+    return run_dir / "trace.jsonl"
+
+
+def watch_url(trace_path: Path, *, run_id: str | None = None, timeout: float = 0.25) -> str | None:
+    """The live-view URL for this trace, when a server is up to serve it.
+
+    `.grapharc/live-server.json` (written by `grapharc serve --live-root`)
+    names the server; the URL is returned only when (a) the trace resolves
+    under the marker's live root and (b) one loopback TCP connect — never
+    slower than `timeout` — answers, so a marker left by a crashed server is
+    harmless. None on every other path; the caller decides what hint to print
+    instead, because a guessed URL is worse than an honest instruction.
+    """
+    import json
+    import socket
+    from urllib.parse import quote
+
+    marker = Path(".grapharc") / "live-server.json"
+    try:
+        record = json.loads(marker.read_text(encoding="utf-8"))
+        root = Path(record["live_root"])
+        base = str(record["url"])
+        host, port = str(record["host"]), int(record["port"])
+    except (OSError, ValueError, KeyError):
+        return None
+    try:
+        rel = trace_path.resolve().relative_to(root)
+    except ValueError:
+        return None
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            pass
+    except OSError:
+        return None
+    url = f"{base}/live/view?trace={quote(rel.as_posix(), safe='')}"
+    if run_id:
+        url += f"&run={quote(run_id)}"
+    return url
+
+
+def watch_hint(trace_path: Path) -> str:
+    """What to print when no live server answers: the command, then the URL.
+
+    The user asked for the link to always exist — so when it cannot be exact,
+    it is an instruction that produces the exact one.
+    """
+    try:
+        rel = trace_path.resolve().relative_to((Path(".grapharc") / "runs").resolve())
+        from urllib.parse import quote
+
+        would_be = f"http://127.0.0.1:8000/live/view?trace={quote(rel.as_posix(), safe='')}"
+        return f"run `grapharc serve --live-root .grapharc/runs` then open {would_be}"
+    except ValueError:
+        return (
+            f"run `grapharc serve --live-root {trace_path.parent}` "
+            f"then open http://127.0.0.1:8000/live"
+        )
 
 
 class PlanSetupError(Exception):
     """Raised before anything runs, so a bad flag never half-executes a plan."""
+
+
+def _write_plan_file(run_dir: Path, *, goal, registry_target, model_spec, result) -> None:
+    """Persist the admitted-but-unexecuted plan next to its trace.
+
+    What `grapharc go` reads. The proposal is stored whole and re-judged by
+    admission at execution time — a hand-edited plan.json is a new proposal,
+    not a pre-approved one.
+    """
+    import json
+    from datetime import UTC, datetime
+
+    admitted = next(
+        (r for r in reversed(result.rounds) if r.proposal is not None and r.admission
+         and r.admission.status.value == "admitted"),
+        None,
+    )
+    if admitted is None:
+        return
+    (run_dir / PLAN_FILENAME).write_text(
+        json.dumps(
+            {
+                "goal": goal,
+                "registry": registry_target,
+                "model": model_spec,
+                "fingerprint": admitted.proposal.fingerprint(),
+                "proposal": admitted.proposal.model_dump(mode="json"),
+                "planned_at": datetime.now(UTC).isoformat(),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def find_unexecuted_plan(runs_root: Path | None = None) -> Path | None:
+    """The newest saved plan `go` has not executed yet, or None."""
+    import json
+
+    root = runs_root or Path(".grapharc") / "runs"
+    candidates = sorted(root.glob(f"*/{PLAN_FILENAME}"), reverse=True)
+    for candidate in candidates:
+        try:
+            record = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not record.get("executed_run_id"):
+            return candidate
+    return None
+
+
+def execute_plan(
+    target: str | None,
+    *,
+    model_spec: str | None = None,
+    model_arg_pairs: list[str] | None = None,
+    workspace: Path | None = None,
+    policy_path: Path | None = None,
+    tenant: str | None = None,
+    run_id: str | None = None,
+    max_tokens: int | None = None,
+    config_path: Path | None = None,
+    as_json: bool = False,
+) -> int:
+    """`grapharc go [<run-dir>]` — execute a plan `grapharc plan` saved.
+
+    The stored proposal is replayed through the full governed loop — a
+    scripted planner whose one reply *is* the plan — so admission judges it
+    again on the way in: what runs is what the gate admits now, not what a
+    file claims was admitted before. Executing is the human approval; there
+    is no second gate.
+    """
+    import json
+
+    from grapharc.planner import LoopLimits
+    from grapharc.runtime.budget import Budget
+    from grapharc.testing import ScriptedChatModel
+
+    if target is None:
+        plan_file = find_unexecuted_plan()
+        if plan_file is None:
+            return fail(
+                "no unexecuted plan under .grapharc/runs — run `grapharc plan "
+                '"<goal>"` first, or pass a run directory',
+                as_json=as_json,
+                command="go",
+                code=EXIT_FAILED,
+            )
+    else:
+        candidate = Path(target)
+        plan_file = candidate if candidate.name == PLAN_FILENAME else candidate / PLAN_FILENAME
+        if not plan_file.is_file():
+            return fail(
+                f"no {PLAN_FILENAME} in {candidate} — `grapharc plan` writes one "
+                "next to its trace",
+                as_json=as_json,
+                command="go",
+            )
+
+    try:
+        record = json.loads(plan_file.read_text(encoding="utf-8"))
+        from grapharc.planner import Subgraph
+
+        proposal = Subgraph.model_validate(record["proposal"])
+        goal = str(record.get("goal", ""))
+        registry_target = str(record["registry"])
+    except (OSError, ValueError, KeyError) as exc:
+        return fail(f"unreadable plan file {plan_file}: {exc}", as_json=as_json, command="go")
+
+    run_dir = plan_file.parent
+    trace_path = run_dir / "trace.jsonl"
+
+    try:
+        settings = load_settings(config_path)
+        model_spec = settings.resolve("model", model_spec, record.get("model"))
+        tenant = settings.resolve("tenant", tenant, "default")
+        max_tokens = settings.resolve("max_tokens", max_tokens, 100_000)
+        model_args = _parse_model_args(model_arg_pairs)
+        # The registry gets the real model (agent-backed kinds need one); the
+        # PLANNER gets a stand-in whose only reply is the saved plan.
+        model = None
+        model_description = "none (deterministic bodies only)"
+        if model_spec:
+            from grapharc.gateway import get_model
+
+            model = get_model(model_spec, **model_args)
+            model_description = model_spec
+        bundle = resolve_registry(registry_target, model, workspace=workspace)
+        gate_policy, policy_description, policy_source = resolve_or_generate_policy(
+            policy_path,
+            tenant=tenant,
+            model=None,  # executing a saved plan never generates policy
+            goal=goal,
+            catalog=bundle.registry.catalog(),
+            mutating=bundle.mutating,
+            fallback=bundle.default_policy,
+            fallback_label=f"{registry_target} default",
+            registry_target=registry_target,
+        )
+    except (ConfigError, PlanSetupError) as exc:
+        return fail(str(exc), as_json=as_json, command="go", goal=goal)
+    except Exception as exc:  # noqa: BLE001 — a backend that will not load is a setup failure
+        return fail(f"could not load the plan's setup: {exc}", as_json=as_json, command="go")
+
+    from grapharc.examples.plan_incident import IncidentState
+    from grapharc.examples.plan_incident import build_loop as incident_build_loop
+    from grapharc.observe.trace import TraceRecorder
+
+    replay = {
+        "nodes": [n.model_dump(mode="json", exclude={"subgraph"}) for n in proposal.nodes],
+        "edges": [e.model_dump(mode="json") for e in proposal.edges],
+        "rationale": proposal.rationale,
+    }
+    planner_model = ScriptedChatModel(responses=[json.dumps(replay)])
+    schema = bundle.state_schema or IncidentState
+    trace = TraceRecorder(trace_path)
+    build_loop = bundle.build_loop or incident_build_loop
+    loop = build_loop(
+        planner_model,
+        edge_policy=gate_policy.edge,
+        node_policy=gate_policy.node,
+        trace=trace,
+        budget=Budget(max_tokens=max_tokens),
+        limits=LoopLimits(max_rounds=1),
+        registry=bundle.registry,
+        state_schema=schema,
+        writes=bundle.writes,
+        approval=None,
+    )
+    initial = schema(goal=goal) if "goal" in schema.model_fields else schema()
+    result = loop.run(goal, initial, run_id=run_id)
+
+    executed = any(r.executed for r in result.rounds)
+    if executed:
+        record["executed_run_id"] = result.run_id
+        plan_file.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+    url = watch_url(trace_path, run_id=result.run_id)
+    payload = {
+        "ok": executed,
+        "command": "go",
+        "goal": goal,
+        "plan": str(plan_file),
+        "registry": registry_target,
+        "model": model_description,
+        "policy": policy_description,
+        "policy_source": policy_source,
+        "stop": result.stop.value,
+        "detail": result.detail,
+        "executed": executed,
+        "run_id": result.run_id,
+        "trace": str(trace_path),
+        "watch_url": url,
+        "state": result.state.model_dump() if hasattr(result.state, "model_dump") else result.state,
+    }
+    stop_tint = style.ok if executed else style.warn
+    lines = [
+        style.kv("plan", str(plan_file), width=style.LABEL_WIDTH),
+        style.kv("goal", goal, width=style.LABEL_WIDTH),
+        style.kv("model", model_description, width=style.LABEL_WIDTH, tint=style.accent),
+        style.kv("registry", registry_target, width=style.LABEL_WIDTH, tint=style.accent),
+        style.kv(
+            "policy",
+            f"{policy_description}  {style.dim(f'[{policy_source}]')}",
+            width=style.LABEL_WIDTH,
+        ),
+        "",
+        style.kv(
+            "stopped",
+            f"{stop_tint(result.stop.value)}  {style.dim(f'({result.detail})')}",
+            width=style.LABEL_WIDTH,
+        ),
+        style.kv("state", str(result.state), width=style.LABEL_WIDTH),
+        style.kv("trace", str(trace_path), width=style.LABEL_WIDTH, tint=style.accent),
+        style.kv(
+            "watch",
+            url if url else style.dim(watch_hint(trace_path)),
+            width=style.LABEL_WIDTH,
+            tint=style.accent if url else None,
+        ),
+    ]
+    emit(payload, lines, as_json=as_json)
+    return EXIT_OK if executed else EXIT_FAILED
+
+
+def _registry_module(target: str) -> tuple[Any, str]:
+    """The module a `--registry` target names, and the attribute after the colon.
+
+    Two forms, one rule — before the colon: an importable module name, or a
+    `.py` file; after it: the attribute. The path form (detected by a `.py`
+    suffix or a path separator) is what `grapharc init`'s scaffold uses:
+    `registry.py:build_registry`, cwd-relative like everything else here.
+
+    Loaded via `spec_from_file_location` under a deterministic private name
+    derived from the resolved path, registered in `sys.modules` *before*
+    `exec_module` (pydantic model creation looks the module up by name
+    mid-exec), and reused from `sys.modules` on a second call — which is what
+    keeps `resolve_registry` and `_model_for` looking at one module object.
+    `sys.path` is never touched: the file may import installed packages but
+    not unlisted siblings; a package of kinds should use `module:attr`.
+    """
+    import hashlib
+    import importlib.util
+    import os
+    import sys
+
+    module_name, separator, attribute = target.partition(":")
+    if not separator or not attribute:
+        raise PlanSetupError(
+            f"--registry expects module:attr or path/to/file.py:attr, got {target!r}"
+        )
+    if not (module_name.endswith(".py") or os.sep in module_name):
+        try:
+            return importlib.import_module(module_name), attribute
+        except ImportError as exc:
+            raise PlanSetupError(f"--registry {target!r}: {exc}") from exc
+
+    path = Path(module_name)
+    if not path.is_file():
+        raise PlanSetupError(f"--registry {target!r}: no such file: {path}")
+    resolved = path.resolve()
+    private = f"_grapharc_registry_{hashlib.sha1(str(resolved).encode()).hexdigest()[:12]}"
+    cached = sys.modules.get(private)
+    if cached is not None:
+        return cached, attribute
+    spec = importlib.util.spec_from_file_location(private, resolved)
+    if spec is None or spec.loader is None:
+        raise PlanSetupError(f"--registry {target!r}: could not load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[private] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:  # noqa: BLE001 — user code failing at import is a setup failure
+        sys.modules.pop(private, None)
+        raise PlanSetupError(f"--registry {target!r}: {exc}") from exc
+    return module, attribute
 
 
 @dataclass
@@ -75,7 +454,9 @@ class RegistryBundle:
     build_loop: Any = None
 
 
-def resolve_registry(target: str, model: Any = None) -> RegistryBundle:
+def resolve_registry(
+    target: str, model: Any = None, *, workspace: Path | None = None
+) -> RegistryBundle:
     """Import `module:attr` and return `(registry, state_schema, writes)`.
 
     A callable attribute is called, so both `mypkg:build_registry` and
@@ -97,18 +478,25 @@ def resolve_registry(target: str, model: Any = None) -> RegistryBundle:
     silently paired with a schema its nodes cannot write to, or with a policy
     written for someone else's kinds, is worse than one that refuses to load.
     """
-    module_name, separator, attribute = target.partition(":")
-    if not separator or not attribute:
-        raise PlanSetupError(f"--registry expects module:attr, got {target!r}")
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError as exc:
-        raise PlanSetupError(f"--registry {target!r}: {exc}") from exc
+    module, attribute = _registry_module(target)
     registry = getattr(module, attribute, None)
     if registry is None:
-        raise PlanSetupError(f"--registry {target!r}: {module_name} has no {attribute!r}")
+        raise PlanSetupError(f"--registry {target!r}: {module.__name__} has no {attribute!r}")
     if callable(registry):
-        registry = registry(model) if _accepts_an_argument(registry) else registry()
+        kwargs: dict[str, Any] = {}
+        if workspace is not None:
+            # Fail closed, never silently un-confined: a factory that has no
+            # `workspace` parameter cannot honour the flag, and running anyway
+            # would leave the tools on the process cwd the operator asked to
+            # leave behind.
+            if not _accepts_keyword(registry, "workspace"):
+                raise PlanSetupError(
+                    f"--workspace: registry {target!r} does not accept a workspace"
+                )
+            kwargs["workspace"] = workspace
+        registry = (
+            registry(model, **kwargs) if _accepts_an_argument(registry) else registry(**kwargs)
+        )
     default_policy = getattr(module, "default_edge_policy", None)
     return RegistryBundle(
         registry=registry,
@@ -133,6 +521,46 @@ def _accepts_an_argument(factory: Any) -> bool:
         in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
         for parameter in signature.parameters.values()
     )
+
+
+def _accepts_keyword(factory: Any, name: str) -> bool:
+    """Whether `factory` can take `name` as a keyword argument."""
+    import inspect
+
+    try:
+        signature = inspect.signature(factory)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == name and parameter.kind in (
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            return True
+    return False
+
+
+def _parse_model_args(pairs: list[str] | None) -> dict[str, Any]:
+    """`--model-arg KEY=VALUE` pairs into backend-constructor kwargs.
+
+    Values are read as JSON first (`temperature=0` is the number zero, not the
+    string), falling back to the raw string. A pair with no `=` is a setup
+    error before anything runs.
+    """
+    import json as _json
+
+    kwargs: dict[str, Any] = {}
+    for pair in pairs or []:
+        key, separator, raw = pair.partition("=")
+        if not separator or not key:
+            raise PlanSetupError(f"--model-arg expects KEY=VALUE, got {pair!r}")
+        try:
+            kwargs[key] = _json.loads(raw)
+        except ValueError:
+            kwargs[key] = raw
+    return kwargs
 
 
 @dataclass(frozen=True)
@@ -210,7 +638,11 @@ def compile_policy(engine: Any, *, tenant: str) -> GatePolicy:
     )
 
 
-def _model_for(spec: str | None, registry_target: str = DEFAULT_REGISTRY) -> tuple[Any, str]:
+def _model_for(
+    spec: str | None,
+    registry_target: str = DEFAULT_REGISTRY,
+    model_args: dict[str, Any] | None = None,
+) -> tuple[Any, str]:
     """The scripted planner by default; a real backend when asked for one.
 
     The scripted replies come from the registry module when it supplies
@@ -223,19 +655,15 @@ def _model_for(spec: str | None, registry_target: str = DEFAULT_REGISTRY) -> tup
     if spec is None:
         from grapharc.testing import ScriptedChatModel
 
-        module_name = registry_target.split(":", 1)[0]
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError as exc:
-            raise PlanSetupError(f"--registry {registry_target!r}: {exc}") from exc
+        module, _ = _registry_module(registry_target)
         replies = getattr(module, "scripted_planner_replies", None)
         if replies is None:
             from grapharc.examples.plan_incident import scripted_planner_replies as replies
 
-        return ScriptedChatModel(responses=replies()), "scripted"
+        return ScriptedChatModel(responses=replies()), "scripted stand-in (--scripted)"
     from grapharc.gateway import get_model
 
-    return get_model(spec), spec
+    return get_model(spec, **(model_args or {})), spec
 
 
 def plan(
@@ -249,24 +677,39 @@ def plan(
     run_id: str | None = None,
     max_rounds: int | None = None,
     max_tokens: int | None = None,
+    max_planning_failures: int | None = None,
+    workspace: Path | None = None,
+    model_arg_pairs: list[str] | None = None,
     config_path: Path | None = None,
     settings: Settings | None = None,
     approve: bool = False,
     approval_timeout: float | None = None,
     as_json: bool = False,
+    command: str = "plan",
+    scripted: bool = False,
+    go_after: bool = False,
+    use_default_registry: bool = False,
 ) -> int:
-    """Run one governed planning loop against `goal`. Returns the exit code."""
+    """Run one governed planning loop against `goal`. Returns the exit code.
+
+    A real command runs a real model, full stop: with no `--model` (and none
+    in `grapharc.toml`), both `plan` and `go` refuse before anything happens.
+    The one exception is opt-in and named out loud — `plan --scripted` runs
+    the registry's canned planner replies so the machinery (admission,
+    refusal, approval, the live page) can be rehearsed for free. `go` has no
+    such flag: go means do.
+    """
     from grapharc.observe.trace import TraceRecorder
-    from grapharc.planner import LoopLimits
+    from grapharc.planner import LoopLimits, LoopStop
     from grapharc.runtime.budget import Budget
 
-    trace_path = trace_path or Path(tempfile.mkdtemp(prefix="grapharc-plan-")) / "trace.jsonl"
+    trace_path = trace_path or default_trace_path()
 
     # Before the setup, because this one is about the file the setup would start
     # writing into: a run id already in that file merges this plan with an
     # earlier one under a single name.
     reused = refuse_reused_run_id(
-        trace_path, run_id, command="plan", as_json=as_json, goal=goal
+        trace_path, run_id, command=command, as_json=as_json, goal=goal
     )
     if reused is not None:
         return reused
@@ -277,13 +720,43 @@ def plan(
         if settings is None:
             settings = load_settings(config_path)
         model_spec = settings.resolve("model", model_spec)
-        registry_target = settings.resolve("registry", registry_target, DEFAULT_REGISTRY)
+        registry_target = resolve_registry_target(
+            settings.resolve("registry", registry_target, None),
+            scripted=scripted,
+            use_default=use_default_registry,
+        )
+        if scripted and model_spec:
+            raise PlanSetupError(
+                "--scripted and --model contradict each other: the scripted "
+                "rehearsal never calls a model — drop one of the two"
+            )
+        if not model_spec and not scripted:
+            if command == "go":
+                raise PlanSetupError(
+                    "go plans with a real model and there is no scripted "
+                    "fallback: pass --model SPEC (see `grapharc models --check` "
+                    "for what this machine can use)"
+                )
+            raise PlanSetupError(
+                "plan needs a real model: pass --model SPEC (see `grapharc "
+                "models --check`), set `model` in grapharc.toml — or add "
+                "--scripted to rehearse the machinery with the registry's "
+                "built-in stand-in planner (free, deterministic, no AI)"
+            )
         policy_path = settings.resolve_path("policy", policy_path)
         tenant = settings.resolve("tenant", tenant, "default")
         max_rounds = settings.resolve("max_rounds", max_rounds, 8)
         max_tokens = settings.resolve("max_tokens", max_tokens, 100_000)
-        model, model_description = _model_for(model_spec, registry_target)
-        bundle = resolve_registry(registry_target, model)
+        max_planning_failures = settings.resolve(
+            "max_planning_failures", max_planning_failures, 3
+        )
+        if workspace is not None:
+            workspace = Path(workspace).resolve()
+            if not workspace.is_dir():
+                raise PlanSetupError(f"--workspace: not a directory: {workspace}")
+        model_args = _parse_model_args(model_arg_pairs)
+        model, model_description = _model_for(model_spec, registry_target, model_args)
+        bundle = resolve_registry(registry_target, model, workspace=workspace)
         registry, state_schema, writes = bundle.registry, bundle.state_schema, bundle.writes
         gate_policy, policy_description, policy_source = resolve_or_generate_policy(
             policy_path,
@@ -297,11 +770,12 @@ def plan(
             mutating=bundle.mutating,
             fallback=bundle.default_policy,
             fallback_label=f"{registry_target} default",
+            registry_target=registry_target,
         )
     except (ConfigError, PlanSetupError) as exc:
-        return fail(str(exc), as_json=as_json, command="plan", goal=goal)
+        return fail(str(exc), as_json=as_json, command=command, goal=goal)
     except Exception as exc:  # noqa: BLE001 — a backend that will not load is a setup failure
-        return fail(f"could not build the plan: {exc}", as_json=as_json, command="plan", goal=goal)
+        return fail(f"could not build the plan: {exc}", as_json=as_json, command=command, goal=goal)
 
     from grapharc.examples.plan_incident import IncidentState
     from grapharc.examples.plan_incident import build_loop as incident_build_loop
@@ -314,6 +788,8 @@ def plan(
 
         from grapharc.planner.approval_file import DEFAULT_TIMEOUT_SECONDS, file_approval
 
+        watch_shown = False
+
         def _announce(message: str) -> None:
             # Printed *and flushed* before the run parks: a terminal user (or a
             # log tailer) must learn how to answer without waiting for the exit.
@@ -321,6 +797,18 @@ def plan(
             # a notice printed ahead of it makes the whole output unparseable.
             if as_json:
                 return
+            # The live link first, once: the page is where the parked proposal
+            # is drawn, and it should be open while the human decides.
+            nonlocal watch_shown
+            if not watch_shown:
+                watch_shown = True
+                url = watch_url(trace_path, run_id=run_id)
+                if url:
+                    print(
+                        style.kv("watch", url, width=style.LABEL_WIDTH, tint=style.accent),
+                        flush=True,
+                        file=sys.stdout,
+                    )
             print(message, flush=True, file=sys.stdout)
 
         approval = file_approval(
@@ -337,7 +825,10 @@ def plan(
         node_policy=gate_policy.node,
         trace=trace,
         budget=Budget(max_tokens=max_tokens),
-        limits=LoopLimits(max_rounds=max_rounds),
+        limits=LoopLimits(
+            max_rounds=max_rounds,
+            max_consecutive_planning_failures=max_planning_failures,
+        ),
         registry=registry,
         state_schema=schema,
         writes=writes,
@@ -346,7 +837,19 @@ def plan(
     # `goal` is set when the schema has somewhere to put it; a custom schema is
     # not required to carry one, and the planner is told the goal regardless.
     initial = schema(goal=goal) if "goal" in schema.model_fields else schema()
+    # `plan` plans; `go` (and `plan --go`) executes. The attribute rather
+    # than a ctor param keeps every registry module's build_loop signature.
+    loop.plan_only = command == "plan" and not go_after
     result = loop.run(goal, initial, run_id=run_id)
+
+    if result.stop is LoopStop.PLANNED:
+        _write_plan_file(
+            trace_path.parent,
+            goal=goal,
+            registry_target=registry_target,
+            model_spec=model_spec,
+            result=result,
+        )
 
     rounds = [
         {
@@ -359,8 +862,8 @@ def plan(
         for record in result.rounds
     ]
     payload = {
-        "ok": result.succeeded,
-        "command": "plan",
+        "ok": result.succeeded or result.stop is LoopStop.PLANNED,
+        "command": command,
         "goal": goal,
         "model": model_description,
         "registry": registry_target,
@@ -416,14 +919,37 @@ def plan(
             f"{style.dim('nodes=')}{record['nodes']} "
             f"{style.dim('executed=')}{record['executed']}{note}"
         )
+    # The live link, always: the exact URL when a serve is discoverable and
+    # reachable, otherwise the one-line instruction that produces it. Filtered
+    # out (with the trace line) by the README byte-comparison, which is why it
+    # may vary per machine.
+    url = watch_url(trace_path, run_id=run_id)
+    payload["watch_url"] = url
     lines += [
         "",
         style.kv("state", str(result.state), width=style.LABEL_WIDTH),
         style.kv("trace", str(trace_path), width=style.LABEL_WIDTH, tint=style.accent),
+        style.kv(
+            "watch",
+            url if url else style.dim(watch_hint(trace_path)),
+            width=style.LABEL_WIDTH,
+            tint=style.accent if url else None,
+        ),
     ]
+    if result.stop is LoopStop.PLANNED:
+        payload["plan_file"] = str(trace_path.parent / PLAN_FILENAME)
+        lines += [
+            style.kv(
+                "execute",
+                f"grapharc go   (or: grapharc go {trace_path.parent})",
+                width=style.LABEL_WIDTH,
+                tint=style.accent,
+            ),
+        ]
 
     emit(payload, lines, as_json=as_json)
-    return EXIT_OK if result.succeeded else EXIT_FAILED
+    done = result.succeeded or result.stop is LoopStop.PLANNED
+    return EXIT_OK if done else EXIT_FAILED
 
 
 __all__ = [

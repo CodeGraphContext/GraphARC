@@ -25,6 +25,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from grapharc.observe.replay import replay
+from grapharc.observe.status import node_states
 from grapharc.observe.trace import TraceRecorder
 
 
@@ -147,7 +148,7 @@ def to_mermaid(recorder: TraceRecorder, run_id: str) -> str:
     work, so its recorded events are the path instead of an empty diagram.
     """
     run = replay(recorder, run_id)
-    topologies = _latest_topologies(run.events)
+    topologies = latest_topologies(run.events)
     if topologies:
         return _topology_mermaid(run, topologies)
     events = [e for e in run.events if e.phase in ("end", "error")]
@@ -189,7 +190,7 @@ def to_mermaid(recorder: TraceRecorder, run_id: str) -> str:
     return "\n".join(dict.fromkeys(lines))
 
 
-def _latest_topologies(events: list) -> list[tuple[str, dict[str, Any]]]:
+def latest_topologies(events: list) -> list[tuple[str, dict[str, Any]]]:
     """One merged (graph, delta) per graph, in first-appearance order.
 
     Two emitters restate the same graph: the loop (whose delta carries
@@ -244,19 +245,12 @@ def _topology_mermaid(run: Any, topologies: list[tuple[str, dict[str, Any]]]) ->
         for name in nodes:
             cluster.append(f"{indent}{ref(name)}")
 
-        # Per-node status from this graph's events. Parallel instances of one
-        # node collapse to the worst-informative status: any error wins, then
-        # running, then done.
-        started: dict[str, int] = {}
-        ended: dict[str, int] = {}
-        errored: dict[str, int] = {}
+        # Per-node status from this graph's events, by the shared rule in
+        # `observe.status`: parallel instances of one node collapse to the
+        # worst-informative status — any error wins, then running, then done.
+        states = node_states(graph_events)
         for event in graph_events:
-            if event.phase == "start":
-                started[event.node] = started.get(event.node, 0) + 1
-            elif event.phase == "end":
-                ended[event.node] = ended.get(event.node, 0) + 1
-            elif event.phase == "error":
-                errored[event.node] = errored.get(event.node, 0) + 1
+            if event.phase == "error":
                 cluster.append(
                     f"{indent}{ref(event.node)} -.->|error| "
                     f'err{error_index}{{"{_label(event.error or "error")}"}}'
@@ -269,19 +263,13 @@ def _topology_mermaid(run: Any, topologies: list[tuple[str, dict[str, Any]]]) ->
         targeted = {e[1] for e in edges if len(e) == 3}
         for source in fanout_sources:
             for name in nodes:
-                if name != source and name not in targeted and name in started:
+                started = name in states and states[name].starts > 0
+                if name != source and name not in targeted and started:
                     cluster.append(f"{indent}{ref(source)} -.-> {ref(name)}")
 
         for name in nodes:
             node_id = ids[name]
-            if errored.get(name):
-                status = "errored"
-            elif started.get(name, 0) > ended.get(name, 0):
-                status = "running"
-            elif ended.get(name):
-                status = "done"
-            else:
-                status = "pending"
+            status = states[name].status if name in states else "pending"
             class_members.setdefault(status, []).append(node_id)
 
         if clustered:

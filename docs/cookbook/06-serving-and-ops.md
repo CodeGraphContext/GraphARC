@@ -1374,9 +1374,25 @@ token, not the token, is `HttpOnly` and `SameSite=Strict`, and is scoped to
 `/live`. Sign-in and the SSE exemption both apply only when a token is
 configured at all; without one, nothing about `/live` is authenticated.
 
-The diagram renders with mermaid.js from a pinned CDN; with
-no CDN reachable the page falls back to the raw Mermaid source plus the same
-mermaid.live fragment link the Slack bot posts.
+The page draws the graph itself — a positioned SVG the server computes from
+the trace, with per-node status, tokens, recorded cost and duration on every
+node — and makes no external request at all: styles, script and rendering all
+ship inside the package, so it works with the network cable pulled. A finished
+run gets a playback bar (play, speed, and a scrubber over the run's own
+timeline), and `?replay=1&speed=N` on the stream URL re-emits the recorded
+snapshots server-side at recorded speed. The raw Mermaid source and the same
+mermaid.live fragment link the Slack bot can post stay one click away under
+"diagram source". A parked `--approve` run shows its goal in the header, the
+proposed nodes in violet, and a copy-ready `grapharc approve <dir>` banner.
+
+The guided pairing: `grapharc plan`/`go` default their trace to
+`.grapharc/runs/<stamp>/trace.jsonl` under the current directory, and
+`grapharc serve --live-root .grapharc/runs` writes a discovery marker
+(`.grapharc/live-server.json` — URL, root, pid; never the token) that lets
+those commands print the exact `watch :` URL for each run. The marker is
+validated with one loopback connect at print time, so a marker left by a
+crashed server downgrades the line to an instruction instead of a dead link,
+and it is removed on clean shutdown.
 
 ---
 

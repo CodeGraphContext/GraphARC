@@ -1144,9 +1144,14 @@ effect = "allow"
 """
 
 
-def test_plan_runs_the_governed_loop_and_reports_every_round(tmp_path, capsys):
+def test_plan_runs_the_governed_loop_and_reports_every_round(tmp_path, capsys, monkeypatch):
+    # A scratch cwd: a developer's own `grapharc init` in the checkout
+    # (registry.py + grapharc.toml) must not steer these runs.
+    monkeypatch.chdir(tmp_path)
     code, out, _ = call(
-        ["plan", "look into the outage", "--trace", str(tmp_path / "t.jsonl")], capsys
+        ["plan", "look into the outage", "--scripted", "--go", "--trace",
+         str(tmp_path / "t.jsonl")],
+        capsys,
     )
 
     assert code == 0
@@ -1156,7 +1161,10 @@ def test_plan_runs_the_governed_loop_and_reports_every_round(tmp_path, capsys):
     assert "round 2: admitted" in out
 
 
-def test_plan_traces_the_plan_and_every_node_it_executed(tmp_path, capsys):
+def test_plan_traces_the_plan_and_every_node_it_executed(tmp_path, capsys, monkeypatch):
+    # A scratch cwd: a developer's own `grapharc init` in the checkout
+    # (registry.py + grapharc.toml) must not steer these runs.
+    monkeypatch.chdir(tmp_path)
     """README's "the trace holds an `admission` event per round, a `round` event
     per round, the executed nodes' own `start`/`end` pairs and one `stop` event".
 
@@ -1170,7 +1178,14 @@ def test_plan_traces_the_plan_and_every_node_it_executed(tmp_path, capsys):
     from grapharc.observe.trace import TraceRecorder
 
     path = tmp_path / "t.jsonl"
-    code, payload, _ = call_json(["plan", "look into the outage", "--trace", str(path)], capsys)
+    code, payload, _ = call_json([
+        "plan",
+        "look into the outage",
+        "--scripted",
+        "--go",
+        "--trace",
+        str(path),
+    ], capsys)
     assert code == 0
 
     recorder = TraceRecorder(path)
@@ -1196,9 +1211,14 @@ def test_plan_traces_the_plan_and_every_node_it_executed(tmp_path, capsys):
     assert cost.attribute(recorder, run_id).tokens == summary.tokens
 
 
-def test_plan_json_carries_the_rounds_and_the_stop_reason(tmp_path, capsys):
+def test_plan_json_carries_the_rounds_and_the_stop_reason(tmp_path, capsys, monkeypatch):
+    # A scratch cwd: a developer's own `grapharc init` in the checkout
+    # (registry.py + grapharc.toml) must not steer these runs.
+    monkeypatch.chdir(tmp_path)
     code, payload, _ = call_json(
-        ["plan", "look into the outage", "--trace", str(tmp_path / "t.jsonl")], capsys
+        ["plan", "look into the outage", "--scripted", "--go", "--trace",
+         str(tmp_path / "t.jsonl")],
+        capsys,
     )
 
     assert code == 0
@@ -1211,13 +1231,16 @@ def test_plan_json_carries_the_rounds_and_the_stop_reason(tmp_path, capsys):
     assert "deploy" in payload["kinds"], "the denied kind is registered — it is the edge that fails"
 
 
-def test_a_policy_document_is_what_refuses_the_transition(tmp_path, capsys):
+def test_a_policy_document_is_what_refuses_the_transition(tmp_path, capsys, monkeypatch):
+    # A scratch cwd: a developer's own `grapharc init` in the checkout
+    # (registry.py + grapharc.toml) must not steer these runs.
+    monkeypatch.chdir(tmp_path)
     """§12.2 end to end: the TOML file constrains the run, not Python."""
     doc = tmp_path / "policy.toml"
     doc.write_text(_DENY_DEPLOY, encoding="utf-8")
 
     code, payload, _ = call_json(
-        ["plan", "look into the outage", "--policy", str(doc),
+        ["plan", "look into the outage", "--scripted", "--go", "--policy", str(doc),
          "--trace", str(tmp_path / "t.jsonl")],
         capsys,
     )
@@ -1227,7 +1250,10 @@ def test_a_policy_document_is_what_refuses_the_transition(tmp_path, capsys):
     assert str(doc) in payload["policy"]
 
 
-def test_a_document_that_denies_a_node_kind_stops_it_running(tmp_path, capsys):
+def test_a_document_that_denies_a_node_kind_stops_it_running(tmp_path, capsys, monkeypatch):
+    # A scratch cwd: a developer's own `grapharc init` in the checkout
+    # (registry.py + grapharc.toml) must not steer these runs.
+    monkeypatch.chdir(tmp_path)
     """Issue #66, end to end: a `resource = "node"` deny rule is enforced.
 
     The shipped script proposes `deploy` in round 1. Before the fix the whole
@@ -1239,7 +1265,7 @@ def test_a_document_that_denies_a_node_kind_stops_it_running(tmp_path, capsys):
     doc.write_text(_DENY_DEPLOY_NODE, encoding="utf-8")
 
     code, payload, _ = call_json(
-        ["plan", "fix the outage", "--policy", str(doc),
+        ["plan", "fix the outage", "--scripted", "--go", "--policy", str(doc),
          "--trace", str(tmp_path / "t.jsonl")],
         capsys,
     )
@@ -1255,14 +1281,25 @@ def test_a_document_that_denies_a_node_kind_stops_it_running(tmp_path, capsys):
     assert "1 edge rule(s), 2 node rule(s)" in payload["policy"]
 
 
-def test_a_node_denial_is_traced_with_the_reason_the_document_gave(tmp_path, capsys):
+def test_a_node_denial_is_traced_with_the_reason_the_document_gave(tmp_path, capsys, monkeypatch):
+    # A scratch cwd: a developer's own `grapharc init` in the checkout
+    # (registry.py + grapharc.toml) must not steer these runs.
+    monkeypatch.chdir(tmp_path)
     from grapharc.observe.trace import TraceRecorder
 
     doc = tmp_path / "nodepolicy.toml"
     doc.write_text(_DENY_DEPLOY_NODE, encoding="utf-8")
     path = tmp_path / "t.jsonl"
 
-    call(["plan", "fix the outage", "--policy", str(doc), "--trace", str(path)], capsys)
+    call([
+        "plan",
+        "fix the outage",
+        "--scripted",
+        "--policy",
+        str(doc),
+        "--trace",
+        str(path),
+    ], capsys)
     admissions = [e for e in TraceRecorder(path).read_events() if e.phase == "admission"]
 
     assert admissions, "the gate's decision has to be on the record"
@@ -1275,7 +1312,7 @@ def test_a_permissive_document_admits_what_the_strict_one_refused(tmp_path, caps
     doc.write_text(_PERMISSIVE, encoding="utf-8")
 
     code, payload, _ = call_json(
-        ["plan", "look into the outage", "--policy", str(doc),
+        ["plan", "look into the outage", "--scripted", "--go", "--policy", str(doc),
          "--trace", str(tmp_path / "t.jsonl")],
         capsys,
     )
@@ -1289,7 +1326,7 @@ def test_a_permissive_document_admits_what_the_strict_one_refused(tmp_path, caps
 def test_plan_stops_short_with_a_reason_and_a_failure_code(tmp_path, capsys):
     """One round is not enough to reach the goal; that is a stop, not a crash."""
     code, payload, _ = call_json(
-        ["plan", "look into the outage", "--max-rounds", "1",
+        ["plan", "look into the outage", "--scripted", "--max-rounds", "1",
          "--trace", str(tmp_path / "t.jsonl")],
         capsys,
     )
@@ -1301,7 +1338,15 @@ def test_plan_stops_short_with_a_reason_and_a_failure_code(tmp_path, capsys):
 
 def test_plan_refuses_a_registry_that_does_not_resolve(tmp_path, capsys):
     code, _, err = call(
-        ["plan", "x", "--registry", "no.such.module:thing", "--trace", str(tmp_path / "t.jsonl")],
+        [
+            "plan",
+            "x",
+            "--scripted",
+            "--registry",
+            "no.such.module:thing",
+            "--trace",
+            str(tmp_path / "t.jsonl"),
+        ],
         capsys,
     )
 
@@ -1311,7 +1356,15 @@ def test_plan_refuses_a_registry_that_does_not_resolve(tmp_path, capsys):
 
 def test_plan_refuses_a_registry_target_with_no_colon(tmp_path, capsys):
     code, _, err = call(
-        ["plan", "x", "--registry", "grapharc.examples", "--trace", str(tmp_path / "t.jsonl")],
+        [
+            "plan",
+            "x",
+            "--scripted",
+            "--registry",
+            "grapharc.examples",
+            "--trace",
+            str(tmp_path / "t.jsonl"),
+        ],
         capsys,
     )
 
@@ -1321,7 +1374,7 @@ def test_plan_refuses_a_registry_target_with_no_colon(tmp_path, capsys):
 
 def test_plan_refuses_a_policy_file_that_is_not_there(tmp_path, capsys):
     code, _, err = call(
-        ["plan", "x", "--policy", str(tmp_path / "nope.toml"),
+        ["plan", "x", "--scripted", "--policy", str(tmp_path / "nope.toml"),
          "--trace", str(tmp_path / "t.jsonl")],
         capsys,
     )
@@ -1332,7 +1385,15 @@ def test_plan_refuses_a_policy_file_that_is_not_there(tmp_path, capsys):
 
 def test_every_plan_round_is_auditable_from_the_trace_alone(tmp_path, capsys):
     trace_path = tmp_path / "t.jsonl"
-    call(["plan", "look into the outage", "--trace", str(trace_path), "--run-id", "p1"], capsys)
+    call([
+        "plan",
+        "look into the outage",
+        "--scripted",
+        "--trace",
+        str(trace_path),
+        "--run-id",
+        "p1",
+    ], capsys)
 
     events = TraceRecorder(trace_path).read_events("p1")
     phases = [e.phase for e in events]
@@ -1412,7 +1473,10 @@ def _write_graph(tmp_path, document, name="graph.json"):
     return path
 
 
-def test_run_executes_a_topology_the_operator_wrote(tmp_path, capsys):
+def test_run_executes_a_topology_the_operator_wrote(tmp_path, capsys, monkeypatch):
+    # A scratch cwd: a developer's own `grapharc init` in the checkout
+    # must not steer these runs.
+    monkeypatch.chdir(tmp_path)
     graph = _write_graph(tmp_path, _LEGAL_GRAPH)
 
     code, payload, _ = call_json(
@@ -1426,7 +1490,10 @@ def test_run_executes_a_topology_the_operator_wrote(tmp_path, capsys):
     assert payload["state"]["notes"] == ["triage ran", "fix ran", "verify ran"]
 
 
-def test_a_hand_written_graph_is_refused_like_any_other_proposal(tmp_path, capsys):
+def test_a_hand_written_graph_is_refused_like_any_other_proposal(tmp_path, capsys, monkeypatch):
+    # A scratch cwd: a developer's own `grapharc init` in the checkout
+    # must not steer these runs.
+    monkeypatch.chdir(tmp_path)
     """The gate does not care who authored the topology."""
     graph = _write_graph(tmp_path, _DENIED_GRAPH)
 
@@ -1441,7 +1508,10 @@ def test_a_hand_written_graph_is_refused_like_any_other_proposal(tmp_path, capsy
     assert "state" not in payload, "nothing may run when the gate refused"
 
 
-def test_check_only_validates_without_executing(tmp_path, capsys):
+def test_check_only_validates_without_executing(tmp_path, capsys, monkeypatch):
+    # A scratch cwd: a developer's own `grapharc init` in the checkout
+    # must not steer these runs.
+    monkeypatch.chdir(tmp_path)
     """Admission as a linter: legal or not, and nothing runs either way."""
     graph = _write_graph(tmp_path, _LEGAL_GRAPH)
 
@@ -1455,7 +1525,10 @@ def test_check_only_validates_without_executing(tmp_path, capsys):
     assert "state" not in payload
 
 
-def test_check_only_still_fails_on_an_illegal_topology(tmp_path, capsys):
+def test_check_only_still_fails_on_an_illegal_topology(tmp_path, capsys, monkeypatch):
+    # A scratch cwd: a developer's own `grapharc init` in the checkout
+    # must not steer these runs.
+    monkeypatch.chdir(tmp_path)
     graph = _write_graph(tmp_path, _DENIED_GRAPH)
 
     code, payload, _ = call_json(
@@ -1466,7 +1539,8 @@ def test_check_only_still_fails_on_an_illegal_topology(tmp_path, capsys):
     assert [r["code"] for r in payload["rejections"]] == ["edge_denied"]
 
 
-def test_a_toml_topology_works_the_same_as_json(tmp_path, capsys):
+def test_a_toml_topology_works_the_same_as_json(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # a checkout-level grapharc.toml must not steer this
     graph = tmp_path / "graph.toml"
     graph.write_text(
         '[[nodes]]\nname = "triage"\n\n'
@@ -1532,7 +1606,8 @@ def test_run_reports_a_graph_file_that_is_not_utf8(tmp_path, capsys):
     assert err == ""
 
 
-def test_a_policy_document_gates_a_hand_written_graph_too(tmp_path, capsys):
+def test_a_policy_document_gates_a_hand_written_graph_too(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # a checkout-level grapharc.toml must not steer this
     """§12.2 on the deterministic path: the TOML file decides here as well."""
     graph = _write_graph(tmp_path, _DENIED_GRAPH)
     permissive = tmp_path / "allow.toml"
@@ -1555,7 +1630,8 @@ def test_a_policy_document_gates_a_hand_written_graph_too(tmp_path, capsys):
 # --------------------------------------------------------------------------
 
 
-def test_run_records_the_execution_it_says_it_performed(tmp_path, capsys):
+def test_run_records_the_execution_it_says_it_performed(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # a checkout-level grapharc.toml must not steer this
     """It reported "ADMITTED and executed" and wrote only the admission event —
     `Materializer` takes a `trace=` and the call omitted it."""
     graph = _write_graph(tmp_path, _LEGAL_GRAPH)
@@ -1568,7 +1644,8 @@ def test_run_records_the_execution_it_says_it_performed(tmp_path, capsys):
     assert "admission" in phases
 
 
-def test_run_honours_the_run_id_it_was_given(tmp_path, capsys):
+def test_run_honours_the_run_id_it_was_given(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # a checkout-level grapharc.toml must not steer this
     """`--run-id` was accepted and discarded, so `metrics <trace> <id>` found
     nothing under the id the operator chose."""
     graph = _write_graph(tmp_path, _LEGAL_GRAPH)
@@ -1590,12 +1667,20 @@ def test_a_reused_run_id_is_refused_before_the_second_run_writes_anything(tmp_pa
     one run: doubled tokens from `metrics`, a welded path from `viz`."""
     trace = tmp_path / "t.jsonl"
     first, _, _ = call(
-        ["plan", "goal one", "--trace", str(trace), "--run-id", "r1"], capsys
+        ["plan", "goal one", "--scripted", "--trace", str(trace), "--run-id", "r1"], capsys
     )
     assert first == 0
     before = TraceRecorder(trace).read_events("r1")
 
-    code, _, err = call(["plan", "goal two", "--trace", str(trace), "--run-id", "r1"], capsys)
+    code, _, err = call([
+        "plan",
+        "goal two",
+        "--scripted",
+        "--trace",
+        str(trace),
+        "--run-id",
+        "r1",
+    ], capsys)
 
     assert code == 2
     assert "r1" in err and str(trace) in err
@@ -1606,10 +1691,10 @@ def test_a_reused_run_id_is_refused_before_the_second_run_writes_anything(tmp_pa
 
 def test_a_reused_run_id_fails_as_one_json_document(tmp_path, capsys):
     trace = tmp_path / "t.jsonl"
-    call(["plan", "goal one", "--trace", str(trace), "--run-id", "r1"], capsys)
+    call(["plan", "goal one", "--scripted", "--trace", str(trace), "--run-id", "r1"], capsys)
 
     code, payload, err = call_json(
-        ["plan", "goal two", "--trace", str(trace), "--run-id", "r1"], capsys
+        ["plan", "goal two", "--scripted", "--trace", str(trace), "--run-id", "r1"], capsys
     )
 
     assert code == 2
@@ -1659,8 +1744,24 @@ def test_different_run_ids_in_one_trace_stay_supported(tmp_path, capsys):
     reused is the defect."""
     trace = tmp_path / "t.jsonl"
 
-    assert call(["plan", "goal one", "--trace", str(trace), "--run-id", "r1"], capsys)[0] == 0
-    assert call(["plan", "goal two", "--trace", str(trace), "--run-id", "r2"], capsys)[0] == 0
+    assert call([
+        "plan",
+        "goal one",
+        "--scripted",
+        "--trace",
+        str(trace),
+        "--run-id",
+        "r1",
+    ], capsys)[0] == 0
+    assert call([
+        "plan",
+        "goal two",
+        "--scripted",
+        "--trace",
+        str(trace),
+        "--run-id",
+        "r2",
+    ], capsys)[0] == 0
 
     assert TraceRecorder(trace).run_ids() == ["r1", "r2"]
 
@@ -1669,8 +1770,8 @@ def test_a_generated_run_id_is_never_guarded(tmp_path, capsys):
     """Fresh by construction, so it must not pay for a scan of the file either."""
     trace = tmp_path / "t.jsonl"
 
-    assert call(["plan", "goal one", "--trace", str(trace)], capsys)[0] == 0
-    assert call(["plan", "goal two", "--trace", str(trace)], capsys)[0] == 0
+    assert call(["plan", "goal one", "--scripted", "--trace", str(trace)], capsys)[0] == 0
+    assert call(["plan", "goal two", "--scripted", "--trace", str(trace)], capsys)[0] == 0
 
     assert len(TraceRecorder(trace).run_ids()) == 2
 
@@ -1697,7 +1798,8 @@ def test_the_guard_counts_a_line_it_can_read_and_skips_the_rest(tmp_path):
 
 def test_check_only_refuses_a_topology_that_passes_the_gate_but_cannot_be_built(
     tmp_path, capsys
-):
+, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # a checkout-level grapharc.toml must not steer this
     """A linter that says ADMITTED and then crashes on the same file is worse
     than no linter. All three of these pass admission and fail materialisation."""
     unbuildable = {
@@ -1718,7 +1820,10 @@ def test_check_only_refuses_a_topology_that_passes_the_gate_but_cannot_be_built(
         assert payload["error"], label
 
 
-def test_a_topology_that_cannot_be_built_reports_rather_than_crashing(tmp_path, capsys):
+def test_a_topology_that_cannot_be_built_reports_rather_than_crashing(
+    tmp_path, capsys, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)  # a checkout-level grapharc.toml must not steer this
     """`MaterializationError` escaped `run_graph` as a raw traceback, leaving
     stdout empty in --json mode."""
     graph = _write_graph(tmp_path, {"nodes": [{"name": "triage"}], "edges": []})
@@ -1732,7 +1837,8 @@ def test_a_topology_that_cannot_be_built_reports_rather_than_crashing(tmp_path, 
     assert "has no edge out of START" in payload["error"]
 
 
-def test_run_can_be_given_a_token_ceiling(tmp_path, capsys):
+def test_run_can_be_given_a_token_ceiling(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # a checkout-level grapharc.toml must not steer this
     """A comment claimed the budget dimension was bounded; `Budget()` is
     unlimited on every dimension, so a 400,000-token worst case was admitted."""
     chain = {
@@ -1756,7 +1862,8 @@ def test_run_can_be_given_a_token_ceiling(tmp_path, capsys):
 
 
 
-def test_run_budget_flags_reach_json_payload(tmp_path, capsys):
+def test_run_budget_flags_reach_json_payload(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # a checkout-level grapharc.toml must not steer this
     """All four Budget dimensions are settable from `grapharc run` (#5)."""
     graph = _write_graph(tmp_path, _LEGAL_GRAPH)
     code, payload, _ = call_json(
@@ -1784,7 +1891,8 @@ def test_run_budget_flags_reach_json_payload(tmp_path, capsys):
     assert payload["max_concurrency"] == 2
 
 
-def test_run_unset_budget_flags_stay_unlimited_in_json(tmp_path, capsys):
+def test_run_unset_budget_flags_stay_unlimited_in_json(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # a checkout-level grapharc.toml must not steer this
     graph = _write_graph(tmp_path, _LEGAL_GRAPH)
     code, payload, _ = call_json(
         ["run", str(graph), "--check-only", "--trace", str(tmp_path / "t.jsonl")],
@@ -1834,9 +1942,400 @@ def test_an_unusable_memory_path_reports_rather_than_crashing(tmp_path, capsys):
 def test_config_is_only_accepted_by_commands_that_read_it(capsys):
     """It was on the shared parser, so all eleven accepted it and nine ignored
     it — including erroring on a missing file for two of them and not the rest."""
-    for command in (["plan", "g"], ["demo", "stage0"], ["run", "x.json"]):
+    for command in (["plan", "g", "--scripted"], ["demo", "stage0"], ["run", "x.json"]):
         code, _, err = call([*command, "--config", "/no/such/file.toml"], capsys)
         assert code == 2 and "--config" in err, command
     for command in (["models"], ["trace", "f"], ["viz", "f", "r"]):
         with pytest.raises(SystemExit):
             main([*command, "--config", "/no/such/file.toml"])
+
+
+# ---------------------------------------------------------------------------
+# The default trace lands under the live root, and the watch line finds it.
+# ---------------------------------------------------------------------------
+
+
+def test_the_default_trace_lands_under_grapharc_runs(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    code = main(["plan", "look into it", "--scripted", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    trace = Path(payload["trace"]).resolve()
+    assert (tmp_path / ".grapharc" / "runs").resolve() in trace.parents
+    assert trace.name == "trace.jsonl"
+    assert trace.is_file()
+
+
+def test_without_a_server_the_watch_line_is_an_instruction(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    code = main(["plan", "look into it", "--scripted"])
+    printed = capsys.readouterr().out
+    assert code == 0
+    watch = next(line for line in printed.splitlines() if line.startswith("watch"))
+    assert "grapharc serve --live-root .grapharc/runs" in watch
+    assert "http://127.0.0.1:8000/live/view?trace=" in watch
+
+
+def _write_live_marker(tmp_path, *, host="127.0.0.1", port=0):
+    import json as _json
+
+    marker = tmp_path / ".grapharc" / "live-server.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        _json.dumps(
+            {
+                "url": f"http://{host}:{port}",
+                "host": host,
+                "port": port,
+                "live_root": str((tmp_path / ".grapharc" / "runs").resolve()),
+                "pid": 999999,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return marker
+
+
+def test_a_reachable_server_yields_the_exact_watch_url(tmp_path, monkeypatch, capsys):
+    import socket
+
+    monkeypatch.chdir(tmp_path)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        _write_live_marker(tmp_path, port=port)
+        code = main(["plan", "look into it", "--scripted", "--json"])
+        payload = json.loads(capsys.readouterr().out)
+    finally:
+        listener.close()
+    assert code == 0
+    url = payload["watch_url"]
+    assert url is not None
+    assert url.startswith(f"http://127.0.0.1:{port}/live/view?trace=")
+    # The trace path in the URL is relative to the marker's live root.
+    from urllib.parse import unquote
+
+    rel = unquote(url.split("trace=", 1)[1])
+    assert (tmp_path / ".grapharc" / "runs" / rel).is_file()
+
+
+def test_a_stale_marker_with_no_listener_falls_back_to_the_hint(
+    tmp_path, monkeypatch, capsys
+):
+    import socket
+
+    monkeypatch.chdir(tmp_path)
+    # A port that was just released: nothing is listening on it.
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    dead_port = probe.getsockname()[1]
+    probe.close()
+    _write_live_marker(tmp_path, port=dead_port)
+    code = main(["plan", "look into it", "--scripted", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["watch_url"] is None
+
+
+def test_a_trace_outside_the_live_root_gets_no_exact_url(tmp_path, monkeypatch, capsys):
+    import socket
+
+    monkeypatch.chdir(tmp_path)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    try:
+        _write_live_marker(tmp_path, port=listener.getsockname()[1])
+        elsewhere = tmp_path / "elsewhere" / "trace.jsonl"
+        code = main(["plan", "look into it", "--scripted", "--trace", str(elsewhere), "--json"])
+        payload = json.loads(capsys.readouterr().out)
+    finally:
+        listener.close()
+    assert code == 0
+    assert payload["watch_url"] is None
+
+
+def test_serve_writes_a_discovery_marker_and_removes_it(
+    monkeypatch, capsys, tmp_path
+):
+    """`plan`/`go` find the live server through this marker; it must exist
+    while the server runs, carry no token, and be gone afterwards."""
+    record: dict = {}
+    stub = ModuleType("grapharc.server")
+
+    def create_app(**kwargs):
+        record["create_app"] = kwargs
+        return "THE-APP"
+
+    def running_serve(app, **kwargs):
+        marker = Path(".grapharc") / "live-server.json"
+        record["marker_during"] = json.loads(marker.read_text(encoding="utf-8"))
+        record["marker_bytes"] = marker.read_bytes()
+
+    stub.create_app = create_app
+    stub.serve = running_serve
+    monkeypatch.setitem(sys.modules, "grapharc.server", stub)
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "runs"
+    root.mkdir()
+
+    code, _, _ = call(
+        ["serve", "--live-root", str(root), "--live-token", "s3cret"], capsys
+    )
+    assert code == 0
+    marker = record["marker_during"]
+    assert marker["url"] == "http://127.0.0.1:8000"
+    assert marker["live_root"] == str(root.resolve())
+    assert marker["pid"] == __import__("os").getpid()
+    assert b"s3cret" not in record["marker_bytes"]
+    # Unlinked on the way out.
+    assert not (tmp_path / ".grapharc" / "live-server.json").exists()
+
+
+def test_serve_without_a_live_root_writes_no_marker(monkeypatch, capsys, tmp_path):
+    record: dict = {}
+    monkeypatch.setitem(sys.modules, "grapharc.server", _server_stub(record))
+    monkeypatch.chdir(tmp_path)
+    code, _, _ = call(["serve"], capsys)
+    assert code == 0
+    assert not (tmp_path / ".grapharc").exists()
+
+
+# -- go: plan with doing-defaults ---------------------------------------------
+
+
+def test_go_requires_a_model(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    code = main(["go", "get it done", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["ok"] is False
+    assert "models --check" in payload["error"]
+
+
+def test_go_defaults_to_the_stdlib_registry(tmp_path, monkeypatch, capsys):
+    """With a model spec that cannot construct, the failure message proves the
+    resolution order: the model is reached before any registry import."""
+    monkeypatch.chdir(tmp_path)
+    recorded = {}
+
+    def fake_plan(goal, **kwargs):
+        recorded.update(kwargs, goal=goal)
+        return 0
+
+    import grapharc.cli.plan as plan_module
+
+    monkeypatch.setattr(plan_module, "plan", fake_plan)
+    code = main(["go", "get it done", "--model", "ollama/fake"])
+    assert code == 0
+    assert recorded["command"] == "go"
+    assert recorded["go_after"] is True, "go executes; plan-only is plan's job"
+    assert recorded["model_spec"] == "ollama/fake"
+
+
+def test_go_and_plan_share_every_planning_flag():
+    parser = build_parser()
+    plan_actions = {
+        a.option_strings[0]
+        for a in parser._subparsers._group_actions[0].choices["plan"]._actions
+        if a.option_strings
+    }
+    go_actions = {
+        a.option_strings[0]
+        for a in parser._subparsers._group_actions[0].choices["go"]._actions
+        if a.option_strings
+    }
+    # `--scripted` and `--go` are plan-only by design: go means do (no
+    # scripted doing), and go needs no flag to do what its name says.
+    assert plan_actions - go_actions == {"--scripted", "--go"}
+    assert go_actions - plan_actions == set()
+
+
+# -- init: the scaffold -------------------------------------------------------
+
+
+def test_init_scaffolds_a_working_directory(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    code = main(["init", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert (tmp_path / "registry.py").is_file()
+    assert (tmp_path / "grapharc.toml").is_file()
+    assert (tmp_path / ".grapharc" / "runs").is_dir()
+    assert payload["registry"] == "registry.py"
+    # The template compiles and the config parses.
+    compile((tmp_path / "registry.py").read_text(encoding="utf-8"), "registry.py", "exec")
+    from grapharc.cli.config import load
+
+    assert load(tmp_path / "grapharc.toml").values["registry"] == "registry.py:build_registry"
+
+
+def test_init_refuses_to_overwrite_and_names_the_files(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main(["init"]) == 0
+    capsys.readouterr()
+    code = main(["init"])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "registry.py" in err and "grapharc.toml" in err
+    # The runs dir alone never blocks a scaffold.
+    assert (tmp_path / ".grapharc" / "runs").is_dir()
+
+
+def test_an_init_scaffold_plans_end_to_end(tmp_path, monkeypatch, capsys):
+    """The money test: template + path-form loader + build_loop handoff +
+    scripted replies compose into the refuse-then-admit first run."""
+    monkeypatch.chdir(tmp_path)
+    assert main(["init"]) == 0
+    capsys.readouterr()
+    code = main(["plan", "try it", "--scripted", "--go"])
+    printed = capsys.readouterr().out
+    assert code == 0
+    assert "round 1: rejected" in printed and "edge_denied" in printed
+    assert "round 2: admitted" in printed
+    assert "goal_met" in printed
+
+
+def test_the_path_form_registry_shares_one_module_object(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "reg.py").write_text(
+        "COUNTER = []\n"
+        "def build_registry(model=None):\n"
+        "    from grapharc.planner import NodeRegistry\n"
+        "    COUNTER.append(1)\n"
+        "    return NodeRegistry([])\n",
+        encoding="utf-8",
+    )
+    from grapharc.cli.plan import _registry_module
+
+    first, attr = _registry_module("reg.py:build_registry")
+    second, _ = _registry_module("reg.py:build_registry")
+    assert first is second
+    assert attr == "build_registry"
+
+
+def test_a_missing_registry_file_exits_2_naming_the_path(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    code = main(["plan", "x", "--scripted", "--registry", "./nope.py:build_registry", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert "no such file" in payload["error"]
+    assert "nope.py" in payload["error"]
+
+
+# -- start and the bare invocation --------------------------------------------
+
+
+def test_bare_invocation_orients_and_exits_zero(capsys):
+    code = main([])
+    out, err = capsys.readouterr().out, capsys.readouterr().err
+    assert code == 0
+    assert "grapharc start" in out
+    assert err == ""
+
+
+def test_start_prints_the_guided_path(capsys):
+    code = main(["start"])
+    out = capsys.readouterr().out
+    assert code == 0
+    for expected in ("init", "serve --live-root", "plan", "go", "approve", "watch"):
+        assert expected in out, expected
+
+
+def test_start_json_is_one_document(capsys):
+    code = main(["start", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["command"] == "start"
+    assert any("init" in step["command"] for step in payload["path"])
+
+
+def test_help_is_a_command_not_an_error(capsys):
+    """`grapharc help` is what people type; it must be `-h`, not an argparse
+    scolding."""
+    code = main(["help"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "usage: grapharc" in out
+    assert "plan" in out and "go" in out
+
+
+# -- plan plans; go goes ------------------------------------------------------
+
+
+def test_plan_plans_only_and_saves_the_plan(tmp_path, monkeypatch, capsys):
+    """`plan` executes nothing: the gate runs, the plan lands on disk, and
+    the nodes wait for `go`."""
+    monkeypatch.chdir(tmp_path)
+    code = main(["plan", "look into it", "--scripted", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["stop"] == "planned"
+    assert all(r["executed"] is False for r in payload["rounds"])
+    plan_file = Path(payload["plan_file"])
+    record = json.loads(plan_file.read_text(encoding="utf-8"))
+    assert record["goal"] == "look into it"
+    assert record["proposal"]["nodes"], "the admitted proposal is stored whole"
+
+
+def test_go_executes_the_newest_saved_plan_and_marks_it(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    main(["plan", "look into it", "--scripted", "--json"])
+    planned = json.loads(capsys.readouterr().out)
+    code = main(["go", "--json"])
+    executed = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert executed["executed"] is True
+    assert executed["stop"] == "goal_met"
+    record = json.loads(Path(planned["plan_file"]).read_text(encoding="utf-8"))
+    assert record["executed_run_id"] == executed["run_id"]
+    # And a second bare `go` finds nothing left to do.
+    assert main(["go", "--json"]) == 1
+    assert json.loads(capsys.readouterr().out)["ok"] is False
+
+
+def test_go_takes_a_specific_run_directory(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    main(["plan", "look into it", "--scripted", "--json"])
+    planned = json.loads(capsys.readouterr().out)
+    run_dir = str(Path(planned["plan_file"]).parent)
+    code = main(["go", run_dir, "--json"])
+    executed = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert executed["plan"].startswith(run_dir)
+
+
+def test_plan_go_is_one_shot(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    code = main(["plan", "look into it", "--scripted", "--go", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["stop"] == "goal_met"
+    assert any(r["executed"] for r in payload["rounds"])
+
+
+def test_a_registry_py_in_cwd_wins_when_nothing_is_configured(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    assert main(["init"]) == 0
+    (tmp_path / "grapharc.toml").unlink()  # no config: detection must carry it
+    capsys.readouterr()
+    code = main(["plan", "look into it", "--scripted", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["registry"] == "registry.py:build_registry"
+
+
+def test_default_flag_forces_the_builtin_kinds(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main(["init"]) == 0
+    capsys.readouterr()
+    code = main(["plan", "look into it", "--scripted", "--default", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["registry"] == "grapharc.stdlib:build_registry"

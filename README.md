@@ -13,17 +13,34 @@
 [![CI](https://github.com/CodeGraphContext/GraphARC/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeGraphContext/GraphARC/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**A governed agent runtime built on [LangGraph](https://github.com/langchain-ai/langgraph).** 
+**The admission gate for agent graphs** — a governed agent runtime built on [LangGraph](https://github.com/langchain-ai/langgraph).
 
-Build production-grade multi-agent systems with built-in safety, auditability, and control. GraphARC adds a governance layer on top of LangGraph: a planner *proposes* a subgraph, a deterministic checker *admits* it, and only then does anything execute. Every transition is permitted, every loop is bounded, and afterwards you can prove what happened and why it stopped.
+A planner *proposes* a subgraph, a deterministic checker *admits* it — or refuses with reasons — and only then does anything execute. Every transition is permitted, every loop is bounded, and afterwards you can prove what happened and why it stopped. Three things this package does that you will not find together anywhere else:
 
-**Status:** early days (`0.1.3`) — the API is not stable yet. Known limits are listed in [Status and limits](#status-and-limits); closed ones are in [CHANGELOG.md](CHANGELOG.md).
+- **No step runs unless a deterministic gate admitted it — and it tells you why when it refuses.** Five checks on every proposal, every failure a structured rejection with a code and a remedy, work discovered mid-run re-entering the same gate. `grapharc run --check-only` is the gate as a linter: it can refuse without executing anything.
+- **The worst-case cost is known before a graph runs, and the exact per-node bill after — even when it fails.** Admission prices the worst case against what is *left* of the budget; at runtime each node's spend lands on its own trace event, error and cancellation included. `recorded_cost_usd` is never an estimate.
+- **One append-only JSONL trace file is the whole truth.** `replay`, `diff`, `metrics`, `viz`, cost attribution, OTel export and the live browser view all read the same file — the dashboard cannot disagree with the audit trail, because they are the same record.
+
+**Website:** [codegraphcontext.github.io/GraphARC](https://codegraphcontext.github.io/GraphARC/) · **Status:** early days (`0.1.3`) — the API is not stable yet. Known limits are listed in [Status and limits](#status-and-limits); closed ones are in [CHANGELOG.md](CHANGELOG.md).
 
 ![One English question is decomposed by a local model into a nine-node graph — four parallel evidence pulls fanning out of START, a correlate join, a hypothesis fork, and a final report — shown live in the browser: the proposed graph waits grey for human approval, then each node turns amber while it runs and green when it is done.](docs/media/grapharc-decompose.gif)
 
 *One question in, a governed graph out: a local model proposes the topology, the admission gate and a human approval decide, and the live view shows every node run — amber while executing, green when done. ([full-quality mp4](docs/media/grapharc-decompose.mp4))*
 
 > *Graph engineering*: when one agent loop stops being enough, coordination becomes the engineering. Nodes do work (agent loops, model calls, deterministic functions, humans approving things), edges decide what runs next, and a typed shared state flows between them. GraphARC implements the discipline that makes such graphs production-grade rather than demos — the ideas emerging from the July 2026 loops-vs-graphs debate (Steinberger, Ng, et al.), the "Two Graphs, Two Jobs" split, and twenty years of pre-AI graph systems where every edge means something and every path can be explained.
+
+## Where it sits
+
+None of these is a competitor to be beaten — they do different jobs, and GraphARC's [design lineage](#design-lineage) borrows from two of them. This is the row-by-row difference:
+
+| | GraphARC | Claude Code | OpenClaw | raw LangGraph |
+|---|---|---|---|---|
+| Shape | Governed multi-node graph runtime | Interactive single-agent coding loop | Personal AI assistant gateway | Graph mechanism library |
+| Who authorizes work | A deterministic admission gate, pre-execution, with reasons | A human, live, per action | Configuration and allowlists | Nobody — convention |
+| Cost control | Worst-case admission + per-node attribution, fail-closed | Usage visibility | Spend settings | None built in |
+| Audit | One replayable JSONL trace; replay/diff/cost read it | Session transcripts | Logs | Checkpoints (state, not *why*) |
+
+Claude Code is a great agent — GraphARC's default backend drives the Claude CLI. OpenClaw is a great gateway to agents — GraphARC borrowed its policy-before-schema tool gating and put it behind enforcement. GraphARC is the layer that decides what an agent system is *allowed* to do: before it does it, with receipts after.
 
 ## Install
 
@@ -73,8 +90,14 @@ grapharc demo stage5        # verifier: fresh context + deterministic evidence a
 grapharc demo stage6        # memory: provenance, supersession, recall
 grapharc demo capstone      # all of the above in one research agent
 
-grapharc plan "look into the outage"   # governed loop: propose -> admit -> execute -> replan
-grapharc plan "..." --approve          # park each admitted round until a human answers
+grapharc start                         # the guided tour: concept, first run, live view
+grapharc init                          # scaffold registry.py + grapharc.toml + .grapharc/runs/
+
+grapharc plan "look into the outage" --model ollama/qwen3:8b   # plan ONLY: propose -> admit -> save
+grapharc go                            # execute the newest saved plan (go <run-dir> for a specific one)
+grapharc go "fix the flaky import" --model ollama/qwen3:8b     # plan AND execute, one shot
+grapharc plan "..." --scripted         # free rehearsal: stand-in planner, no AI
+grapharc plan "..." --go --approve     # one-shot, parked mid-run until a human answers
 grapharc approve <trace>               # answer a parked run (--deny to refuse)
 grapharc run graph.json                # a topology you wrote, through the same gate
 grapharc run graph.json --check-only   # admission as a linter; executes nothing
@@ -91,7 +114,7 @@ grapharc replay <path> <run-id>  # reconstruct a run from its trace
 grapharc diff <path> <a> <b>     # what changed between two runs
 ```
 
-Twelve commands, and every one of them takes `--json` — in JSON mode the failure is the document rather than a line on stderr. Exit codes are part of the interface: `0` did the job, `1` ran and the answer was negative (an agent stopped short, a run id had no events, two runs differed), `2` could not run at all.
+Fifteen commands, and every one of them takes `--json` — in JSON mode the failure is the document rather than a line on stderr. Exit codes are part of the interface: `0` did the job, `1` ran and the answer was negative (an agent stopped short, a run id had no events, two runs differed), `2` could not run at all.
 
 The Slack bot puts most of these commands one `/grapharc …` away from a phone, behind an allowlisting gate that keeps the default spend at zero — setup in [docs/cookbook/07-slack.md](docs/cookbook/07-slack.md), and a command-by-command session, refusals included, in [docs/cookbook/08-slack-walkthrough.md](docs/cookbook/08-slack-walkthrough.md). A tracing command run from Slack is narrated live — one status message edited in place as nodes run, with a refreshed diagram link — and `grapharc serve --live-root` adds a browser page that redraws the orchestration graph in real time over SSE.
 
@@ -130,12 +153,12 @@ The part with no prior art to copy, and the reason the rest exists. You cannot p
 Watch it happen first. This costs nothing and needs no key — the shipped planner is scripted, and its first proposal names the policy-denied `deploy` kind:
 
 ```bash
-grapharc plan "investigate the checkout outage"
+grapharc plan "investigate the checkout outage" --scripted --go
 ```
 
 ```
 goal      : investigate the checkout outage
-model     : scripted
+model     : scripted stand-in (--scripted)
 registry  : grapharc.examples.plan_incident:build_registry
 kinds     : deploy, patch, triage, verify
 policy    : grapharc.examples.plan_incident:build_registry default (deny -> deploy, otherwise allow)  [registry-default]
@@ -150,6 +173,8 @@ state     : goal='investigate the checkout outage' notes=['triage ran', 'patch r
 ```
 
 Round 1 wanted to deploy and **never executed**. Round 2 went through the *same* checker and ran.
+
+The output ends with a `trace :` path — under `.grapharc/runs/` by default — and a `watch :` line. With `grapharc serve --live-root .grapharc/runs` running in another terminal, that line is the exact URL of this run's live page (proposed graph in violet awaiting approval, amber while nodes run, green when done, replay scrubber after); without one, it is the command that starts it.
 
 The `policy` line ends in `[registry-default]` — that is the **provenance**, and it is on the JSON payload too as `policy_source`. It matters because a policy can now come from four places: a `--policy` flag, a `grapharc.toml`, one an LLM generated on a first run, or the registry's own default. A generated run and an authored one look identical on the command line, so the source is the only thing that tells them apart afterwards.
 

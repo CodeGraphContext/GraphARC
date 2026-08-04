@@ -47,7 +47,7 @@ def project(tmp_path, monkeypatch):
 
 
 def _plan_payload(capsys, *args):
-    code = main(["plan", "a goal", "--json", *args])
+    code = main(["plan", "a goal", "--scripted", "--json", *args])
     return code, json.loads(capsys.readouterr().out)
 
 
@@ -350,9 +350,14 @@ def test_sources_agrees_with_policy_source(tmp_path, monkeypatch, capsys):
     `default`. A reviewer reading `sources` alone would conclude no file was
     involved."""
     monkeypatch.chdir(tmp_path)
-    cached = tmp_path / ".grapharc"
-    cached.mkdir()
-    (cached / "generated-policy.toml").write_text(DENY_DEPLOY, encoding="utf-8")
+    from grapharc.cli.generate import generated_policy_path
+    from grapharc.cli.plan import DEFAULT_REGISTRY
+
+    # Keyed to the registry the run will use: an un-keyed file is a statement
+    # about an unknown registry and is deliberately ignored now.
+    cached = generated_policy_path(tmp_path, registry=DEFAULT_REGISTRY)
+    cached.parent.mkdir()
+    cached.write_text(DENY_DEPLOY, encoding="utf-8")
 
     _, payload = _plan_payload(capsys)
 
