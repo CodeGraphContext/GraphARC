@@ -18,27 +18,35 @@ delta — `termination_reason`, a short reason string by convention.
 Reachability is the operator's problem by design: bind stays loopback unless
 they choose otherwise, and the recommended remote path is a tunnel or tailnet
 in front, optionally with the shared-secret `token` (a convenience lock, not a
-perimeter — it rides in the query string because `EventSource` cannot set
-headers).
+perimeter). The token travels in a header, or in the cookie `POST /live/auth`
+sets for a browser; `?token=` is accepted on `/live/api/stream` alone, because
+`EventSource` cannot set headers and that route has no other way in. Everywhere
+else a query-string token is refused outright, with its own reason: a URL is
+copied into access logs, browser history and referrers, and a secret that
+protects read access to every trace under the root should not accrue copies in
+places with weaker access control than the traces.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
+import math
 import secrets
+from datetime import datetime
 from pathlib import Path
 from time import monotonic, time
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 from grapharc.observe.metrics import RunMetrics, summarize, to_mermaid
 from grapharc.observe.replay import replay
-from grapharc.observe.trace import TailRecorder
+from grapharc.observe.trace import TailRecorder, TraceEvent
 from grapharc.slack.format import mermaid_live_url
 
 #: How often the stream re-stats the trace file. Coarser than the session
@@ -55,6 +63,25 @@ ACTIVE_WINDOW_SECONDS = 10.0
 #: "running". A delegated executor is silent mid-flight, so quiet ≠ idle — but
 #: past this, an open node is a run that died mid-node, not one still working.
 OPEN_NODE_GRACE_SECONDS = 900.0
+#: The cookie `POST /live/auth` sets, so a browser can authenticate every later
+#: navigation without the token ever entering a URL.
+LIVE_COOKIE = "grapharc_live_token"
+#: Why a token in the query string is refused off the SSE route. Distinct from
+#: "missing or wrong token" on purpose: the caller holds the right secret and
+#: needs to be told *where* to put it, not that it is wrong.
+QUERY_TOKEN_REFUSED = (
+    "the token may not travel in the query string on this route — it would be "
+    "copied into access logs, browser history and referrers. Send it as an "
+    "`Authorization: Bearer` header, or sign in once to set a cookie."
+)
+#: A replay never runs longer than this however slow the recording was, so a
+#: 40-minute run is watchable. A `speed=` multiplier faster than the cap wins.
+REPLAY_MAX_SECONDS = 40.0
+#: An upper bound on frames per replay: each one re-renders the whole prefix,
+#: so a 50k-event trace would otherwise cost quadratic work to watch.
+REPLAY_MAX_FRAMES = 400
+#: Clamp on `speed=`; past this the replay is instant anyway.
+REPLAY_MAX_SPEED = 10_000.0
 
 
 class LivePathError(Exception):
@@ -78,6 +105,39 @@ def resolve_trace(root: Path, raw: str) -> Path:
     return resolved
 
 
+class PlanningRound(BaseModel):
+    """One governed-loop round, as far as the trace has got with it.
+
+    Counts and labels only — the same exposure the rest of the live view has.
+    """
+
+    round: int
+    status: str = ""
+    nodes: int = 0
+    proposals: int = 0
+    tokens: int = 0
+    failed_checks: list[str] = []
+    rejections: list[str] = []
+    executed: bool = False
+    #: The round has `plan`/`admission` events but no closing `round` event:
+    #: the planner is thinking right now, which is exactly the window the page
+    #: used to render as "waiting for the run to start…".
+    in_flight: bool = False
+    error: str | None = None
+
+
+class PlanningView(BaseModel):
+    """What the planner did before (or instead of) producing a graph."""
+
+    rounds: list[PlanningRound] = []
+    planner_tokens: int = 0
+    stop: str | None = None
+    stop_detail: str | None = None
+    #: A graph was admitted and materialised, so the diagram is the main event
+    #: and this is history. Without it, this *is* the run so far.
+    has_topology: bool = False
+
+
 class LiveSnapshot(BaseModel):
     """Everything one page render needs; recomputed server-side per change."""
 
@@ -94,6 +154,94 @@ class LiveSnapshot(BaseModel):
     active: bool = False
     done: bool = False
     awaiting_approval: bool = False
+    #: None for a run that never planned — an ordinary graph invocation renders
+    #: exactly as it did before this field existed.
+    planning: PlanningView | None = None
+
+
+def _as_int(value: Any, fallback: int = 0) -> int:
+    """A count out of a trace file written by someone else. Never raises."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def summarize_planning(run_events: list[TraceEvent]) -> PlanningView | None:
+    """Fold `plan`/`admission`/`round` (and the loop's `stop`) into a panel.
+
+    No new trace events: everything here is already on disk while the page is
+    showing nothing. A round is opened by the first `plan` or `admission` event
+    that follows the last closed one, so an in-flight round — the 30-45 seconds
+    of local inference this exists for — is a row too.
+
+    Returns None when the run has no planning at all, which keeps the field
+    absent for every non-planner run.
+    """
+    rounds: list[PlanningRound] = []
+    view = PlanningView()
+    pending: PlanningRound | None = None
+
+    def slot() -> PlanningRound:
+        nonlocal pending
+        if pending is None:
+            pending = PlanningRound(round=len(rounds) + 1, in_flight=True)
+        return pending
+
+    for event in run_events:
+        delta = event.state_delta or {}
+        if event.phase == "topology":
+            view.has_topology = True
+        elif event.phase == "plan":
+            entry = slot()
+            entry.proposals += 1
+            entry.nodes = _as_int(delta.get("nodes"), entry.nodes)
+            entry.tokens += event.tokens or 0
+            entry.error = event.error or entry.error
+        elif event.phase == "admission":
+            entry = slot()
+            entry.status = str(delta.get("status") or entry.status)
+            entry.nodes = _as_int(delta.get("nodes"), entry.nodes)
+            entry.failed_checks = [str(c) for c in delta.get("failed_checks") or []]
+        elif event.phase == "round":
+            entry = slot()
+            entry.in_flight = False
+            entry.round = _as_int(delta.get("round"), entry.round)
+            entry.status = str(delta.get("status") or entry.status)
+            entry.nodes = _as_int(delta.get("nodes"), entry.nodes)
+            entry.rejections = [str(r) for r in delta.get("rejections") or []]
+            entry.executed = bool(delta.get("executed"))
+            entry.error = event.error or entry.error
+            rounds.append(entry)
+            pending = None
+        elif event.phase == "stop" and "stop" in delta:
+            # The governed loop's own terminal event — an agent's `stop` carries
+            # a `termination_reason` instead, and is not a planning outcome.
+            view.stop = str(delta.get("stop") or "") or None
+            view.stop_detail = str(delta.get("detail") or "") or None
+    if pending is not None:
+        rounds.append(pending)
+    if not rounds and view.stop is None:
+        return None
+    view.rounds = rounds
+    view.planner_tokens = sum(r.tokens for r in rounds)
+    return view
+
+
+class _FrozenRecorder(TailRecorder):
+    """A reader over a fixed slice of events rather than the file's current one.
+
+    `to_mermaid`, `summarize` and `replay` all take a recorder and call
+    `read_events`, so a replay frame is the ordinary snapshot computation
+    pointed at a prefix of the trace.
+    """
+
+    def __init__(self, path: str | Path, events: list[TraceEvent]) -> None:
+        super().__init__(path)
+        self._events = list(events)
+
+    def read_events(self, run_id: str | None = None) -> list[TraceEvent]:
+        return [e for e in self._events if run_id is None or e.run_id == run_id]
 
 
 def build_snapshot(root: Path, rel: str, run_id: str | None) -> LiveSnapshot:
@@ -107,16 +255,34 @@ def build_snapshot(root: Path, rel: str, run_id: str | None) -> LiveSnapshot:
     events = recorder.read_events()
     if not events:
         return LiveSnapshot(trace=rel)
+    try:
+        stat = path.stat()
+        size, quiet_for = stat.st_size, time() - stat.st_mtime
+    except OSError:
+        size, quiet_for = 0, float("inf")
+    return compose_snapshot(rel, recorder, events, run_id, size=size, quiet_for=quiet_for)
 
+
+def compose_snapshot(
+    rel: str,
+    recorder: TailRecorder,
+    events: list[TraceEvent],
+    run_id: str | None,
+    *,
+    size: int,
+    quiet_for: float,
+) -> LiveSnapshot:
+    """The snapshot for one already-read set of events. Pure; run it in a thread.
+
+    Split out of `build_snapshot` so a replay frame — a prefix of a finished
+    file, with no file mtime to consult — is computed by the same code that
+    computes a live one.
+    """
+    if not events:
+        return LiveSnapshot(trace=rel)
     run_ids = list(dict.fromkeys(e.run_id for e in events))
     chosen = run_id if run_id in run_ids else run_ids[-1]
     run_events = [e for e in events if e.run_id == chosen]
-
-    try:
-        size = path.stat().st_size
-        quiet_for = time() - path.stat().st_mtime
-    except OSError:
-        size, quiet_for = 0, float("inf")
     active = quiet_for < ACTIVE_WINDOW_SECONDS
 
     mermaid = to_mermaid(recorder, chosen)
@@ -136,6 +302,18 @@ def build_snapshot(root: Path, rel: str, run_id: str | None) -> LiveSnapshot:
     # an hour-quiet open node is a corpse, not work.
     if not done and quiet_for < OPEN_NODE_GRACE_SECONDS and any(
         not e.completed for e in run.executions
+    ):
+        active = True
+    # A planning round that has begun and not closed is the same shape one step
+    # earlier: the planner writes nothing between the request and the model's
+    # reply, and 30-45 seconds of local inference is longer than the activity
+    # window. Bounded by the same grace, for the same reason.
+    planning = summarize_planning(run_events)
+    if (
+        not done
+        and quiet_for < OPEN_NODE_GRACE_SECONDS
+        and planning is not None
+        and any(r.in_flight for r in planning.rounds)
     ):
         active = True
     # An approval request with no later response: the run is deliberately
@@ -162,7 +340,62 @@ def build_snapshot(root: Path, rel: str, run_id: str | None) -> LiveSnapshot:
         active=active,
         done=done,
         awaiting_approval=awaiting,
+        planning=planning,
     )
+
+
+def _elapsed_seconds(events: list[TraceEvent]) -> list[float]:
+    """Seconds since the first event, per event, from the recorded timestamps.
+
+    Monotonic by construction: an unparseable or out-of-order `ts` — these files
+    can be foreign or hand-written — holds the previous offset rather than
+    sending the replay backwards or raising.
+    """
+    offsets: list[float] = []
+    first: datetime | None = None
+    latest = 0.0
+    for event in events:
+        try:
+            stamp = datetime.fromisoformat(event.ts)
+        except (TypeError, ValueError):
+            offsets.append(latest)
+            continue
+        if first is None:
+            first = stamp
+        try:
+            latest = max(latest, (stamp - first).total_seconds())
+        except TypeError:  # one naive stamp among aware ones
+            pass
+        offsets.append(latest)
+    return offsets
+
+
+def replay_schedule(
+    events: list[TraceEvent],
+    speed: float = 1.0,
+    *,
+    max_seconds: float = REPLAY_MAX_SECONDS,
+    max_frames: int = REPLAY_MAX_FRAMES,
+) -> list[tuple[int, float]]:
+    """`(events to include, seconds into the replay)` per frame, in order.
+
+    Recorded speed divided by `speed`, then capped: whatever the multiplier, the
+    whole replay fits in `max_seconds`, so yesterday's 40-minute incident trace
+    is watchable. A nonsense multiplier (zero, negative, NaN) reads as 1.0
+    rather than dividing the schedule by it.
+    """
+    if not events:
+        return []
+    if not speed > 0 or math.isnan(speed):
+        speed = 1.0
+    speed = min(speed, REPLAY_MAX_SPEED)
+    offsets = _elapsed_seconds(events)
+    span = offsets[-1]
+    if max_seconds > 0 and span / speed > max_seconds:
+        speed = span / max_seconds
+    stride = max(1, math.ceil(len(events) / max(1, max_frames)))
+    indices = sorted({*range(0, len(events), stride), len(events) - 1})
+    return [(index + 1, offsets[index] / speed) for index in indices]
 
 
 #: How many of the newest traces the index fully parses for run ids. The rest
@@ -222,6 +455,20 @@ def scan_traces(root: Path) -> list[dict[str, Any]]:
     return found
 
 
+def _safe_next(raw: str) -> str:
+    """Where sign-in may send the caller: a path inside `/live`, or nothing.
+
+    The form carries its destination, and a form field is attacker-supplied by
+    definition — an absolute URL, a scheme-relative `//host` or a backslash the
+    browser normalises would turn the sign-in page into an open redirect.
+    """
+    if not raw.startswith("/live") or raw.startswith("//"):
+        return "/live"
+    if any(bad in raw for bad in ("\\", "\n", "\r", "\t")):
+        return "/live"
+    return raw
+
+
 def live_router(
     root: str | Path,
     *,
@@ -233,21 +480,71 @@ def live_router(
     root_path = Path(root)
     router = APIRouter(prefix="/live")
 
-    def _authorized(request: Request) -> None:
-        if token is None:
-            return
-        supplied = request.query_params.get("token")
-        header = request.headers.get("authorization", "")
-        if header.startswith("Bearer "):
-            supplied = supplied or header.removeprefix("Bearer ")
+    # What the sign-in cookie carries: a digest of the token, never the token.
+    # Always ASCII, so a non-ASCII secret survives a header round trip (cookies
+    # are latin-1 on the wire), and a stolen cookie is not the secret itself.
+    cookie_value = (
+        hashlib.sha256(token.encode("utf-8")).hexdigest() if token is not None else ""
+    )
+
+    def _matches(supplied: str) -> bool:
         # Compared as bytes: `compare_digest` refuses `str` outside ASCII, so
         # comparing text turned a one-character guess into a 500 — the gate
         # crashing on the strangers it exists to refuse. Encoding keeps the
         # constant-time property, which is the reason it is here at all.
-        if supplied is None or not secrets.compare_digest(
+        return token is not None and secrets.compare_digest(
             supplied.encode("utf-8"), token.encode("utf-8")
+        )
+
+    def _refusal(request: Request, *, allow_query: bool = False) -> str | None:
+        """None when the request may proceed, otherwise why it may not.
+
+        `allow_query` is the SSE route's exemption and nothing else's: a page
+        opened by hand, an index, a JSON listing all have a header or the
+        sign-in cookie available, and a token they put in the URL is refused
+        with its own reason rather than quietly accepted into the logs.
+        """
+        if token is None:
+            return None
+        header = request.headers.get("authorization", "")
+        candidates = []
+        if header.startswith("Bearer "):
+            candidates.append(header.removeprefix("Bearer "))
+        if allow_query:
+            query = request.query_params.get("token")
+            if query is not None:
+                candidates.append(query)
+        cookie = request.cookies.get(LIVE_COOKIE) or ""
+        # Every credential presented is tried, not the first one found: a stale
+        # cookie must not lock out a request that also carries a good header.
+        if any(_matches(candidate) for candidate in candidates) or secrets.compare_digest(
+            cookie.encode("utf-8"), cookie_value.encode("utf-8")
         ):
-            raise HTTPException(status_code=401, detail="missing or wrong token")
+            return None
+        if not allow_query and "token" in request.query_params:
+            return QUERY_TOKEN_REFUSED
+        return "missing or wrong token"
+
+    def _return_to(request: Request) -> str:
+        """Where to send the caller after signing in — minus any `?token=`.
+
+        Echoing the refused parameter back into the form would put the secret
+        into the next URL, which is the whole thing being fixed.
+        """
+        kept = [
+            (key, value)
+            for key, value in request.query_params.multi_items()
+            if key != "token"
+        ]
+        query = urlencode(kept)
+        return _safe_next(request.url.path + (f"?{query}" if query else ""))
+
+    def _sign_in(target: str, reason: str) -> HTMLResponse:
+        page = (
+            SIGNIN_HTML.replace("__REASON__", html.escape(reason))
+            .replace("__NEXT__", html.escape(target, quote=True))
+        )
+        return HTMLResponse(page, status_code=401)
 
     def _resolved(raw: str) -> str:
         """Validate confinement; 404 on refusal (don't map what exists outside).
@@ -261,10 +558,34 @@ def live_router(
             raise HTTPException(status_code=404, detail="no such trace") from None
         return raw
 
+    @router.post("/auth", include_in_schema=False)
+    async def auth(request: Request) -> Response:
+        """Trade the token for a cookie, so no navigation carries it in a URL.
+
+        A form post, not a GET: a GET would put the secret in the query string
+        of the very request that exists to keep it out of query strings.
+        """
+        form = await request.form()
+        target = _safe_next(str(form.get("next") or "/live"))
+        if token is not None and not _matches(str(form.get("token") or "")):
+            return _sign_in(target, "missing or wrong token")
+        response = RedirectResponse(target, status_code=303)
+        if token is not None:
+            response.set_cookie(
+                LIVE_COOKIE,
+                cookie_value,
+                httponly=True,
+                samesite="strict",
+                path="/live",
+                secure=request.url.scheme == "https",
+            )
+        return response
+
     @router.get("", response_class=HTMLResponse, include_in_schema=False)
     def index(request: Request) -> HTMLResponse:
-        _authorized(request)
-        keep = f"&token={quote(token, safe='')}" if token else ""
+        refusal = _refusal(request)
+        if refusal:
+            return _sign_in(_return_to(request), refusal)
         rows = []
         for item in scan_traces(root_path):
             # Trace names and run ids come from whoever wrote the files — the
@@ -274,9 +595,10 @@ def live_router(
             # token sits in this same DOM).
             runs = html.escape(", ".join(item["runs"]) or "—")
             shown = html.escape(item["trace"])
-            href = html.escape(
-                f"/live/view?trace={quote(item['trace'], safe='')}{keep}"
-            )
+            # No token in the link: the cookie authenticates the page the
+            # operator clicks through to, and a link is the thing that ends up
+            # in history and in the referrer of anything the page opens.
+            href = html.escape(f"/live/view?trace={quote(item['trace'], safe='')}")
             rows.append(
                 f'<tr><td><a href="{href}">{shown}</a></td>'
                 f"<td>{runs}</td><td>{item['size']}</td></tr>"
@@ -286,12 +608,16 @@ def live_router(
 
     @router.get("/api/runs")
     def runs(request: Request) -> dict[str, Any]:
-        _authorized(request)
+        refusal = _refusal(request)
+        if refusal:
+            raise HTTPException(status_code=401, detail=refusal)
         return {"root": str(root_path), "traces": scan_traces(root_path)}
 
     @router.get("/view", response_class=HTMLResponse, include_in_schema=False)
     def view(request: Request, trace: str = Query(...)) -> HTMLResponse:
-        _authorized(request)
+        refusal = _refusal(request)
+        if refusal:
+            return _sign_in(_return_to(request), refusal)
         _resolved(trace)
         return HTMLResponse(VIEW_HTML)
 
@@ -300,10 +626,77 @@ def live_router(
         request: Request,
         trace: str = Query(...),
         run: str | None = Query(None),
+        replay_recorded: int = Query(0, alias="replay"),
+        speed: float = Query(1.0),
     ) -> StreamingResponse:
-        _authorized(request)
+        # The one route a token may reach by query string: `EventSource` cannot
+        # set a header, and the page has nothing else to authenticate with.
+        refusal = _refusal(request, allow_query=True)
+        if refusal:
+            raise HTTPException(status_code=401, detail=refusal)
         rel = _resolved(trace)
         path = resolve_trace(root_path, rel)
+
+        async def replay_frames():
+            """The recorded run, re-emitted as the snapshots it would have sent.
+
+            A finished trace renders instantly all-green, so the amber "running"
+            frame — the thing the runtime is best at showing — is unreachable
+            for every run that is already over. This walks the file's own
+            timestamps and rebuilds each intermediate snapshot from a prefix,
+            which is the same computation a live stream does, only sourced from
+            the past.
+            """
+            from grapharc.server.app import _disconnected, _sse
+
+            try:
+                events = await asyncio.to_thread(TailRecorder(path).read_events)
+            except Exception:
+                events = []
+            if not events:
+                yield _sse("snapshot", LiveSnapshot(trace=rel).model_dump(mode="json"))
+                yield _sse("done", {"trace": rel, "replay": True})
+                return
+            run_ids = list(dict.fromkeys(e.run_id for e in events))
+            chosen = run if run in run_ids else run_ids[-1]
+            run_events = [e for e in events if e.run_id == chosen]
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = 0
+            started = monotonic()
+            for count, offset in replay_schedule(run_events, speed):
+                wait = offset - (monotonic() - started)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                if await _disconnected(request):
+                    return
+                prefix = run_events[:count]
+                try:
+                    snapshot = await asyncio.to_thread(
+                        compose_snapshot,
+                        rel,
+                        _FrozenRecorder(path, prefix),
+                        prefix,
+                        chosen,
+                        # A replay has no live file to stat: it is running by
+                        # definition until its last frame, and every frame must
+                        # be reproducible, so neither depends on the clock.
+                        size=size,
+                        quiet_for=0.0,
+                    )
+                except Exception:
+                    yield ": snapshot unavailable\n\n"
+                    continue
+                yield _sse("snapshot", snapshot.model_dump(mode="json"))
+            yield _sse("done", {"trace": rel, "replay": True})
+
+        if replay_recorded:
+            return StreamingResponse(
+                replay_frames(),
+                media_type="text/event-stream",
+                headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+            )
 
         async def frames():
             from grapharc.server.app import _disconnected, _sse
@@ -379,8 +772,32 @@ __ROWS__
 </table></body></html>
 """
 
+SIGNIN_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><title>grapharc live · sign in</title>
+<meta name="referrer" content="no-referrer">
+<style>
+ body{font-family:system-ui,sans-serif;margin:2rem;color:#222;max-width:34rem}
+ input{font:inherit;padding:.35rem .5rem;width:20rem;max-width:100%}
+ button{font:inherit;padding:.35rem .9rem}
+ .why{color:#666;font-size:.9rem;margin-top:1.4rem;line-height:1.45}
+</style></head><body>
+<h1>grapharc live</h1>
+<p>__REASON__</p>
+<form method="post" action="/live/auth">
+ <input type="hidden" name="next" value="__NEXT__">
+ <label>token <input type="password" name="token" autofocus autocomplete="off"></label>
+ <button type="submit">sign in</button>
+</form>
+<p class="why">The token is exchanged for a cookie scoped to <code>/live</code>,
+so it never appears in a URL — where it would be copied into access logs,
+browser history and referrer headers. Scripts can send
+<code>Authorization: Bearer TOKEN</code> instead.</p>
+</body></html>
+"""
+
 VIEW_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>grapharc live view</title>
+<meta name="referrer" content="no-referrer">
 <style>
  body{font-family:system-ui,sans-serif;margin:1.5rem;color:#222}
  header{display:flex;gap:1rem;align-items:baseline;flex-wrap:wrap}
@@ -391,13 +808,22 @@ VIEW_HTML = """<!doctype html>
  table{border-collapse:collapse}
  td,th{padding:.25rem .7rem;border-bottom:1px solid #ddd;text-align:left}
  .muted{color:#777}
+ #planning{margin:1rem 0}
+ #planning h2{font-size:1rem;margin:.2rem 0 .5rem}
+ #planning .stop{margin:.5rem 0 0;color:#b02a37}
+ #planning td.rejected,#planning td.refused{color:#b02a37}
+ #planning tr.inflight td{background:#fff3cd}
+ #badge{padding:.05rem .45rem;border:1px solid #b8860b;border-radius:.6rem;
+        color:#8a6d0b;font-size:.8rem}
 </style></head><body>
 <header>
  <span id="status">connecting…</span>
  <span id="run" class="muted"></span>
- <a id="mlive" target="_blank" rel="noopener" hidden>open in mermaid.live</a>
+ <span id="badge" hidden>replay</span>
+ <a id="mlive" target="_blank" rel="noopener noreferrer" hidden>open in mermaid.live</a>
 </header>
 <div id="graph">waiting for the run to start…</div>
+<div id="planning" hidden></div>
 <pre id="src" hidden></pre>
 <table id="stats"></table>
 <script type="module">
@@ -413,7 +839,48 @@ const graph = document.getElementById("graph");
 const src = document.getElementById("src");
 const mlive = document.getElementById("mlive");
 const stats = document.getElementById("stats");
+const panel = document.getElementById("planning");
+const badge = document.getElementById("badge");
 let seq = 0;
+
+if (new URLSearchParams(location.search).get("replay")) badge.hidden = false;
+
+// Every cell is written with textContent: round labels, statuses and rejection
+// codes come out of a trace file this server merely reads.
+function cell(tag, text, className) {
+  const el = document.createElement(tag);
+  el.textContent = text;
+  if (className) el.className = className;
+  return el;
+}
+
+function renderPlanning(p) {
+  panel.innerHTML = "";
+  if (!p || (!p.rounds.length && !p.stop)) { panel.hidden = true; return; }
+  panel.append(cell("h2", p.has_topology ? "planning history" : "planning"));
+  const table = document.createElement("table");
+  const head = document.createElement("tr");
+  for (const h of ["round", "status", "nodes", "why", "tokens"]) head.append(cell("th", h));
+  table.append(head);
+  for (const r of p.rounds) {
+    const tr = document.createElement("tr");
+    if (r.in_flight) tr.className = "inflight";
+    tr.append(cell("td", "round " + r.round));
+    tr.append(cell("td", r.in_flight ? (r.status || "planning…") : (r.status || "—"),
+                   r.status === "rejected" ? "rejected" : ""));
+    tr.append(cell("td", String(r.nodes || 0)));
+    const why = [...(r.rejections || []), ...(r.failed_checks || [])];
+    tr.append(cell("td", why.length ? [...new Set(why)].join(", ") : (r.error || "—")));
+    tr.append(cell("td", String(r.tokens || 0)));
+    table.append(tr);
+  }
+  panel.append(table);
+  if (p.stop) {
+    panel.append(cell("p", "stopped: " + p.stop + (p.stop_detail ? " — " + p.stop_detail : ""),
+                      "stop"));
+  }
+  panel.hidden = false;
+}
 
 function renderStats(s) {
   const rows = [];
@@ -441,11 +908,23 @@ function renderStats(s) {
 const es = new EventSource("/live/api/stream" + location.search);
 es.addEventListener("snapshot", async (e) => {
   const s = JSON.parse(e.data);
+  // Planning with no graph yet is the run so far, not a run that has not
+  // started: rounds, refusals and tokens are already on disk at this point.
+  const planning = s.planning && !s.planning.has_topology;
   runEl.textContent = s.run_id ? "run " + s.run_id : "";
   status.textContent = s.done ? "finished"
     : (s.awaiting_approval ? "awaiting approval"
-    : (s.active ? "running" : (s.run_id ? "idle" : "waiting")));
+    : (s.active ? (planning ? "planning" : "running")
+    : (s.run_id ? "idle" : "waiting")));
   renderStats(s);
+  renderPlanning(s.planning);
+  if (planning && !s.done) {
+    // The "no graph ran" placeholder is an answer for a finished run, not for
+    // one whose planner is still thinking.
+    graph.textContent = "planning…";
+    src.hidden = true;
+    return;
+  }
   if (!s.mermaid) return;
   src.textContent = s.mermaid;
   if (s.mermaid_live_url) { mlive.href = s.mermaid_live_url; mlive.hidden = false; }
@@ -470,13 +949,23 @@ es.onerror = () => {
 __all__ = [
     "ACTIVE_WINDOW_SECONDS",
     "DONE_GRACE_SECONDS",
+    "LIVE_COOKIE",
     "LIVE_KEEPALIVE_SECONDS",
     "LIVE_POLL_SECONDS",
+    "QUERY_TOKEN_REFUSED",
+    "REPLAY_MAX_FRAMES",
+    "REPLAY_MAX_SECONDS",
+    "REPLAY_MAX_SPEED",
     "LivePathError",
     "LiveSnapshot",
+    "PlanningRound",
+    "PlanningView",
     "TailRecorder",
     "build_snapshot",
+    "compose_snapshot",
     "live_router",
+    "replay_schedule",
     "resolve_trace",
     "scan_traces",
+    "summarize_planning",
 ]

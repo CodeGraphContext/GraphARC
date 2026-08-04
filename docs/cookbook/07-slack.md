@@ -181,7 +181,9 @@ contents — what the page shows is what `viz` and `metrics` already show.
 Reachability is deliberately your problem, not the bot's: the bot never opens
 a port (that is the whole point of Socket Mode), and `serve` still binds
 loopback by default. Put a tailnet or tunnel (Tailscale, cloudflared) in front
-for the person on the phone, and add `--live-token` if the URL is guessable.
+for the person on the phone, and add `--live-token` if the URL is guessable —
+the person then signs in once on the page rather than carrying the token in
+the link, which is what keeps it out of access logs and browser history.
 Details in [06-serving-and-ops.md](06-serving-and-ops.md).
 
 ## A `plan` that reads
