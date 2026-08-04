@@ -149,7 +149,15 @@ def resolve_or_generate_policy(
     fallback: Any = None,
     fallback_label: str = "",
 ) -> tuple[Any, str, str]:
-    """Return `(edge_policy, description, source)`.
+    """Return `(gate_policy, description, source)`.
+
+    The policy is a `grapharc.cli.plan.GatePolicy` carrying both halves a
+    document compiles to — the edge rules and the node rules — because a run
+    gated by only one half of a document is the bug this pair exists to prevent.
+    Every document goes through `compile_policy`, generated ones included, so
+    what a freshly generated policy means and what the same file means when it
+    is read back off disk next run cannot differ. A fallback has no node half at
+    all: it is an `EdgePolicy` written in Python, not a document.
 
     `source` is one of `flag-or-config`, `registry-default`, `generated-cached`,
     `generated`, `builtin-default`. Callers put it in the payload verbatim: it is
@@ -168,23 +176,33 @@ def resolve_or_generate_policy(
     exist and permit ones that do.
     """
     from grapharc import stdlib
-    from grapharc.cli.plan import resolve_edge_policy
+    from grapharc.cli.plan import GatePolicy, compile_policy, resolve_policy
 
     if policy_path is not None:
-        policy, description = resolve_edge_policy(policy_path, tenant=tenant)
+        policy, description = resolve_policy(policy_path, tenant=tenant)
         return policy, description, "flag-or-config"
 
     cached = generated_policy_path(workdir)
     if cached.is_file():
-        policy, description = resolve_edge_policy(cached, tenant=tenant)
+        # Read back as an ordinary document, node rules included: a generated
+        # file the operator has since edited is theirs, not the generator's.
+        policy, description = resolve_policy(cached, tenant=tenant)
         return policy, f"{description}  [previously generated]", "generated-cached"
 
     def _settled() -> tuple[Any, str, str]:
         if fallback is not None:
             label = fallback_label or "registry default"
-            return fallback, f"{label} ({describe_policy(fallback)})", "registry-default"
+            return (
+                GatePolicy(edge=fallback),
+                f"{label} ({describe_policy(fallback)})",
+                "registry-default",
+            )
         builtin = stdlib.default_edge_policy()
-        return builtin, f"built-in default ({describe_policy(builtin)})", "builtin-default"
+        return (
+            GatePolicy(edge=builtin),
+            f"built-in default ({describe_policy(builtin)})",
+            "builtin-default",
+        )
 
     if model is None:
         return _settled()
@@ -199,7 +217,10 @@ def resolve_or_generate_policy(
         from grapharc.policy import PolicyEngine
 
         engine = PolicyEngine.from_toml(toml_text)
-        policy = engine.edge_policy(tenant=tenant)
+        # Compiled exactly as the file will be on the next run — the text below
+        # is written to disk and read back as an ordinary document, so the two
+        # readings must not differ.
+        policy = compile_policy(engine, tenant=tenant)
     except Exception:  # noqa: BLE001 — any failure falls back rather than breaking the run
         policy, description, source = _settled()
         return policy, f"{description}  [generation failed]", source

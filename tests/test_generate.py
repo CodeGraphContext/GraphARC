@@ -67,7 +67,7 @@ def test_a_first_run_with_nothing_specified_generates_a_policy(tmp_path):
 
     assert source == "generated"
     assert "review it" in description
-    assert policy.rules, "a generated policy with no rules would gate nothing"
+    assert policy.edge.rules, "a generated policy with no rules would gate nothing"
 
 
 def test_the_generated_policy_actually_governs(tmp_path):
@@ -76,8 +76,8 @@ def test_the_generated_policy_actually_governs(tmp_path):
 
     policy, _, _ = _generate(tmp_path)
 
-    assert policy.decide("investigate", "apply_change") is Decision.DENY
-    assert policy.decide("investigate", "verify") is Decision.ALLOW
+    assert policy.edge.decide("investigate", "apply_change") is Decision.DENY
+    assert policy.edge.decide("investigate", "verify") is Decision.ALLOW
 
 
 # -- disclosure --------------------------------------------------------------
@@ -149,6 +149,33 @@ def test_the_second_run_reads_it_off_disk_rather_than_regenerating(tmp_path):
     assert "previously generated" in description
 
 
+def test_node_rules_the_operator_added_to_the_cached_file_are_honoured(tmp_path):
+    """The cached file is an ordinary document, and editing it is the point.
+
+    Reading it back through the same compiler as `--policy` is what stops the
+    generated path being a place where `resource = "node"` rules go to die
+    (issue #66).
+    """
+    from grapharc.harness.permissions import Decision
+
+    _generate(tmp_path)
+    path = generated_policy_path(tmp_path)
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + '\n[[rule]]\nid = "no-shell-nodes"\nresource = "node"\n'
+        'match = "shell_*"\neffect = "deny"\n'
+        '\n[[rule]]\nid = "others"\nresource = "node"\nmatch = "*"\neffect = "allow"\n',
+        encoding="utf-8",
+    )
+
+    policy, _description, source = _generate(tmp_path)
+
+    assert source == "generated-cached"
+    assert policy.node is not None
+    assert policy.node.decide("shell_exec") is Decision.DENY
+    assert policy.node.decide("investigate") is Decision.ALLOW
+
+
 def test_a_cached_policy_beats_generating_a_new_one_even_with_a_model(tmp_path):
     """Otherwise the policy changes under the operator on every run."""
     _generate(tmp_path)
@@ -191,7 +218,7 @@ def test_with_no_model_nothing_is_generated(tmp_path):
 
     assert source == "builtin-default"
     assert not generated_policy_path(tmp_path).exists()
-    assert policy.rules
+    assert policy.edge.rules
     # The description says what the policy *does*, read back from its rules, so
     # it cannot drift from them.
     assert "deny -> apply_change" in description
@@ -214,7 +241,7 @@ def test_a_registrys_own_default_beats_the_builtin(tmp_path):
     assert source == "registry-default"
     assert description.startswith("myco:build default")
     assert "deny -> apply_change" in description
-    assert policy is sentinel
+    assert policy.edge is sentinel
 
 
 # -- what goes into the prompt -----------------------------------------------

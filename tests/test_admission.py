@@ -25,7 +25,9 @@ from grapharc.planner import (
     CostEstimate,
     EdgePolicy,
     EdgeRule,
+    NodePolicy,
     NodeRegistry,
+    NodeRule,
     NodeSpec,
     PlannerNode,
     ProposedEdge,
@@ -251,6 +253,151 @@ def test_a_denial_outranks_a_pending_approval():
         linear("build", "deploy")
     )
     assert result.status is AdmissionStatus.REJECTED
+
+
+# -- POLICY over node kinds ----------------------------------------------------
+# The registry says a kind exists and what it costs. A `NodePolicy` — compiled
+# from a document an operator can edit without touching the code that builds the
+# registry — says whether it may run here. A kind has to pass both, and a
+# proposal is refused with a code the planner can replan against.
+
+
+def test_a_policy_forbidden_node_kind_is_rejected_naming_the_policy_check():
+    policy = NodePolicy(
+        rules=(NodeRule(action="deny", match="deploy"), NodeRule(action="allow"))
+    )
+    result = checker(registry("build", "deploy"), node_policy=policy).check(
+        linear("build", "deploy")
+    )
+
+    assert not result.admitted
+    assert result.failed_checks() == (Check.POLICY,)
+    (reason,) = result.reasons(Check.POLICY)
+    assert reason.code == "node_denied"
+    assert reason.subject == "deploy"
+
+
+def test_a_denied_node_kind_cannot_be_renamed_out_of_its_denial():
+    """The same rule the edge half follows: a name grants and borrows nothing."""
+    policy = NodePolicy(
+        rules=(NodeRule(action="deny", match="deploy"), NodeRule(action="allow"))
+    )
+    gate = checker(registry("build", "deploy"), node_policy=policy)
+
+    renamed = gate.check(
+        Subgraph(nodes=(ProposedNode(name="totally_fine", kind="deploy"),))
+    )
+    borrowed = gate.check(
+        Subgraph(nodes=(ProposedNode(name="deploy", kind="build"),))
+    )
+
+    assert [r.code for r in renamed.rejections] == ["node_denied"]
+    assert "kind 'deploy'" in renamed.rejections[0].detail
+    assert "totally_fine" in renamed.rejections[0].detail
+    assert borrowed.admitted
+
+
+def test_a_node_denial_quotes_the_reason_the_operator_wrote():
+    policy = NodePolicy(
+        rules=(
+            NodeRule(action="deny", match="shell_*", reason="a shell node is unbounded"),
+            NodeRule(action="allow"),
+        )
+    )
+    result = checker(registry("shell_worker"), node_policy=policy).check(
+        Subgraph(nodes=(ProposedNode(name="shell_worker"),))
+    )
+
+    assert result.rejections[0].detail.endswith("a shell node is unbounded")
+
+
+def test_a_node_kind_needing_approval_is_not_admitted():
+    policy = NodePolicy(
+        rules=(NodeRule(action="ask", match="deploy"), NodeRule(action="allow"))
+    )
+    result = checker(registry("build", "deploy"), node_policy=policy).check(
+        linear("build", "deploy")
+    )
+
+    assert not result.admitted
+    assert result.needs_approval
+    assert result.status is AdmissionStatus.NEEDS_APPROVAL
+    assert [r.code for r in result.reasons(Check.POLICY)] == ["node_needs_approval"]
+
+
+def test_an_unmatched_node_kind_defaults_to_deny():
+    """`NodePolicy()` is empty, not permissive — the same shape `EdgePolicy` has."""
+    result = checker(registry("fetch"), node_policy=NodePolicy()).check(
+        Subgraph(nodes=(ProposedNode(name="fetch"),))
+    )
+
+    assert [r.code for r in result.rejections] == ["node_denied"]
+
+
+def test_a_broad_node_deny_beats_a_narrower_allow():
+    policy = NodePolicy(
+        rules=(
+            NodeRule(action="allow", match="deploy"),
+            NodeRule(action="deny", match="dep*"),
+        )
+    )
+    assert policy.decide("deploy") is Decision.DENY
+
+
+def test_no_node_policy_leaves_the_registry_as_the_only_node_gate():
+    """The behaviour every existing caller has: absence is not a wildcard.
+
+    A checker built without a node policy decides node kinds exactly as it did
+    before one existed — registered kinds pass, unregistered ones are refused by
+    REGISTRY.
+    """
+    gate = checker(registry("fetch"))
+
+    assert gate.check(Subgraph(nodes=(ProposedNode(name="fetch"),))).admitted
+    refused = gate.check(Subgraph(nodes=(ProposedNode(name="shell"),)))
+    assert [r.code for r in refused.rejections] == ["unregistered_node"]
+
+
+def test_a_denied_node_kind_hidden_in_a_nested_scope_is_refused_too():
+    policy = NodePolicy(
+        rules=(NodeRule(action="deny", match="deploy"), NodeRule(action="allow"))
+    )
+    nested = Subgraph(
+        nodes=(
+            ProposedNode(
+                name="outer",
+                kind="build",
+                subgraph=Subgraph(nodes=(ProposedNode(name="inner", kind="deploy"),)),
+            ),
+        )
+    )
+    result = checker(
+        registry("build", "deploy"),
+        node_policy=policy,
+        limits=AdmissionLimits(max_depth=2),
+    ).check(nested)
+
+    assert [r.code for r in result.rejections] == ["node_denied"]
+    assert result.rejections[0].subject == "outer/inner"
+
+
+def test_a_node_denial_and_an_edge_denial_are_both_reported():
+    """One POLICY check, both halves — a planner gets the whole list."""
+    result = checker(
+        registry("build", "deploy"),
+        edge_policy=EdgePolicy(rules=(EdgeRule(action="deny", target="deploy"),)),
+        node_policy=NodePolicy(
+            rules=(NodeRule(action="deny", match="deploy"), NodeRule(action="allow"))
+        ),
+    ).check(
+        Subgraph(
+            nodes=(ProposedNode(name="build"), ProposedNode(name="deploy")),
+            edges=(ProposedEdge(source="build", target="deploy"),),
+        )
+    )
+
+    assert {r.code for r in result.rejections} == {"node_denied", "edge_denied"}
+    assert result.failed_checks() == (Check.POLICY,)
 
 
 # -- POLICY decides on the KIND, never on the name the planner chose -----------

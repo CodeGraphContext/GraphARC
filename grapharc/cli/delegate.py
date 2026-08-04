@@ -25,6 +25,7 @@ import json
 import shutil
 import subprocess
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 from grapharc.cli import style
@@ -33,6 +34,130 @@ from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit, fail
 #: What a bare run may use, mirroring the harness default of "the core tools,
 #: shell included". An explicit `--allow` replaces this outright.
 DEFAULT_DELEGATED_TOOLS = ("Read", "Glob", "Grep", "LS", "Edit", "Write", "Bash")
+
+
+
+# ---------------------------------------------------------------------------
+# The reusable core. `run_delegated` below is the CLI's presentation of it, and
+# `grapharc.harness.agent.AgentNode` calls it directly when its backend is the
+# Claude CLI — one implementation, so the two paths cannot drift on what
+# actually gets spawned.
+
+
+class DelegationError(Exception):
+    """A delegated run could not be started, or came back unreadable.
+
+    `reason` is the machine-readable form, written to the trace so a run that
+    failed here is distinguishable afterwards from one that ran and refused.
+    """
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class DelegatedRun:
+    """What Claude Code reported back. Every number here is *its* figure.
+
+    `tokens_reported` is named for what it is: the sub-agent's own count, not
+    something GraphARC metered call by call. Nothing in this object was
+    observed by the permission engine.
+    """
+
+    ok: bool
+    answer: str
+    reason: str
+    turns: int
+    tokens_reported: int
+    cost_usd: float | None
+    session_id: str | None
+    allowed: list[str] | None  # None == no --allowedTools restriction at all
+    denied: list[str]
+
+
+def delegate_task(
+    task: str,
+    *,
+    workspace: Path,
+    model: str | None = None,
+    allow: list[str] | None = None,
+    deny: list[str] | None = None,
+    max_turns: int = 20,
+    max_seconds: float | None = None,
+    system_prompt: str | None = None,
+    permission_mode: str | None = None,
+) -> DelegatedRun:
+    """Run one headless `claude -p` agent loop in `workspace`.
+
+    Two separate axes, and conflating them is a trap worth naming. `allow`
+    controls *which* tools exist; `permission_mode` controls whether the ones
+    that mutate anything are allowed to run without a human answering a prompt.
+    Omitting `--allowedTools` does **not** mean "every tool": it means Claude
+    Code's own default gating, and headless there is nobody to approve a Write,
+    so the sub-agent reports back that it could not create the file. Measured,
+    not assumed. `permission_mode="bypassPermissions"` is what actually means
+    "everything", and it means it literally — no checks at all.
+
+    Either way the caller is responsible for having said so out loud;
+    `AgentNode` warns at construction and marks every trace event.
+    """
+    binary = shutil.which("claude")
+    if binary is None:
+        raise DelegationError(
+            "the delegated executor shells out to `claude`, which is not on PATH; "
+            "install Claude Code or use a tool-calling backend",
+            reason="claude_not_found",
+        )
+
+    workspace = Path(workspace).expanduser().resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    argv = [binary, "-p", task, "--output-format", "json", "--max-turns", str(max_turns)]
+    if allow is not None:
+        argv += ["--allowedTools", ",".join(allow)]
+    if deny:
+        argv += ["--disallowedTools", ",".join(deny)]
+    if permission_mode:
+        argv += ["--permission-mode", permission_mode]
+    if model:
+        argv += ["--model", model]
+    if system_prompt:
+        argv += ["--append-system-prompt", system_prompt]
+
+    try:
+        completed = subprocess.run(
+            argv, cwd=workspace, capture_output=True, text=True, timeout=max_seconds
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DelegationError(
+            f"max_seconds ({max_seconds}) reached; the delegated run was stopped",
+            reason="deadline_exceeded",
+        ) from exc
+
+    try:
+        report = json.loads(completed.stdout)
+    except (json.JSONDecodeError, ValueError) as exc:
+        detail = (completed.stderr or completed.stdout or "").strip()[-500:]
+        raise DelegationError(
+            f"claude exited {completed.returncode} without a readable JSON report: {detail}",
+            reason="unreadable_report",
+        ) from exc
+
+    usage = report.get("usage") or {}
+    met = report.get("subtype") == "success" and not report.get("is_error", False)
+    return DelegatedRun(
+        ok=met,
+        answer=str(report.get("result") or "").strip(),
+        reason="target_met" if met else str(report.get("subtype") or "error"),
+        turns=int(report.get("num_turns") or 0),
+        tokens_reported=int(usage.get("input_tokens") or 0)
+        + int(usage.get("output_tokens") or 0),
+        cost_usd=report.get("total_cost_usd"),
+        session_id=report.get("session_id"),
+        allowed=list(allow) if allow is not None else None,
+        denied=list(deny or []),
+    )
 
 
 def run_delegated(
@@ -217,4 +342,10 @@ def run_delegated(
     return EXIT_OK if met else EXIT_FAILED
 
 
-__all__ = ["DEFAULT_DELEGATED_TOOLS", "run_delegated"]
+__all__ = [
+    "DEFAULT_DELEGATED_TOOLS",
+    "DelegatedRun",
+    "DelegationError",
+    "delegate_task",
+    "run_delegated",
+]

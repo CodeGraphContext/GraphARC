@@ -1320,6 +1320,7 @@ id = "no-shell-nodes"
 resource = "node"
 match = "shell_*"
 effect = "deny"
+reason = "a shell node is an unbounded tool"
 
 [[rule]]
 id = "other-nodes-run"
@@ -1404,7 +1405,7 @@ edge  triage->patch    default  allow  rule=other-edges-are-fine
 spend *                default  allow  rule=small-spend-is-fine
 spend *                default  ask    rule=over-a-dollar-asks-finance  ask:finance
 
-policy version: 2026-07-01  digest: b1d593faa1d41fcf
+policy version: 2026-07-01  digest: 028e3486e70a1161
 audit records:  11
 ```
 
@@ -1602,9 +1603,9 @@ print("same digest: ", parse_document(edited).digest == engine.digest)
 ```
 
 ```
-tool  write_file       allow rule=acme-may-write            v=2026-07-01 digest=b1d593fa ctx={'run_id': 'run-42', 'node': 'patch'}
-tool  delete_bucket    deny  rule=no-deletes                v=2026-07-01 digest=b1d593fa ctx={'run_id': 'run-42', 'node': 'patch'}
-edge  triage->deploy   deny  rule=nothing-routes-into-deploy v=2026-07-01 digest=b1d593fa ctx={'run_id': 'run-42', 'node': 'patch'}
+tool  write_file       allow rule=acme-may-write            v=2026-07-01 digest=028e3486 ctx={'run_id': 'run-42', 'node': 'patch'}
+tool  delete_bucket    deny  rule=no-deletes                v=2026-07-01 digest=028e3486 ctx={'run_id': 'run-42', 'node': 'patch'}
+edge  triage->deploy   deny  rule=nothing-routes-into-deploy v=2026-07-01 digest=028e3486 ctx={'run_id': 'run-42', 'node': 'patch'}
 
 same version: True
 same digest:  False
@@ -1627,10 +1628,12 @@ really does lose records and why it defaults to off.
 
 ## How do I make my TOML document govern admission?
 
-It does not, by default. `AdmissionChecker` takes an `EdgePolicy` built in code;
-`PolicyEngine.check_edge` answers over a document. **There is no shipped
-compiler between them** — `permission_policy()` exists for tools and has no edge
-equivalent. Here is the bridge, which is about fifteen lines:
+`AdmissionChecker` takes an `EdgePolicy` and a `NodePolicy` built in code;
+`PolicyEngine.check_edge` and `check_node` answer over a document.
+`PolicyEngine.edge_policy()` and `PolicyEngine.node_policy()` are the shipped
+compilers between them, and the next recipe uses both. Here is what
+`edge_policy()` does, written out, because the semantics are worth seeing once —
+it is about fifteen lines:
 
 ```python
 from grapharc.harness.permissions import Decision
@@ -1717,6 +1720,75 @@ cannot drift silently.
 
 ---
 
+## How do I stop a node *kind* from running, from the document?
+
+A `resource = "node"` rule is compiled by `PolicyEngine.node_policy()` and
+handed to the checker as `node_policy=`. It decides on the registry kind, like
+everything else here, and a refusal quotes the `reason` the rule carried.
+
+```python
+from grapharc.planner import (
+    AdmissionChecker,
+    NodeRegistry,
+    NodeSpec,
+    ProposedEdge,
+    ProposedNode,
+    Subgraph,
+)
+from grapharc.policy import PolicyEngine
+from grapharc.runtime.graph import START
+
+engine = PolicyEngine.from_file("policy.toml")
+gate = AdmissionChecker(
+    registry=NodeRegistry([NodeSpec(name="shell_exec"), NodeSpec(name="summarise")]),
+    edge_policy=engine.edge_policy(),
+    node_policy=engine.node_policy(),
+)
+
+# `helper` is a registered kind wired along a permitted edge. The document
+# still refuses it, because of what it *is*.
+result = gate.check(
+    Subgraph(
+        nodes=(
+            ProposedNode(name="helper", kind="shell_exec"),
+            ProposedNode(name="summarise"),
+        ),
+        edges=(
+            ProposedEdge(source=START, target="helper"),
+            ProposedEdge(source="helper", target="summarise"),
+        ),
+    )
+)
+print("status:", result.status.value)
+for rejection in result.rejections:
+    print(rejection.render())
+print("engine agrees:", engine.check_node("shell_exec").effect.value)
+print("and about the other kind:", engine.check_node("summarise").effect.value)
+```
+
+```
+status: rejected
+[policy/node_denied] helper: the node policy denies this kind: kind 'shell_exec' (proposed as 'helper'): a shell node is an unbounded tool the decision is made on the registry kind, not the name you chose: renaming the node will not change it — propose a permitted kind
+engine agrees: deny
+and about the other kind: allow
+```
+
+**Why it works this way.** The registry and the node policy are two different
+questions and a kind has to pass both: the registry says a kind exists and what
+it costs — operator code, fixed at start-up — while the document says whether it
+may run here, and can be edited without touching that code. `node_policy=` is
+`None` by default, and that is not a wildcard: with no document the registry is
+the only node gate, and it is an allowlist with no wildcard either.
+
+**The sharp edge.** `node_policy()` is faithful to `check_node`, so a document
+with *no* node rules and `default = "deny"` compiles to a policy that denies
+every kind. That is the same answer `check_node` gives, and it is why
+`grapharc plan --policy` compiles the node half only when the document declares
+at least one `node` rule — saying nothing about nodes is not the same statement
+as denying all of them. Compiling by hand, you decide which you meant.
+
+---
+
 ## What this section does not give you
 
 Stated plainly, because a governance layer that overstates itself is worse than
@@ -1727,8 +1799,9 @@ none:
    unchecked, and that is your gate to build.
 2. **`parent_depth` is on your honour.** The checker cannot observe how deep the
    run really is.
-3. **Edge approvals are not routed.** `NEEDS_APPROVAL` tells you an edge needs a
-   human; nothing carries it to one. The `ApprovalRouter` handles tools.
+3. **Admission approvals are not routed.** `NEEDS_APPROVAL` tells you an edge or
+   a node kind needs a human; nothing carries it to one. The `ApprovalRouter`
+   handles tools.
 4. **Cycles across the boundary are invisible.** The acyclicity check sees only
    the topology inside the proposal.
 5. **`known_nodes` and `Materializer` do not compose.** A proposal wired to a
@@ -1744,14 +1817,17 @@ none:
    reassignment, but `args` is an ordinary dict whose contents can be mutated in
    place. `fingerprint()` is what detects that, by hashing content rather than
    trusting the reference — and `Materializer` checks it for you.
-9. **No shipped edge-policy compiler.** The TOML document's `edge` rules do not
-   reach `AdmissionChecker` on their own; the bridge above is fifteen lines you
-   write and this section's tests pin.
+9. **A document reaches admission only when something hands it over.** The
+   compilers are shipped (`edge_policy()`, `node_policy()`) and `grapharc plan
+   --policy` calls both, but an `AdmissionChecker` you build yourself is subject
+   to a document only if you pass the compiled objects to it. Its `tool` and
+   `spend` rules reach neither gate: those are the harness's plane.
 10. **The spend ledger is in-process.** It does not survive a restart and is not
     shared between processes.
 
 The parts that *are* enforced, and that every snippet above demonstrates: a
-proposal cannot execute itself, an unregistered kind cannot run, a denied
+proposal cannot execute itself, an unregistered kind cannot run, a kind the
+document denies cannot run either, a denied
 transition cannot be renamed into an allowed one, an over-budget plan is refused
 before its first node exists, and every decision — yes and no alike — is a
 recorded event carrying the reason.

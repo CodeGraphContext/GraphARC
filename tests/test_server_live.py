@@ -271,6 +271,71 @@ def test_a_token_locks_every_live_route(tmp_path):
         assert client.get("/live/api/runs?token=wrong").status_code == 401
 
 
+def test_a_hostile_token_is_a_401_not_a_crash(tmp_path):
+    """The gate that refuses strangers must not be crashable by one.
+
+    `secrets.compare_digest` refuses `str` outside ASCII, so a one-character
+    guess used to raise `TypeError` through the handler — a 500 that both
+    amplifies the log and tells the caller how the token is compared.
+    """
+    write_run(tmp_path / "t.jsonl", "r1", done=True)
+    routes = ("/live", "/live/api/runs", "/live/view?trace=t.jsonl",
+              "/live/api/stream?trace=t.jsonl")
+    guesses = ("caf%C3%A9", "%C3%A9", "%F0%9F%94%91", "x" * 9000, "")
+    with live_client(tmp_path, token="s3cret") as client:
+        for route in routes:
+            sep = "&" if "?" in route else "?"
+            for guess in guesses:
+                response = client.get(f"{route}{sep}token={guess}")
+                assert response.status_code == 401, (route, guess)
+            # Also over the header, where the wire is bytes: starlette decodes
+            # them latin-1, so non-ASCII arrives as a non-ASCII `str` too.
+            assert client.get(
+                route, headers={"authorization": "Bearer café".encode()}
+            ).status_code == 401
+            assert client.get(f"{route}{sep}token=s3cret").status_code == 200
+
+
+def test_a_non_ascii_token_still_authorizes_its_owner(tmp_path):
+    """Bytes comparison must widen what is accepted, not only what is refused."""
+    with live_client(tmp_path, token="café-🔑") as client:
+        assert client.get("/live/api/runs?token=caf%C3%A9-%F0%9F%94%91").status_code == 200
+        assert client.get("/live/api/runs?token=caf%C3%A9").status_code == 401
+
+
+def test_a_nul_byte_in_the_trace_is_404_not_500(tmp_path):
+    """`resolve_trace` raises `ValueError`, not `LivePathError`, on a NUL byte."""
+    with live_client(tmp_path) as client:
+        for raw in ("%00.jsonl", "sub/%00/t.jsonl", "t%00.jsonl"):
+            assert client.get(f"/live/view?trace={raw}").status_code == 404
+            assert client.get(f"/live/api/stream?trace={raw}").status_code == 404
+
+
+def test_the_index_hides_a_symlinked_trace_outside_the_root(tmp_path):
+    """The index must advertise only what the reader will serve."""
+    secret = tmp_path / "OUTSIDE.jsonl"
+    write_run(secret, "SECRET-RUN", done=True)
+    root = tmp_path / "liveroot"
+    root.mkdir()
+    write_run(root / "run1.jsonl", "r1", done=True)
+    (root / "link_out.jsonl").symlink_to(secret)
+    (root / "sub").mkdir()
+    (root / "sub" / "link_out.jsonl").symlink_to(secret)
+    (root / "linkdir").symlink_to(tmp_path)  # a symlinked *directory* too
+
+    assert [t["trace"] for t in scan_traces(root)] == ["run1.jsonl"]
+
+    with live_client(root) as client:
+        listed = client.get("/live/api/runs").json()["traces"]
+        assert [t["trace"] for t in listed] == ["run1.jsonl"]
+        page = client.get("/live").text
+        for leak in ("SECRET-RUN", "link_out.jsonl", "OUTSIDE.jsonl"):
+            assert leak not in page
+        # And the index still agrees with the reader, which refuses the link.
+        assert client.get("/live/api/stream?trace=link_out.jsonl").status_code == 404
+        assert client.get("/live/view?trace=link_out.jsonl").status_code == 404
+
+
 def test_the_index_lists_traces_and_links_the_viewer(tmp_path):
     write_run(tmp_path / "runs" / "t.jsonl", "r1")
     with live_client(tmp_path) as client:

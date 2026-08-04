@@ -121,6 +121,34 @@ def _canonical_model(model: str) -> str:
     return model.split("/", 1)[1] if model.startswith("anthropic/") else model
 
 
+def _payload_error(stdout: str) -> str:
+    """The CLI's own explanation of a failure, which it writes to *stdout*.
+
+    `claude -p` reports a refused model, an expired login and their siblings
+    with a non-zero exit code, an **empty stderr**, and the whole reason in the
+    JSON envelope on stdout::
+
+        {"is_error": true, "result": "There's an issue with the selected model
+         (claude-cli). It may not exist or you may not have access to it."}
+
+    Reading only stderr therefore produced ``claude -p exited 1: `` — a
+    sentence that stops at the colon — and discarded the one string that said
+    what was wrong. It matters for classification too: `_cli_failure` decides
+    transient-vs-deterministic from this text, and it was deciding from "".
+
+    Returns "" when stdout is not the documented envelope, so the caller falls
+    back to stderr rather than inventing a reason.
+    """
+    try:
+        payload = json.loads(stdout)
+    except (TypeError, ValueError):  # JSONDecodeError is a ValueError
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    result = payload.get("result")
+    return str(result).strip() if result else ""
+
+
 def _cli_failure(message: str, evidence: str) -> GatewayError:
     """Build the right error class for a CLI failure from its own text.
 
@@ -219,8 +247,10 @@ class ClaudeCodeCLIChatModel(BaseChatModel):
             ) from exc
 
         if proc.returncode != 0:
-            stderr = proc.stderr.strip()
-            raise _cli_failure(f"claude -p exited {proc.returncode}: {stderr[:500]}", stderr)
+            # stdout first: the CLI puts its reason in the JSON envelope there
+            # and leaves stderr empty. See `_payload_error`.
+            detail = _payload_error(proc.stdout) or proc.stderr.strip()
+            raise _cli_failure(f"claude -p exited {proc.returncode}: {detail[:500]}", detail)
 
         try:
             payload = json.loads(proc.stdout)

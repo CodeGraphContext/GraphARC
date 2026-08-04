@@ -15,10 +15,11 @@ Two things an operator supplies, and neither can come from a model:
 
 - `--registry module:attr` — the kinds a planner may propose. Absence is
   refusal; there is no wildcard. Defaults to the shipped incident demo.
-- `--policy PATH [--tenant NAME]` — a TOML document whose `edge` rules are
-  compiled to the `EdgePolicy` admission consults, via
-  `PolicyEngine.edge_policy()`. This is the path that makes declarative
-  governance constrain a run rather than answer questions about one.
+- `--policy PATH [--tenant NAME]` — a TOML document whose `edge` and `node`
+  rules are compiled to the `EdgePolicy` and `NodePolicy` admission consults,
+  via `PolicyEngine.edge_policy()` and `PolicyEngine.node_policy()`. This is the
+  path that makes declarative governance constrain a run rather than answer
+  questions about one.
 
 Exit codes follow the CLI's convention: `0` the goal was met, `1` the run
 stopped short for a recorded reason (refused, out of budget, out of rounds),
@@ -133,24 +134,79 @@ def _accepts_an_argument(factory: Any) -> bool:
     )
 
 
-def resolve_edge_policy(policy_path: Path | None, *, tenant: str) -> tuple[Any, str]:
-    """Compile a policy document's edge rules, or fall back to the demo's.
+@dataclass(frozen=True)
+class GatePolicy:
+    """The gate objects one policy document compiles to, travelling together.
 
-    Returns `(edge_policy, description)`. The description is printed, because
-    which policy a run was subject to is the first thing anyone asks afterwards.
+    Two halves of the same file: `edge` says what may be wired, `node` says
+    which kinds may run at all. They travel as one object because a run gated by
+    one half of a document is exactly the failure this exists to fix — the node
+    half used to be compiled by nobody, so a `deny` rule over a node kind was
+    text (issue #66).
+
+    `node` is `None` when the document declares no `node` rules. That is not the
+    same as an empty `NodePolicy`, which denies every kind: a document that says
+    nothing about nodes leaves them to the registry, which is itself an
+    allowlist with no wildcard, while a document that mentions nodes at all is
+    taken at its word, default included.
+    """
+
+    edge: Any
+    node: Any = None
+
+
+def resolve_policy(policy_path: Path | None, *, tenant: str) -> tuple[GatePolicy, str]:
+    """Compile a policy document's edge and node rules, or fall back to the demo's.
+
+    Returns `(gate_policy, description)`. The description is printed, because
+    which policy a run was subject to is the first thing anyone asks afterwards —
+    and it counts both kinds of rule, so a document whose node rules do not
+    constrain this run says so in the count rather than by omission.
     """
     if policy_path is None:
         from grapharc.examples.plan_incident import default_edge_policy
 
-        return default_edge_policy(), "built-in demo (deny -> deploy, allow otherwise)"
+        return (
+            GatePolicy(edge=default_edge_policy()),
+            "built-in demo (deny -> deploy, allow otherwise)",
+        )
     from grapharc.policy import PolicyEngine, PolicyError
 
     try:
         engine = PolicyEngine.from_file(policy_path)
     except (OSError, PolicyError) as exc:
         raise PlanSetupError(f"--policy {str(policy_path)!r}: {exc}") from exc
-    policy = engine.edge_policy(tenant=tenant)
-    return policy, f"{policy_path} (tenant {tenant!r}, {len(policy.rules)} edge rule(s))"
+    policy = compile_policy(engine, tenant=tenant)
+    # Both counts are of the rules that survived tenant scoping, which is what
+    # this run is actually subject to.
+    description = (
+        f"{policy_path} (tenant {tenant!r}, {len(policy.edge.rules)} edge rule(s), "
+        f"{0 if policy.node is None else len(policy.node.rules)} node rule(s))"
+    )
+    return policy, description
+
+
+def compile_policy(engine: Any, *, tenant: str) -> GatePolicy:
+    """Compile a loaded `PolicyEngine`'s planner-side rules into both gates.
+
+    The one place a document becomes admission's objects, so a run started from
+    a file and a run started from a document generated in memory are subject to
+    the same reading of the same rules.
+
+    The node half is compiled **only when the document declares node rules**.
+    `PolicyEngine.node_policy()` is faithful to `check_node`, which means a
+    document with no node rules and a `deny` default denies every kind — a true
+    reading of the engine, and not what an operator who wrote only edge rules
+    meant to say. Saying nothing about nodes leaves them where they were: the
+    registry, an allowlist with no wildcard.
+    """
+    from grapharc.policy import ResourceKind
+
+    node_rules = engine.document.rules_for(ResourceKind.NODE)
+    return GatePolicy(
+        edge=engine.edge_policy(tenant=tenant),
+        node=engine.node_policy(tenant=tenant) if node_rules else None,
+    )
 
 
 def _model_for(spec: str | None, registry_target: str = DEFAULT_REGISTRY) -> tuple[Any, str]:
@@ -219,7 +275,7 @@ def plan(
         model, model_description = _model_for(model_spec, registry_target)
         bundle = resolve_registry(registry_target, model)
         registry, state_schema, writes = bundle.registry, bundle.state_schema, bundle.writes
-        edge_policy, policy_description, policy_source = resolve_or_generate_policy(
+        gate_policy, policy_description, policy_source = resolve_or_generate_policy(
             policy_path,
             tenant=tenant,
             # Only a *real* backend generates. The scripted planner has no
@@ -251,6 +307,10 @@ def plan(
         def _announce(message: str) -> None:
             # Printed *and flushed* before the run parks: a terminal user (or a
             # log tailer) must learn how to answer without waiting for the exit.
+            # Silent in JSON mode: stdout there carries exactly one document, and
+            # a notice printed ahead of it makes the whole output unparseable.
+            if as_json:
+                return
             print(message, flush=True, file=sys.stdout)
 
         approval = file_approval(
@@ -263,7 +323,8 @@ def plan(
     build_loop = bundle.build_loop or incident_build_loop
     loop = build_loop(
         model,
-        edge_policy=edge_policy,
+        edge_policy=gate_policy.edge,
+        node_policy=gate_policy.node,
         trace=trace,
         budget=Budget(max_tokens=max_tokens),
         limits=LoopLimits(max_rounds=max_rounds),
@@ -355,4 +416,12 @@ def plan(
     return EXIT_OK if result.succeeded else EXIT_FAILED
 
 
-__all__ = ["DEFAULT_REGISTRY", "PlanSetupError", "plan", "resolve_edge_policy", "resolve_registry"]
+__all__ = [
+    "DEFAULT_REGISTRY",
+    "GatePolicy",
+    "PlanSetupError",
+    "compile_policy",
+    "plan",
+    "resolve_policy",
+    "resolve_registry",
+]

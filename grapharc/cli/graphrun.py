@@ -70,7 +70,13 @@ def load_topology(path: Path) -> dict[str, Any]:
     """
     if not path.is_file():
         raise PlanSetupError(f"no such graph file: {path}")
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        # A topology saved as UTF-16, or truncated in transit, is a file we
+        # cannot run — not a crash. `UnicodeDecodeError` is a `ValueError`, so
+        # neither decoder below would ever have caught it.
+        raise PlanSetupError(f"{path}: {exc}") from exc
     try:
         if path.suffix.lower() == ".toml":
             return tomllib.loads(text)
@@ -142,7 +148,7 @@ def run_graph(
         proposal = build_proposal(document)
         bundle = resolve_registry(registry_target)
         registry, state_schema, writes = bundle.registry, bundle.state_schema, bundle.writes
-        edge_policy, policy_description, policy_source = resolve_or_generate_policy(
+        gate_policy, policy_description, policy_source = resolve_or_generate_policy(
             policy_path,
             tenant=tenant,
             fallback=bundle.default_policy,
@@ -157,7 +163,12 @@ def run_graph(
     schema = state_schema or IncidentState
     trace_path = trace_path or Path(tempfile.mkdtemp(prefix="grapharc-run-")) / "trace.jsonl"
     trace = TraceRecorder(trace_path)
-    checker = AdmissionChecker(registry=registry, edge_policy=edge_policy, trace=trace)
+    checker = AdmissionChecker(
+        registry=registry,
+        edge_policy=gate_policy.edge,
+        node_policy=gate_policy.node,
+        trace=trace,
+    )
 
     # `Budget()` is genuinely unlimited on every dimension, so with no
     # ceilings the budget check passes anything. The meter is real only when

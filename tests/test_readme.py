@@ -86,6 +86,85 @@ def test_the_python_block_reaches_no_live_backend():
         assert forbidden not in code, forbidden
 
 
+def test_the_quick_start_block_actually_runs_against_this_tree():
+    """The page's *first* code block, executed rather than admired.
+
+    It was previously LangGraph's API rather than GraphARC's — it opened with
+    `from grapharc.runtime import StateGraph`, a name this package has never
+    exported, so the very first line raised `ImportError`. The two calls after
+    it were wrong in their own right: `add_node` without `writes=` raises
+    `TypeError` (the argument is required, and per-node write permissions are
+    the project's headline claim), and `add_edge("START", ...)` raises
+    `ValueError` because `START` is a sentinel, not the string `"START"`.
+
+    Nothing caught it because nothing ran it. The admission-gate section has
+    been executed by this file since it was written; the Quick Start had the
+    same standing on the page and none of the same discipline, which is exactly
+    the drift this module's docstring describes. So: same treatment. The
+    trailing comment on the page states the printed result, and it is compared
+    against what the block really prints.
+    """
+    # The section leads with the CLI tour (a bash block) and follows it with one
+    # Python graph, so this selects by language rather than by position — the
+    # earlier `== ["python"]` assertion encoded the old layout, in which the
+    # Python snippet was the section's only content and sat 100 lines above the
+    # commands that actually demonstrate the project.
+    python_blocks = [code for lang, code in _blocks("Quick start") if lang == "python"]
+    assert len(python_blocks) == 1, "the quick start must carry exactly one Python block"
+    code = python_blocks[0]
+
+    # The expectation is written on the page as a trailing `# {...}` comment,
+    # so the snippet stays copy-pasteable instead of carrying a second block.
+    expected = [
+        line.lstrip("# ").strip() for line in code.splitlines() if line.startswith("# {")
+    ]
+    assert len(expected) == 1, "the quick start must state its printed result"
+
+    buffer = io.StringIO()
+    namespace: dict = {"__name__": "__readme__"}
+    with redirect_stdout(buffer):
+        exec(compile(code, f"{README}:quick-start", "exec"), namespace)
+
+    assert _normalise(buffer.getvalue()) == _normalise(expected[0])
+
+
+def test_the_quick_start_python_block_reaches_no_live_backend():
+    """The first snippet a visitor copies must not be able to spend money."""
+    code = [c for lang, c in _blocks("Quick start") if lang == "python"][0]
+
+    for forbidden in ("get_model(", "openrouter", "ClaudeCodeCLIChatModel", "claude-cli"):
+        assert forbidden not in code, forbidden
+
+
+def test_every_in_page_link_resolves_to_a_real_heading():
+    """A dead `#anchor` does nothing visible on GitHub, so neither reading the
+    page nor running the suite used to surface one.
+
+    This began life checking only the hand-maintained contents list, which had
+    two invented entries (`#usage`, `#documentation`) pointing at sections that
+    never existed. That list is gone — GitHub renders its own outline, and a
+    second one in a different order from the document was a maintenance burden
+    that had already drifted — so the check now covers *every* in-page link on
+    the page, which is strictly more than it covered before and no longer
+    depends on a particular section existing.
+    """
+    text = README.read_text(encoding="utf-8")
+
+    anchors = set()
+    for line in text.splitlines():
+        if not line.startswith("#"):
+            continue
+        title = line.lstrip("#").strip()
+        slug = re.sub(r"[^a-z0-9\s-]", "", title.lower())
+        anchors.add(re.sub(r"\s+", "-", slug.strip()))
+
+    linked = re.findall(r"\]\(#([a-z0-9-]+)\)", text)
+    assert linked, "the README has no in-page links at all"
+
+    dead = sorted(set(linked) - anchors)
+    assert not dead, f"README links to non-existent sections: {dead}"
+
+
 def _embedded_images() -> list[str]:
     """Every local image the README embeds, read off the README itself.
 
