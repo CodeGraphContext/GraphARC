@@ -65,6 +65,8 @@ def test_the_cli_scripted_path_uses_this_registrys_replies(docs_dir, capsys):
         [
             "plan",
             "summarise the docs",
+            "--scripted",
+            "--go",
             "--registry",
             "grapharc.examples.plan_docs:build_registry",
             "--trace",

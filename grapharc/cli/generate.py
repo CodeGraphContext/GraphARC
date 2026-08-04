@@ -31,6 +31,7 @@ default rather than a decision.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -97,9 +98,21 @@ def describe_policy(policy: Any) -> str:
     return ", ".join(parts)
 
 
-def generated_policy_path(workdir: Path | None = None) -> Path:
-    """Where a generated policy lives. Not created until something is written."""
-    return Path(workdir or Path.cwd()) / GENERATED_DIR / GENERATED_POLICY
+def generated_policy_path(workdir: Path | None = None, *, registry: str = "") -> Path:
+    """Where a generated policy lives. Not created until something is written.
+
+    Keyed by the registry target that generated it. A policy is a statement
+    about one registry's kinds — a file generated for the incident demo's
+    `deploy` said nothing about the stdlib's `apply_change`, yet the un-keyed
+    cache served it anyway, silently overriding the stdlib registry's own
+    deny of its mutating kind. The un-keyed name is kept only so callers can
+    recognise (and refuse) legacy files; nothing writes it anymore.
+    """
+    base = Path(workdir or Path.cwd()) / GENERATED_DIR
+    if not registry:
+        return base / GENERATED_POLICY
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", registry)
+    return base / f"generated-policy.{slug}.toml"
 
 
 def build_policy_toml(
@@ -148,6 +161,7 @@ def resolve_or_generate_policy(
     mutating: tuple[str, ...] = (),
     fallback: Any = None,
     fallback_label: str = "",
+    registry_target: str = "",
 ) -> tuple[Any, str, str]:
     """Return `(gate_policy, description, source)`.
 
@@ -182,25 +196,35 @@ def resolve_or_generate_policy(
         policy, description = resolve_policy(policy_path, tenant=tenant)
         return policy, description, "flag-or-config"
 
-    cached = generated_policy_path(workdir)
+    cached = generated_policy_path(workdir, registry=registry_target)
     if cached.is_file():
         # Read back as an ordinary document, node rules included: a generated
         # file the operator has since edited is theirs, not the generator's.
         policy, description = resolve_policy(cached, tenant=tenant)
         return policy, f"{description}  [previously generated]", "generated-cached"
+    # A legacy un-keyed file cannot prove which registry it was generated for,
+    # so it governs nothing implicitly — fail closed to generation or the
+    # registry's own default, and say so. The operator's edits survive on disk
+    # and are one `--policy` flag away.
+    legacy = generated_policy_path(workdir)
+    legacy_note = (
+        f"  (ignoring un-keyed {legacy} — pass --policy to use it)"
+        if registry_target and legacy.is_file()
+        else ""
+    )
 
     def _settled() -> tuple[Any, str, str]:
         if fallback is not None:
             label = fallback_label or "registry default"
             return (
                 GatePolicy(edge=fallback),
-                f"{label} ({describe_policy(fallback)})",
+                f"{label} ({describe_policy(fallback)}){legacy_note}",
                 "registry-default",
             )
         builtin = stdlib.default_edge_policy()
         return (
             GatePolicy(edge=builtin),
-            f"built-in default ({describe_policy(builtin)})",
+            f"built-in default ({describe_policy(builtin)}){legacy_note}",
             "builtin-default",
         )
 

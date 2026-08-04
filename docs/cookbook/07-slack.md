@@ -95,7 +95,7 @@ whether model flags are on — the three decisions that matter — then blocks
 until interrupted. From Slack:
 
 ```
-/grapharc plan "investigate the checkout outage"
+/grapharc plan "investigate the checkout outage" --scripted
 /grapharc trace t.jsonl
 @grapharc metrics t.jsonl <run-id>
 ```
@@ -136,14 +136,17 @@ edited in place every couple of seconds:
 ✗ verify  err: citation not found
 ▸ report  running…
 6 events · 2/4 nodes done · 1543 tok
-<current diagram>
+<open live view>
 ```
 
-The `current diagram` link is the same mermaid.live fragment URL `viz` gets —
-the diagram is compressed into the URL itself and shipped to no one — and it is
-refreshed on every edit, so mid-run it renders the path *so far*. When the
-command finishes, the status message is edited one last time into the same
-final result the bot has always posted.
+The `open live view` link points at your own live server's run page
+(`GRAPHARC_SLACK_LIVE_URL` + the trace path), where the graph redraws in real
+time. With no live URL configured, the message carries a `current diagram`
+link instead — the same mermaid.live fragment URL `viz` gets, the diagram
+compressed into the URL itself and shipped to no one, refreshed on every edit
+so mid-run it renders the path *so far*. When the command finishes, the status
+message is edited one last time into the same final result the bot has always
+posted, keeping the run-page link (or, without one, a final-diagram link).
 
 Everything about this path is best-effort by construction. If the bot cannot
 post the status message (it is not in the channel, the API errored), the whole

@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>grapharc live</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="5">
+<link rel="stylesheet" href="/live/static/view.css">
+<style>
+ .traces{border-collapse:collapse;background:var(--g-card);border:1px solid var(--g-border);
+         border-radius:12px;overflow:hidden;min-width:min(48rem,100%)}
+ .traces td,.traces th{padding:.45rem 1rem;border-bottom:1px solid var(--g-border);text-align:left}
+ .traces th{color:var(--g-text-2);font-weight:500;font-size:.8rem;text-transform:uppercase;
+            letter-spacing:.04em}
+ .traces td{font-family:var(--g-font-mono);font-size:.85rem}
+</style></head><body>
+<header>
+ <span class="brand">GraphARC</span>
+ <span id="status">live traces</span>
+</header>
+<main>
+<p class="muted">Trace files under the live root, newest first. This page refreshes itself.</p>
+<table class="traces"><tr><th>trace</th><th>runs</th><th>bytes</th></tr>
+__ROWS__
+</table></main></body></html>

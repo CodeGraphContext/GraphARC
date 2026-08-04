@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>grapharc live view</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<link rel="stylesheet" href="/live/static/view.css">
+</head><body>
+<header>
+ <span class="brand">GraphARC</span>
+ <span class="livedot" id="dot"></span>
+ <span id="status">connecting…</span>
+ <span id="run" class="muted mono"></span>
+ <span id="goal" class="muted"></span>
+ <select id="runpick" hidden></select>
+ <span id="badge" hidden>replay</span>
+</header>
+<main>
+ <div id="approvalbar" hidden>
+  <span>plan awaiting approval — answer with:</span>
+  <code id="approvecmd"></code>
+  <button id="copyapprove" type="button">copy</button>
+ </div>
+ <div class="tiles">
+  <div class="tile" id="t-nodes" hidden><b>—</b><span>nodes done</span></div>
+  <div class="tile" id="t-tokens" hidden><b>—</b><span>tokens</span></div>
+  <div class="tile" id="t-cost" hidden><b>—</b><span>cost usd</span></div>
+  <div class="tile" id="t-wall" hidden><b>—</b><span>wall time</span></div>
+  <div class="tile errors" id="t-errors" hidden><b>—</b><span>errors</span></div>
+  <div class="tile" id="t-events" hidden><b>—</b><span>events</span></div>
+ </div>
+ <div id="panel"><div class="empty">waiting for the run to start…</div></div>
+ <div id="playback" hidden>
+  <button id="play" type="button">▶ replay</button>
+  <select id="speed">
+   <option value="1">1×</option>
+   <option value="4" selected>4×</option>
+   <option value="16">16×</option>
+  </select>
+  <input id="scrub" type="range" min="0" max="1000" value="1000" step="1">
+  <span id="clock">—</span>
+ </div>
+ <div id="planning" hidden></div>
+ <details id="drawer">
+  <summary>diagram source · <a id="mlive" target="_blank" rel="noopener noreferrer" hidden>open in mermaid.live</a></summary>
+  <pre id="src"></pre>
+ </details>
+</main>
+<script src="/live/static/view.js"></script>
+</body></html>

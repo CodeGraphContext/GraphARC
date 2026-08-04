@@ -1,0 +1,58 @@
+/* GraphARC design tokens — the single source of truth for both surfaces:
+ * this site and the live run view (grapharc/server/static/view.css copies
+ * the same values; change both). Grounded in docs/brand/README.md. */
+
+:root {
+  /* surfaces */
+  --g-bg: #0B0F19;
+  --g-surface: #111827;
+  --g-card: #151C2C;
+  --g-border: rgba(231, 236, 243, 0.08);
+  --g-border-hi: rgba(231, 236, 243, 0.16);
+
+  /* text */
+  --g-text: #E7ECF3;
+  --g-text-2: #94A3B8;
+  --g-text-3: #64748B;
+
+  /* brand accents (logo gradient stops) */
+  --g-teal: #2DD4BF;
+  --g-blue: #3B82F6;
+  --g-violet: #8B5CF6;
+  --g-teal-hi: #5EEAD4;
+  --g-blue-hi: #60A5FA;
+  --g-violet-hi: #A78BFA;
+  --g-gradient: linear-gradient(135deg, var(--g-teal), var(--g-blue) 50%, var(--g-violet));
+
+  /* node/run status — the README's grey/amber/green language */
+  --g-status-proposed: #64748B;
+  --g-status-admitted: #60A5FA;
+  --g-status-running: #FBBF24;
+  --g-status-done: #34D399;
+  --g-status-rejected: #F87171;
+  --g-status-approval: #A78BFA;
+  --g-budget-fill: var(--g-teal);
+  --g-budget-warn: #FBBF24;
+
+  /* type */
+  --g-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --g-font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* rhythm: 4px base */
+  --g-space-1: 0.25rem;
+  --g-space-2: 0.5rem;
+  --g-space-3: 0.75rem;
+  --g-space-4: 1rem;
+  --g-space-6: 1.5rem;
+  --g-space-8: 2rem;
+  --g-space-12: 3rem;
+  --g-space-16: 4rem;
+  --g-space-24: 6rem;
+  --g-radius-chip: 6px;
+  --g-radius-card: 12px;
+  --g-radius-pill: 999px;
+  --g-max-content: 1080px;
+  --g-max-prose: 720px;
+}

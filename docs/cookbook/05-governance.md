@@ -935,7 +935,61 @@ print(system.split("Available node kinds:")[1].strip())
 
 Denied by policy. The admission checker refuses these; it is deterministic code and this list is only telling you in advance:
 - edges into 'deploy' are denied by policy — do not propose them: a deploy is the operator's decision
+
+Reply with exactly one JSON object and nothing else — no prose before or after it. The object has three keys: `nodes` (a list of {name, kind}), `edges` (a list of [source, target] pairs), and `rationale` (one sentence). Example:
+{
+  "nodes": [
+    {
+      "name": "prepare",
+      "kind": "<a kind from the catalog>"
+    },
+    {
+      "name": "branch_a",
+      "kind": "<a kind from the catalog>"
+    },
+    {
+      "name": "branch_b",
+      "kind": "<a kind from the catalog>"
+    },
+    {
+      "name": "combine",
+      "kind": "<a kind from the catalog>"
+    }
+  ],
+  "edges": [
+    [
+      "__start__",
+      "prepare"
+    ],
+    [
+      "prepare",
+      "branch_a"
+    ],
+    [
+      "prepare",
+      "branch_b"
+    ],
+    [
+      "branch_a",
+      "combine"
+    ],
+    [
+      "branch_b",
+      "combine"
+    ],
+    [
+      "combine",
+      "__end__"
+    ]
+  ],
+  "rationale": "branch_a and branch_b are independent, so they run in parallel"
+}
 ```
+
+The last block is the text path's own format contract: a scripted double has
+no structured-output wire, so `PlannerNode` asks for the slim proposal shape
+in prose — the same thing a local Ollama model gets. A backend that supports
+structured output is handed the schema instead, and none of this text.
 
 Without those two lines a model reads a registered-but-denied kind as an
 invitation, proposes it, gets `edge_denied` back — a check name, which says

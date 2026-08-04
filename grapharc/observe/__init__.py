@@ -40,6 +40,7 @@ from grapharc.observe.replay import (
     replay,
     replay_thread,
 )
+from grapharc.observe.status import NodeState, NodeStatus, node_states
 from grapharc.observe.trace import TraceEvent, TraceReadError, TraceRecorder, load_events
 
 __all__ = [
@@ -48,6 +49,8 @@ __all__ = [
     "NodeCost",
     "NodeDiff",
     "NodeExecution",
+    "NodeState",
+    "NodeStatus",
     "NullSpanExporter",
     "OTelSpanExporter",
     "OTelUnavailable",
@@ -72,6 +75,7 @@ __all__ = [
     "format_diff",
     "format_replay",
     "load_events",
+    "node_states",
     "replay",
     "replay_thread",
     "summarize",

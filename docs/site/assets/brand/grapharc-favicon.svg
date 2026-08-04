@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 120 120">
+<defs>
+  <linearGradient id="iconGrad" gradientUnits="userSpaceOnUse" x1="14" y1="14" x2="106" y2="106">
+    <stop offset="0%" stop-color="#2DD4BF"/>
+    <stop offset="50%" stop-color="#3B82F6"/>
+    <stop offset="100%" stop-color="#8B5CF6"/>
+  </linearGradient>
+  <linearGradient id="nodeGrad" gradientUnits="userSpaceOnUse" x1="36" y1="44" x2="84" y2="88">
+    <stop offset="0%" stop-color="#5EEAD4"/>
+    <stop offset="55%" stop-color="#60A5FA"/>
+    <stop offset="100%" stop-color="#A78BFA"/>
+  </linearGradient>
+</defs>
+<rect x="0" y="0" width="120" height="120" rx="26" fill="#0B0F19"/>
+<path d="M 74.335 22.657 A 40.0 40.0 0 1 1 45.665 22.657" fill="none" stroke="url(#iconGrad)" stroke-width="10.0" stroke-linecap="round"/>
+<line x1="60.00" y1="84.80" x2="38.52" y2="47.60" stroke="url(#nodeGrad)" stroke-width="4.2" stroke-linecap="round" opacity="0.85"/>
+<line x1="60.00" y1="84.80" x2="81.48" y2="47.60" stroke="url(#nodeGrad)" stroke-width="4.2" stroke-linecap="round" opacity="0.85"/>
+<line x1="38.52" y1="47.60" x2="81.48" y2="47.60" stroke="url(#nodeGrad)" stroke-width="4.2" stroke-linecap="round" opacity="0.85"/>
+<circle cx="60.00" cy="84.80" r="10.5" fill="url(#nodeGrad)"/>
+<circle cx="60.00" cy="84.80" r="10.5" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="0.6"/>
+<circle cx="38.52" cy="47.60" r="7.5" fill="url(#nodeGrad)"/>
+<circle cx="38.52" cy="47.60" r="7.5" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="0.6"/>
+<circle cx="81.48" cy="47.60" r="7.5" fill="url(#nodeGrad)"/>
+<circle cx="81.48" cy="47.60" r="7.5" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="0.6"/>
+</svg>

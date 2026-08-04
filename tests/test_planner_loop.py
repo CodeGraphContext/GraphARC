@@ -1498,6 +1498,7 @@ def test_stop_reasons_are_stable_machine_readable_strings():
     assert {reason.value for reason in LoopStop} == {
         "goal_met",
         "no_further_work",
+        "planned",
         "max_rounds",
         "budget_exhausted",
         "no_progress",

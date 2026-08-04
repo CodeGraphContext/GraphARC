@@ -28,6 +28,7 @@ from typing import Protocol
 
 from grapharc.observe.metrics import to_mermaid
 from grapharc.observe.replay import NodeExecution, ReplayedRun, replay
+from grapharc.observe.status import NodeState, node_states
 from grapharc.observe.trace import TailRecorder, TraceEvent
 from grapharc.slack.format import fence, mermaid_live_url, truncate
 
@@ -80,10 +81,13 @@ class LiveTail:
         argv: list[str],
         update: Callable[[str], bool],
         settings: LiveSettings | None = None,
+        *,
+        view_url: str | None = None,
     ) -> None:
         self._path = trace_path
         self._argv = list(argv)
         self._update = update
+        self._view_url = view_url
         self._settings = settings or LiveSettings()
         try:
             self._offset = trace_path.stat().st_size
@@ -147,6 +151,7 @@ class LiveTail:
             argv=self._argv,
             elapsed_s=time.monotonic() - self._started_at,
             diagram=diagram,
+            view_url=self._view_url,
         )
 
     def _read_new_run_id(self) -> str | None:
@@ -233,6 +238,17 @@ def _sub_event_line(event: TraceEvent) -> str:
 _SHAPE_PHASES = frozenset({"topology", "approval_request", "approval_response"})
 
 
+def _goal(run: ReplayedRun) -> str | None:
+    """The goal the loop recorded on its topology/approval events, if any."""
+    found: str | None = None
+    for event in run.events:
+        if event.phase in ("topology", "approval_request"):
+            value = (event.state_delta or {}).get("goal")
+            if value:
+                found = str(value)
+    return found
+
+
 def _pending_approval(run: ReplayedRun) -> TraceEvent | None:
     """The latest approval request no response has answered yet, if any."""
     pending: TraceEvent | None = None
@@ -268,37 +284,29 @@ def _planned_lines(run: ReplayedRun) -> list[str] | None:
             round_no = delta.get("round")
             lines.append(f"round {round_no}:" if round_no else f"{graph}:")
         graph_events = [e for e in run.events if e.graph == graph]
+        states = node_states(graph_events)
         for name in delta.get("nodes", []):
-            lines.append(_node_status_line(str(name), graph_events))
+            lines.append(_node_status_line(str(name), states.get(str(name))))
     return lines
 
 
-def _node_status_line(name: str, events: list[TraceEvent]) -> str:
-    """One mark per declared node, from its own graph's events only."""
-    starts = ends = 0
-    last_end: TraceEvent | None = None
-    last_error: TraceEvent | None = None
-    for event in events:
-        if event.node != name:
-            continue
-        if event.phase == "start":
-            starts += 1
-        elif event.phase == "end":
-            ends += 1
-            last_end = event
-        elif event.phase == "error":
-            last_error = event
-    if last_error is not None:
-        detail = " ".join((last_error.error or "error").split())[:80]
+def _node_status_line(name: str, state: NodeState | None) -> str:
+    """One mark per declared node, from the shared `observe.status` rule."""
+    status = state.status if state is not None else "pending"
+    if status == "errored":
+        error = state.last_error.error if state.last_error else None
+        detail = " ".join((error or "error").split())[:80]
         return f"✗ {name}  err: {detail}"
-    if starts > ends:
+    if status == "running":
         return f"▸ {name}  running…"
-    if last_end is not None:
+    if status == "done":
         parts = [f"✓ {name}"]
-        if last_end.duration_ms is not None:
-            parts.append(f"  {_duration(last_end.duration_ms)}")
-        if last_end.tokens:
-            parts.append(f"  {last_end.tokens} tok")
+        last_end = state.last_end
+        if last_end is not None:
+            if last_end.duration_ms is not None:
+                parts.append(f"  {_duration(last_end.duration_ms)}")
+            if last_end.tokens:
+                parts.append(f"  {last_end.tokens} tok")
         return "".join(parts)
     return f"⬜ {name}  pending"
 
@@ -309,6 +317,7 @@ def render_progress(
     argv: list[str],
     elapsed_s: float,
     diagram: str | None = None,
+    view_url: str | None = None,
 ) -> str:
     """One Slack message describing the run so far.
 
@@ -325,6 +334,9 @@ def render_progress(
         )
     else:
         header = f"`{shlex.join(['grapharc', *argv])}` — running ({elapsed_s:.0f}s)"
+    goal = _goal(run)
+    if goal:
+        header += f" · {goal[:80]}"
 
     planned = _planned_lines(run)
     if planned is not None:
@@ -362,12 +374,17 @@ def render_progress(
     if approval is not None:
         trace_arg = _trace_argument(argv)
         if trace_arg:
+            where = "live view" if view_url else "diagram"
             parts.append(
-                f"planned graph is in the diagram link — approve with "
+                f"planned graph is in the {where} link — approve with "
                 f"`/grapharc approve {trace_arg}`, refuse with "
                 f"`/grapharc approve {trace_arg} --deny`"
             )
-    if diagram:
+    # The operator's own live view is the primary link; the mermaid.live
+    # fragment link is the fallback for a bot with no live server configured.
+    if view_url:
+        parts.append(f"<{view_url}|open live view>")
+    elif diagram:
         parts.append(f"<{mermaid_live_url(diagram)}|current diagram>")
     return "\n".join(parts)
 

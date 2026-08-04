@@ -34,7 +34,7 @@ pytestmark = pytest.mark.skipif(
 # here: `models --check` exits 1 when the host can reach no real provider, which
 # is correct and is what a machine with no credentials does.
 STYLED = [
-    pytest.param(["plan", "investigate the checkout outage"], id="plan"),
+    pytest.param(["plan", "investigate the checkout outage", "--scripted"], id="plan"),
     pytest.param(["models"], id="models"),
     pytest.param(["models", "--check"], id="models-check"),
     pytest.param(["demo", "stage0"], id="demo-stage0"),
@@ -55,6 +55,9 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # sets TMPDIR elsewhere would otherwise leave the paths unnormalised and the
 # comparison below would fail for a reason that has nothing to do with styling.
 _TMPDIR = re.compile(re.escape(tempfile.gettempdir()) + r"/grapharc-[A-Za-z0-9_.-]+")
+# The default trace directory stamp: two invocations of one command are two
+# runs with two stamps, and the comparison is about styling, not clocks.
+_RUNDIR = re.compile(r"\d{8}-\d{6}-[0-9a-f]{6}")
 
 
 def _env(**extra: str) -> dict[str, str]:
@@ -123,7 +126,8 @@ def _on_pty(args: list[str], **extra: str) -> tuple[str, int]:
 
 
 def _normalise(text: str) -> str:
-    return _TMPDIR.sub("/tmp/grapharc-NORMALISED", text)
+    text = _TMPDIR.sub("/tmp/grapharc-NORMALISED", text)
+    return _RUNDIR.sub("RUNDIR-NORMALISED", text)
 
 
 @pytest.mark.parametrize("args", STYLED)
@@ -159,10 +163,10 @@ def test_stripping_the_escapes_reproduces_the_piped_output_exactly(args):
 @pytest.mark.parametrize(
     ("label", "args", "extra"),
     [
-        ("NO_COLOR", ["plan", "x"], {"NO_COLOR": "1"}),
-        ("TERM=dumb", ["plan", "x"], {"TERM": "dumb"}),
-        ("--no-color", ["plan", "x", "--no-color"], {}),
-        ("--json", ["plan", "x", "--json"], {}),
+        ("NO_COLOR", ["plan", "x", "--scripted"], {"NO_COLOR": "1"}),
+        ("TERM=dumb", ["plan", "x", "--scripted"], {"TERM": "dumb"}),
+        ("--no-color", ["plan", "x", "--scripted", "--no-color"], {}),
+        ("--json", ["plan", "x", "--scripted", "--json"], {}),
     ],
 )
 def test_every_opt_out_silences_styling_even_on_a_terminal(label, args, extra):
@@ -180,11 +184,11 @@ def test_json_on_a_terminal_is_still_one_clean_document():
     """
     import json
 
-    out, err, _ = _piped(["plan", "x", "--json"])
+    out, err, _ = _piped(["plan", "x", "--scripted", "--json"])
     assert err == ""
     assert json.loads(out)["ok"] is True
 
-    on_pty, _ = _on_pty(["plan", "x", "--json"])
+    on_pty, _ = _on_pty(["plan", "x", "--scripted", "--json"])
     assert "\x1b" not in on_pty
     assert json.loads(on_pty)["ok"] is True
 

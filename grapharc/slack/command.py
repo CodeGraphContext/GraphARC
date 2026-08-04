@@ -123,7 +123,7 @@ ALLOWED_COMMANDS: dict[str, CommandSpec] = {
             "--max-tokens": False,
             "--approval-timeout": False,
         },
-        bool_flags=frozenset({"--approve"}),
+        bool_flags=frozenset({"--approve", "--scripted"}),
         model_flags=frozenset({"--model"}),
         choice_flags={"--registry": PLAN_REGISTRIES},
     ),

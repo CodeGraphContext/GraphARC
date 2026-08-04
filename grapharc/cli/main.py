@@ -357,10 +357,86 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         run_id=args.run_id,
         max_rounds=args.max_rounds,
         max_tokens=args.max_tokens,
+        max_planning_failures=args.max_planning_failures,
+        workspace=args.workspace,
+        model_arg_pairs=args.model_arg,
         config_path=args.config,
         approve=args.approve,
         approval_timeout=args.approval_timeout,
         as_json=args.json,
+        scripted=args.scripted,
+        go_after=args.go_after,
+        use_default_registry=args.default_registry,
+    )
+
+
+def _cmd_init(args: argparse.Namespace) -> int:
+    from grapharc.cli.init_cmd import init
+
+    return init(as_json=args.json)
+
+
+def _cmd_start(args: argparse.Namespace) -> int:
+    from grapharc.cli.start import start
+
+    return start(as_json=args.json)
+
+
+def _cmd_go(args: argparse.Namespace) -> int:
+    from grapharc.cli.plan import PLAN_FILENAME, execute_plan, plan
+
+    # Two natures, one word. Bare `go` — or `go <run-dir>` — executes a plan
+    # `grapharc plan` saved; `go "some goal"` is plan-and-execute in one run.
+    target = args.goal
+    if target is None:
+        return execute_plan(
+            None,
+            model_spec=args.model,
+            model_arg_pairs=args.model_arg,
+            workspace=args.workspace,
+            policy_path=args.policy,
+            tenant=args.tenant,
+            run_id=args.run_id,
+            max_tokens=args.max_tokens,
+            config_path=args.config,
+            as_json=args.json,
+        )
+    candidate = Path(target)
+    if candidate.name == PLAN_FILENAME and candidate.is_file() or (
+        candidate.is_dir() and (candidate / PLAN_FILENAME).is_file()
+    ):
+        return execute_plan(
+            target,
+            model_spec=args.model,
+            model_arg_pairs=args.model_arg,
+            workspace=args.workspace,
+            policy_path=args.policy,
+            tenant=args.tenant,
+            run_id=args.run_id,
+            max_tokens=args.max_tokens,
+            config_path=args.config,
+            as_json=args.json,
+        )
+    return plan(
+        target,
+        model_spec=args.model,
+        registry_target=args.registry,
+        policy_path=args.policy,
+        tenant=args.tenant,
+        trace_path=args.trace,
+        run_id=args.run_id,
+        max_rounds=args.max_rounds,
+        max_tokens=args.max_tokens,
+        max_planning_failures=args.max_planning_failures,
+        workspace=args.workspace,
+        model_arg_pairs=args.model_arg,
+        config_path=args.config,
+        approve=args.approve,
+        approval_timeout=args.approval_timeout,
+        as_json=args.json,
+        command="go",
+        go_after=True,
+        use_default_registry=args.default_registry,
     )
 
 
@@ -594,10 +670,85 @@ def _cmd_viz(args: argparse.Namespace) -> int:
 # -- parser -------------------------------------------------------------------
 
 
+def _add_planning_flags(parser: argparse.ArgumentParser) -> None:
+    """The flags `plan` and `go` share, added identically to both.
+
+    One list, two parsers: a flag that exists on one and not the other is a
+    doc bug waiting to be filed, and the handlers thread every one of these
+    into the same `plan()` call.
+    """
+    parser.add_argument(
+        "--policy",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="TOML policy document whose edge rules become the admission gate's EdgePolicy",
+    )
+    parser.add_argument(
+        "--tenant", default=None, metavar="NAME", help="tenant to compile --policy for"
+    )
+    parser.add_argument("--trace", type=Path, default=None, help="trace JSONL output path")
+    parser.add_argument(
+        "--run-id", default=None, help="name this run; refused if --trace already holds it"
+    )
+    parser.add_argument(
+        "--max-rounds", type=int, default=None,
+        help="planning rounds the loop may take (default: 8)",
+    )
+    parser.add_argument(
+        "--max-tokens", type=int, default=None,
+        help="run token ceiling across every round (default: 100000)",
+    )
+    parser.add_argument(
+        "--max-planning-failures", type=int, default=None, metavar="N",
+        help="consecutive unusable planner replies before giving up (default: 3)",
+    )
+    parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "confine the registry's tool-using kinds (and its workspace listing) "
+            "to DIR; refused when the registry cannot take one"
+        ),
+    )
+    parser.add_argument(
+        "--model-arg",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help="constructor argument for --model (repeatable), e.g. --model-arg temperature=0",
+    )
+    parser.add_argument(
+        "--approve",
+        action="store_true",
+        help="pause each admitted round until `grapharc approve` answers next to the trace",
+    )
+    parser.add_argument(
+        "--approval-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="how long --approve waits before the round counts as unapproved (default: 300)",
+    )
+    parser.add_argument(
+        "--default",
+        action="store_true",
+        dest="default_registry",
+        help=(
+            "use the built-in general-purpose kinds (read/edit files, write a "
+            "report) instead of a registry.py in this directory"
+        ),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="grapharc", description=__doc__)
     parser.add_argument("--version", action="version", version=f"grapharc {__version__}")
-    sub = parser.add_subparsers(dest="command", required=True)
+    # Not required: bare `grapharc` orients a newcomer (exit 0, like `-h`)
+    # instead of erroring — `main()` handles the no-command branch.
+    sub = parser.add_subparsers(dest="command", required=False)
 
     # `--json` is attached to every subcommand rather than to the top level, so
     # `grapharc run stage0 --json` works — the position a shell user reaches for.
@@ -749,7 +900,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan = sub.add_parser(
         "plan",
         parents=[common, configurable],
-        help="drive the governed planning loop against a goal",
+        help="rehearse the governed planning loop against a goal (see also: go)",
     )
     plan.add_argument("goal", help="what the planner should plan for")
     plan.add_argument(
@@ -765,40 +916,67 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"the node kinds a planner may propose (default: {DEFAULT_REGISTRY})",
     )
     plan.add_argument(
-        "--policy",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help="TOML policy document whose edge rules become the admission gate's EdgePolicy",
-    )
-    plan.add_argument(
-        "--tenant", default=None, metavar="NAME", help="tenant to compile --policy for"
-    )
-    plan.add_argument("--trace", type=Path, default=None, help="trace JSONL output path")
-    plan.add_argument(
-        "--run-id", default=None, help="name this run; refused if --trace already holds it"
-    )
-    plan.add_argument(
-        "--max-rounds", type=int, default=None,
-        help="planning rounds the loop may take (default: 8)",
-    )
-    plan.add_argument(
-        "--max-tokens", type=int, default=None,
-        help="run token ceiling across every round (default: 100000)",
-    )
-    plan.add_argument(
-        "--approve",
+        "--go",
         action="store_true",
-        help="pause each admitted round until `grapharc approve` answers next to the trace",
+        dest="go_after",
+        help="plan and immediately execute it, in one run",
     )
     plan.add_argument(
-        "--approval-timeout",
-        type=float,
-        default=None,
-        metavar="SECONDS",
-        help="how long --approve waits before the round counts as unapproved (default: 300)",
+        "--scripted",
+        action="store_true",
+        help=(
+            "rehearse with the registry's built-in stand-in planner instead of "
+            "a model — free, deterministic, no AI involved; contradicts --model"
+        ),
     )
+    _add_planning_flags(plan)
     plan.set_defaults(handler=_cmd_plan)
+
+    # `go` is `plan` with doing-defaults: the stdlib registry (real tool-using
+    # kinds) and a required model — go means do, and the scripted planner does
+    # nothing worth doing. Same handler underneath; only the defaults differ.
+    go = sub.add_parser(
+        "go",
+        parents=[common, configurable],
+        help="plan AND do: a model proposes the graph, stdlib kinds do real work",
+    )
+    go.add_argument(
+        "goal",
+        nargs="?",
+        default=None,
+        help=(
+            "what to get done — or a run directory holding a saved plan.json; "
+            "with nothing, the newest unexecuted plan runs"
+        ),
+    )
+    go.add_argument(
+        "--model",
+        default=None,
+        metavar="SPEC",
+        help="required: the model that plans and works (see `grapharc models --check`)",
+    )
+    go.add_argument(
+        "--registry",
+        default=None,
+        metavar="MODULE:ATTR",
+        help="the node kinds a planner may propose (default: grapharc.stdlib:build_registry)",
+    )
+    _add_planning_flags(go)
+    go.set_defaults(handler=_cmd_go)
+
+    ini = sub.add_parser(
+        "init",
+        parents=[common],
+        help="scaffold a registry, a config and a runs directory in this directory",
+    )
+    ini.set_defaults(handler=_cmd_init)
+
+    st = sub.add_parser(
+        "start",
+        parents=[common],
+        help="the guided tour: concept, first run, live view",
+    )
+    st.set_defaults(handler=_cmd_start)
 
     ap = sub.add_parser(
         "approve",
@@ -946,12 +1124,30 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else argv
+    # `grapharc help` is what people type; making it an argparse error taught
+    # nothing. It is `-h`, and `help <command>` is `<command> -h`.
+    if raw[:1] == ["help"]:
+        parser = build_parser()
+        rest = raw[1:]
+        if rest:
+            return main([*rest, "-h"])
+        parser.print_help()
+        return EXIT_OK
     args = build_parser().parse_args(argv)
     # `--json` disables colour too, belt and braces: a JSON run has no human
     # reader, and `tests/test_cli.py` requires that exactly one document reaches
     # stdout and nothing at all reaches stderr. Turning styling off at the source
     # means no future call site can leak an escape sequence into a payload.
-    style.configure(no_color=args.no_color or args.json)
+    style.configure(
+        no_color=getattr(args, "no_color", False) or getattr(args, "json", False)
+    )
+    if args.command is None:
+        from grapharc.cli.start import orientation
+
+        for line in orientation():
+            print(line)
+        return EXIT_OK
     if args.command == "models" and args.check and args.spec:
         return fail(
             "`models --check` probes the configured backends and `models <spec>` "

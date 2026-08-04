@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GraphARC — the admission gate for agent graphs</title>
+<meta name="description" content="GraphARC is a governed agent runtime on LangGraph: a planner proposes a subgraph, a deterministic checker admits it — or refuses with reasons — and only then does anything execute.">
+<meta name="theme-color" content="#0B0F19">
+<meta property="og:title" content="GraphARC — the admission gate for agent graphs">
+<meta property="og:description" content="A governed agent runtime on LangGraph: every transition permitted, every loop bounded, and afterwards you can prove what happened and why it stopped.">
+<meta property="og:image" content="assets/brand/grapharc-favicon-512.png">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="assets/brand/grapharc-favicon.svg" type="image/svg+xml">
+<link rel="icon" href="assets/brand/grapharc-favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="assets/brand/grapharc-favicon-180.png">
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <img src="assets/brand/grapharc-logo-ondark.svg" alt="GraphARC" width="180" height="44">
+  <nav>
+    <a href="https://github.com/CodeGraphContext/GraphARC">GitHub</a>
+    <a href="https://pypi.org/project/grapharc/">PyPI</a>
+  </nav>
+</header>
+
+<main id="main">
+
+<!-- ================================================================ hero -->
+<section class="hero">
+  <div class="hero-copy">
+    <p class="eyebrow">Python 3.12+ · MIT · built on LangGraph · <code>pip install grapharc</code></p>
+    <h1>The admission gate for agent&nbsp;graphs.</h1>
+    <p class="sub">A planner proposes a subgraph. A deterministic checker admits it — or
+    refuses with reasons. Only then does anything execute. GraphARC is a governed agent
+    runtime on LangGraph: every transition permitted, every loop bounded, and afterwards
+    you can prove what happened and why it stopped.</p>
+    <p class="cta">
+      <a class="button primary" href="#quickstart">Get started</a>
+      <a class="button" href="https://github.com/CodeGraphContext/GraphARC">View on GitHub</a>
+    </p>
+  </div>
+  <div class="hero-art">
+    <!-- One governed run, on loop. Authored in its FINAL state — every node
+         green, the round-1 rejection on the record, the budget meter at its
+         resting fill — so prefers-reduced-motion (and CSS-off) users see the
+         composed proof frame, not a blank canvas. All motion lives in
+         site.css inside a no-preference media query, on one shared 12s clock. -->
+    <svg id="run" viewBox="0 0 560 420" role="img" aria-labelledby="run-title run-desc">
+      <title id="run-title">One governed GraphARC run</title>
+      <desc id="run-desc">A planner proposes a subgraph containing a deploy node.
+        The admission gate rejects it with the reason edge_denied and nothing runs.
+        A second proposal with a patch node instead is admitted; its nodes execute
+        one by one, each stamping its spend on a budget meter, until the run stops
+        with goal met. The rejected round stays on the record.</desc>
+      <defs>
+        <linearGradient id="arc" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#2DD4BF"/>
+          <stop offset=".5" stop-color="#3B82F6"/>
+          <stop offset="1" stop-color="#8B5CF6"/>
+        </linearGradient>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#3d4250"/>
+        </marker>
+      </defs>
+      <g class="scene">
+        <!-- planner -->
+        <g class="planner">
+          <rect x="14" y="176" width="88" height="32" rx="8"/>
+          <text x="58" y="197">planner</text>
+        </g>
+
+        <!-- the gate -->
+        <g class="gate">
+          <line class="gate-bar" x1="150" y1="110" x2="150" y2="290"/>
+          <text class="gate-label" x="150" y="308">admission</text>
+        </g>
+
+        <!-- proposal 1: three ghost nodes, one of them `deploy`. Hidden in the
+             final frame; the animation flies it into the gate and dissolves it. -->
+        <g class="prop prop-1" aria-hidden="true">
+          <rect x="40" y="120" width="76" height="26" rx="7"/><text x="78" y="137">triage</text>
+          <rect x="40" y="156" width="76" height="26" rx="7"/><text x="78" y="173">deploy</text>
+          <rect x="40" y="192" width="76" height="26" rx="7"/><text x="78" y="209">report</text>
+        </g>
+
+        <!-- proposal 2: `patch` instead of `deploy`. -->
+        <g class="prop prop-2" aria-hidden="true">
+          <rect x="40" y="120" width="76" height="26" rx="7"/><text x="78" y="137">triage</text>
+          <rect x="40" y="156" width="76" height="26" rx="7"/><text x="78" y="173">patch</text>
+          <rect x="40" y="192" width="76" height="26" rx="7"/><text x="78" y="209">verify</text>
+        </g>
+
+        <!-- round history: the refusal stays on the record -->
+        <g class="chip chip-rejected">
+          <rect x="96" y="330" width="168" height="24" rx="12"/>
+          <text x="180" y="346">REJECTED · edge_denied</text>
+        </g>
+        <g class="chip chip-admitted" aria-hidden="true">
+          <rect x="96" y="330" width="188" height="24" rx="12"/>
+          <text x="190" y="346">ADMITTED · all checks passed</text>
+        </g>
+
+        <!-- the admitted graph -->
+        <g class="canvas">
+          <path class="wire" d="M330 76 C 290 96, 285 100, 273 116" marker-end="url(#ar)"/>
+          <path class="wire" d="M350 76 C 400 96, 408 100, 420 116" marker-end="url(#ar)"/>
+          <path class="wire" d="M262 152 C 290 172, 310 178, 330 190" marker-end="url(#ar)"/>
+          <path class="wire" d="M430 152 C 410 172, 390 178, 372 190" marker-end="url(#ar)"/>
+          <path class="wire" d="M350 226 C 350 238, 350 244, 350 254" marker-end="url(#ar)"/>
+          <path class="wire" d="M350 290 C 350 302, 350 308, 350 318" marker-end="url(#ar)"/>
+
+          <g class="node n-a"><rect x="300" y="42" width="100" height="34" rx="8"/><text x="350" y="63">triage</text><text class="spend" x="350" y="90">$0.0031</text></g>
+          <g class="node n-b"><rect x="196" y="118" width="110" height="34" rx="8"/><text x="251" y="139">pull logs</text><text class="spend" x="251" y="166">$0.0058</text></g>
+          <g class="node n-c"><rect x="364" y="118" width="126" height="34" rx="8"/><text x="427" y="139">pull metrics</text><text class="spend" x="427" y="166">$0.0044</text></g>
+          <g class="node n-d"><rect x="298" y="192" width="104" height="34" rx="8"/><text x="350" y="213">correlate</text><text class="spend" x="415" y="213">$0.0072</text></g>
+          <g class="node n-e"><rect x="308" y="256" width="84" height="34" rx="8"/><text x="350" y="277">patch</text><text class="spend" x="405" y="277">$0.0049</text></g>
+          <g class="node n-f"><rect x="304" y="320" width="92" height="34" rx="8"/><text x="350" y="341">verify</text><text class="spend" x="410" y="341">$0.0056</text></g>
+        </g>
+
+        <!-- stop pill -->
+        <g class="chip chip-stop">
+          <rect x="424" y="24" width="118" height="24" rx="12"/>
+          <text x="483" y="40">stop: goal_met</text>
+        </g>
+
+        <!-- budget meter -->
+        <g class="meter">
+          <rect class="track" x="40" y="392" width="360" height="8" rx="4"/>
+          <rect class="fill" x="40" y="392" width="223" height="8" rx="4"/>
+          <text class="readout" x="540" y="401">$0.031 / $0.05</text>
+        </g>
+      </g>
+    </svg>
+    <p class="art-controls"><button id="replay-hero" type="button" hidden>↻ replay</button></p>
+  </div>
+</section>
+
+<!-- ====================================================== differentiators -->
+<section class="cards-section">
+  <h2>Enforced by the library, not left to convention.</h2>
+  <p class="section-sub">Each of these is a mechanism with a test you can run — not a policy document.</p>
+  <div class="cards">
+    <article class="card">
+      <h3>Admission before execution</h3>
+      <p>Every proposed subgraph passes five deterministic checks — registry membership,
+      edge policy, worst-case budget fit, depth, acyclicity — before a single node is
+      built. Work discovered mid-run re-enters the same gate; there is no
+      already-approved path. A rejection is data: codes and remedies handed back to the
+      planner. <code>grapharc run --check-only</code> is the gate as a linter — it
+      executes nothing.</p>
+    </article>
+    <article class="card">
+      <h3>Budgets that bind before the bill</h3>
+      <p>Cost ceilings are checked against a worst-case, execution-frequency-aware
+      estimate <em>before</em> anything runs. Actual per-node spend is stamped on the
+      trace even on error or cancellation — an overspent run still says what it spent.
+      <code>recorded_cost_usd</code> is never an estimate.</p>
+    </article>
+    <article class="card">
+      <h3>One trace file, every answer</h3>
+      <p>Replay, diff, metrics, viz, cost attribution and OpenTelemetry spans all read
+      the same append-only JSONL file. Runs are replayable and comparable, and the
+      dashboard cannot disagree with the audit trail — they are the same record.</p>
+    </article>
+  </div>
+</section>
+
+<!-- =========================================================== comparison -->
+<section class="compare-section">
+  <h2>Different tools, different jobs.</h2>
+  <p class="section-sub">None of these is a competitor to be beaten. This is where GraphARC sits.</p>
+  <div class="compare">
+    <article><h3>Claude Code</h3>
+      <p>An interactive single-agent coding loop. Permissions are decided live, by you,
+      per action. Superb at its job; not a multi-node runtime. GraphARC's default
+      backend drives the Claude CLI.</p></article>
+    <article><h3>OpenClaw</h3>
+      <p>A personal AI assistant gateway. Safety comes from how you configure it.
+      GraphARC borrowed its policy-before-schema tool gating — and put it behind
+      enforcement.</p></article>
+    <article><h3>Raw LangGraph</h3>
+      <p>The mechanism GraphARC is built on. It gives you graphs; conventions like
+      write discipline, budgets and admission are yours to uphold. GraphARC upholds
+      them for you and raises when you don't.</p></article>
+    <article class="self"><h3>GraphARC</h3>
+      <p>The governance layer for multi-node agent graphs: propose → admit → execute →
+      replan, with the refusals on the record.</p></article>
+  </div>
+</section>
+
+<!-- =========================================================== quickstart -->
+<section class="quickstart" id="quickstart">
+  <h2>Zero keys to try it.</h2>
+  <p class="section-sub">The demo planner is scripted, so this run is free, deterministic, and identical on your machine.</p>
+  <div class="term">
+    <div class="term-bar"><span></span><span></span><span></span></div>
+    <pre><code>$ pip install grapharc
+$ grapharc demo stage0          <span class="cm"># deterministic DAG, costs nothing, needs no key</span>
+$ grapharc plan "investigate the checkout outage"</code></pre>
+    <button class="copy" type="button" data-copy="pip install grapharc
+grapharc demo stage0
+grapharc plan &quot;investigate the checkout outage&quot;" hidden>copy</button>
+  </div>
+  <div class="term output">
+    <pre><code>   round 1: <b class="rej">rejected</b>  nodes=2 executed=False  rejected: edge_denied
+   round 2: <b class="adm">admitted</b>  nodes=3 executed=True</code></pre>
+  </div>
+  <p class="section-sub">Round 1 wanted to deploy and never executed. Round 2 went through the
+  <em>same</em> checker and ran. Then watch any run redraw live in the browser:</p>
+  <div class="term">
+    <pre><code>$ grapharc serve --live-root .grapharc   <span class="cm"># the live view, self-contained, no CDN</span></code></pre>
+    <button class="copy" type="button" data-copy="grapharc serve --live-root .grapharc" hidden>copy</button>
+  </div>
+  <figure class="demo">
+    <video src="assets/media/grapharc-decompose.mp4" muted loop playsinline autoplay
+           width="960" aria-label="One question decomposed by a local model into a nine-node graph, admitted, human-approved, and executed live in the browser"></video>
+    <figcaption>One question in, a governed graph out: a local model proposes the topology,
+    the admission gate and a human approval decide, and the live view shows every node run —
+    amber while executing, green when done.</figcaption>
+  </figure>
+</section>
+
+<!-- =============================================================== status -->
+<section class="status">
+  <h2>Measured claims only.</h2>
+  <p>GraphARC is early (0.1.x) and the API is not stable. The README keeps a
+  <em>Status and limits</em> section that is re-derived by running each item, not by
+  reading the commit log. A sample of what it says: admission authorises a node's
+  <em>kind</em>, not its arguments; the in-process sandbox is defense in depth, not a
+  kernel boundary — <code>ContainerExecutor</code> is the boundary where one is needed;
+  the HTTP API does not yet use the durable session layer. If a sentence on this page
+  over-promises, the README wins.</p>
+  <p><a href="https://github.com/CodeGraphContext/GraphARC#status-and-limits">Read the full list →</a></p>
+</section>
+
+</main>
+
+<footer>
+  <img src="assets/brand/grapharc-favicon.svg" alt="" width="28" height="28">
+  <nav>
+    <a href="https://github.com/CodeGraphContext/GraphARC">GitHub</a>
+    <a href="https://pypi.org/project/grapharc/">PyPI</a>
+    <a href="https://github.com/CodeGraphContext/GraphARC/blob/main/CHANGELOG.md">Changelog</a>
+    <a href="https://github.com/CodeGraphContext/GraphARC/blob/main/ROADMAP.md">Roadmap</a>
+    <a href="https://github.com/CodeGraphContext/GraphARC/tree/main/docs/cookbook">Cookbook</a>
+    <a href="https://github.com/CodeGraphContext/GraphARC/blob/main/LICENSE">MIT</a>
+  </nav>
+  <p>Built on LangGraph. Design lineage: OpenClaw, Hermes Agent, Claude Code,
+  OpenRouter — studied from public documentation.</p>
+</footer>
+
+<script src="assets/site.js"></script>
+</body>
+</html>

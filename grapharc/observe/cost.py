@@ -3,12 +3,11 @@
 Two sources of money, kept apart on purpose:
 
 - **Recorded** — a `cost_usd` a producer wrote onto the trace event. This is
-  the provider's own number and is used as-is. *Nothing in GraphARC writes it
-  today*: the field exists on `TraceEvent` and `TraceRecorder.event` accepts
-  it, but the kernel's node wrapper and `AgentNode` do not pass it, so on a
-  trace produced by today's runtime `recorded_cost_usd` is always None. Both
-  gateways already capture `cost_usd` per model call, so closing the gap is one
-  argument at each `trace.event(...)` call site.
+  the provider's own number and is used as-is. The kernel's node wrapper
+  stamps it on a node's terminal event when the meter carries one, and
+  `AgentNode` stamps its model calls — so a gateway-priced run carries
+  recorded cost per node. A trace from a producer that never priced its calls
+  still reads as `recorded_cost_usd = None`, never as an estimate.
 - **Estimated** — tokens × a `RateCard` the caller supplies. Priced off the
   *total* token count, because that is what the trace records: there is no
   input/output split on a trace event, so a card carries one blended rate per

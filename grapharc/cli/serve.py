@@ -13,6 +13,8 @@ and a useless way to run anything, so the CLI says which of the two you got.
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -149,13 +151,50 @@ def serve(
                     tint=style.warn,
                 ),
             )
+    # A discovery marker, so `grapharc plan`/`go` can print the exact live-view
+    # URL for their trace. Best-effort in both directions: an unwritable cwd
+    # must not stop the server, and the marker never holds the token — it is a
+    # convenience pointer, not a credential store. Written in cwd only, the
+    # same rule grapharc.toml follows.
+    marker: Path | None = None
+    if live_root is not None:
+        try:
+            marker = Path(".grapharc") / "live-server.json"
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(
+                json.dumps(
+                    {
+                        "url": f"http://{host}:{port}",
+                        "host": host,
+                        "port": port,
+                        "live_root": str(Path(live_root).resolve()),
+                        "pid": os.getpid(),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            payload["live_marker"] = str(marker)
+        except OSError:
+            marker = None
+
     # Printed *and flushed* before the server blocks: a caller watching stdout for
     # the URL would otherwise wait for the process to exit to learn it. Nothing
     # here is buffered, deferred, or drawn on a timer for the same reason.
     emit(payload, lines, as_json=as_json)
     sys.stdout.flush()
 
-    runner(app, host=host, port=port, log_level=log_level)
+    try:
+        runner(app, host=host, port=port, log_level=log_level)
+    finally:
+        # Only our own marker: a second serve that replaced it owns it now.
+        if marker is not None:
+            try:
+                written = json.loads(marker.read_text(encoding="utf-8"))
+                if written.get("pid") == os.getpid():
+                    marker.unlink()
+            except (OSError, ValueError):
+                pass
     return EXIT_OK
 
 

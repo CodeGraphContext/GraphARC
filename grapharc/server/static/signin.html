@@ -1,0 +1,28 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>grapharc live · sign in</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<link rel="stylesheet" href="/live/static/view.css">
+<style>
+ main{max-width:34rem}
+ input{font:inherit;padding:.4rem .6rem;width:20rem;max-width:100%;
+       background:var(--g-card);color:var(--g-text);
+       border:1px solid var(--g-border-hi);border-radius:6px}
+ button{font:inherit;padding:.4rem 1rem;background:var(--g-card);color:var(--g-text);
+        border:1px solid var(--g-border-hi);border-radius:6px;cursor:pointer}
+ button:hover{border-color:var(--g-blue)}
+ .why{color:var(--g-text-2);font-size:.9rem;margin-top:1.4rem;line-height:1.45}
+</style></head><body>
+<header><span class="brand">GraphARC</span><span id="status">sign in</span></header>
+<main>
+<p>__REASON__</p>
+<form method="post" action="/live/auth">
+ <input type="hidden" name="next" value="__NEXT__">
+ <label>token <input type="password" name="token" autofocus autocomplete="off"></label>
+ <button type="submit">sign in</button>
+</form>
+<p class="why">The token is exchanged for a cookie scoped to <code>/live</code>,
+so it never appears in a URL — where it would be copied into access logs,
+browser history and referrer headers. Scripts can send
+<code>Authorization: Bearer TOKEN</code> instead.</p>
+</main></body></html>

@@ -30,6 +30,7 @@ Three properties the types carry rather than describe:
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 import uuid
@@ -257,6 +258,107 @@ class Subgraph(BaseModel):
 ProposedNode.model_rebuild()
 
 
+# -- the slim proposal shape --------------------------------------------------
+#
+# What text-path backends are asked for. `Subgraph`'s own JSON schema is wrong
+# for a local model's grammar-constrained decoder: it is recursive
+# (`ProposedNode.subgraph` refers back to `Subgraph`), strict mode makes every
+# field required — including `proposal_id` and `origin`, which `_stamp`
+# discards on arrival — and every multi-paragraph docstring rides along. The
+# slim shape is three keys a small model can hit, and everything it accepts is
+# re-validated through the real constructors before admission ever sees it:
+# tolerance in reading, zero tolerance in what gets judged.
+
+
+class SlimNode(BaseModel):
+    """One node as a small model states it: a name, optionally a kind."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    kind: str = ""
+
+
+class SlimEdge(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    source: str
+    target: str
+
+
+class PlanProposal(BaseModel):
+    """The proposal shape asked of backends that cannot hit `Subgraph`."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    nodes: list[SlimNode] = Field(default_factory=list)
+    edges: list[SlimEdge] = Field(default_factory=list)
+    rationale: str = ""
+
+    @field_validator("edges", mode="before")
+    @classmethod
+    def _normalise_edges(cls, value: Any) -> Any:
+        """Accept `{"source","target"}`, `{"from","to"}`, and `["a","b"]` pairs.
+
+        Local models produce all three, and the difference carries no meaning
+        an admission check would care about.
+        """
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalised = []
+        for entry in value:
+            if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                normalised.append({"source": entry[0], "target": entry[1]})
+            elif isinstance(entry, dict) and "from" in entry and "to" in entry:
+                normalised.append({"source": entry["from"], "target": entry["to"]})
+            else:
+                normalised.append(entry)
+        return normalised
+
+    def to_subgraph(self) -> Subgraph:
+        """Re-issue through the real constructors — name/sentinel/duplicate
+        validation happens there, so a bad slim proposal fails with the same
+        named reason a bad full one does."""
+        return Subgraph(
+            nodes=tuple(ProposedNode(name=n.name, kind=n.kind) for n in self.nodes),
+            edges=tuple(ProposedEdge(source=e.source, target=e.target) for e in self.edges),
+            rationale=self.rationale,
+        )
+
+
+#: Deliberately a diamond, not a chain: small models imitate the example far
+#: more than they follow the rules, and a chain example taught them to
+#: serialize work that had no reason to wait. Two branches sharing a
+#: predecessor run *at the same time*; the join waits for both.
+PROPOSAL_EXAMPLE = json.dumps(
+    {
+        "nodes": [
+            {"name": "prepare", "kind": "<a kind from the catalog>"},
+            {"name": "branch_a", "kind": "<a kind from the catalog>"},
+            {"name": "branch_b", "kind": "<a kind from the catalog>"},
+            {"name": "combine", "kind": "<a kind from the catalog>"},
+        ],
+        "edges": [
+            [START, "prepare"],
+            ["prepare", "branch_a"],
+            ["prepare", "branch_b"],
+            ["branch_a", "combine"],
+            ["branch_b", "combine"],
+            ["combine", END],
+        ],
+        "rationale": "branch_a and branch_b are independent, so they run in parallel",
+    },
+    indent=2,
+)
+
+TEXT_FORMAT_INSTRUCTIONS = (
+    "Reply with exactly one JSON object and nothing else — no prose before or "
+    "after it. The object has three keys: `nodes` (a list of {name, kind}), "
+    "`edges` (a list of [source, target] pairs), and `rationale` (one "
+    f"sentence). Example:\n{PROPOSAL_EXAMPLE}"
+)
+
+
 # -- the planner node ---------------------------------------------------------
 
 DEFAULT_PLANNER_SYSTEM_PROMPT = (
@@ -283,9 +385,10 @@ DEFAULT_PLANNER_SYSTEM_PROMPT = (
     f"edge from {START!r} to the first node, and every other node is reachable "
     f"by following edges from there. A node nothing leads to would never run.\n"
     f"Give the last node an edge to {END!r}.\n"
-    "Nodes that should run at the same time all take an edge from the same "
-    "predecessor; nodes that must wait for several others all take an edge "
-    "into the same successor. That is how you express parallelism and joins.\n"
+    "Two nodes that do not need each other's output should NOT be chained: "
+    "give them the same predecessor and they run at the same time; give "
+    "their successor an edge from each and it waits for both. Chain nodes "
+    "only when one truly needs what the other produced.\n"
     "Leave `subgraph` unset on every node.\n"
     "Propose no nodes at all when there is no further work to do.\n"
     "Admission is deterministic code, not a conversation: arguing with a "
@@ -319,6 +422,10 @@ _UNREACHABLE_MARKERS = (
     "permissiondenied",
     "ratelimit",
     "insufficient",
+    # A model name the backend does not have (`ollama/qwen3:8` for `qwen3:8b`)
+    # is as dead as a dead socket: the 404 is deterministic, and retrying it
+    # burned every allowed round on the same typo before this marker existed.
+    "notfound",
     "quota",
     "serviceunavailable",
 )
@@ -450,8 +557,14 @@ class PlannerNode:
         prompt_fn: Callable[[Any], str] | None = None,
         trace: TraceRecorder | None = None,
         origin: str | None = None,
+        structured: bool | None = None,
     ) -> None:
         self.model = model
+        # None asks the backend: a gateway that knows its wire cannot carry
+        # `Subgraph`'s strict schema (Ollama's grammar decoder) declares
+        # `reliable_structured_output = False` and gets the text path with the
+        # slim shape instead. True/False is the operator overriding either way.
+        self.structured = structured
         self.name = name
         self.catalog = catalog
         # The gates this planner's proposals will be checked against, held only
@@ -511,8 +624,8 @@ class PlannerNode:
             ctx = RunContext(
                 run_id=uuid.uuid4().hex[:12], graph=self.name, meter=BudgetMeter(Budget())
             )
-        messages = self._messages(task, feedback)
         runnable, structured = self._runnable()
+        messages = self._messages(task, feedback, structured=structured)
 
         started = time.perf_counter()
         raw_message: BaseMessage | None = None
@@ -575,7 +688,9 @@ class PlannerNode:
 
     # -- internals ------------------------------------------------------------
 
-    def _messages(self, task: str, feedback: str) -> list[BaseMessage]:
+    def _messages(
+        self, task: str, feedback: str, *, structured: bool = True
+    ) -> list[BaseMessage]:
         system = f"{self.system_prompt}\n\nAvailable node kinds:\n{_catalog_text(self.catalog)}"
         # Immediately after the catalog, because the two are one statement: here
         # is what exists, and here is what may not be wired. A model shown only
@@ -587,6 +702,11 @@ class PlannerNode:
             system = f"{system}\n\n{denied}"
         if self.instructions:
             system = f"{system}\n\n{self.instructions}"
+        if not structured:
+            # The text path carries its own format contract: the slim shape
+            # with a worked example, because a backend on this path was never
+            # handed a schema to decode against.
+            system = f"{system}\n\n{TEXT_FORMAT_INSTRUCTIONS}"
         messages: list[BaseMessage] = [SystemMessage(content=system), HumanMessage(content=task)]
         if feedback:
             messages.append(
@@ -604,15 +724,21 @@ class PlannerNode:
     def _runnable(self) -> tuple[Any, bool]:
         """The structured-output runnable and whether it is one, computed once."""
         if self._structured_cache is _UNSET:
-            try:
-                self._structured_cache = self.model.with_structured_output(
-                    Subgraph, include_raw=True
-                )
-            except (NotImplementedError, ValueError, TypeError):
-                # `with_structured_output` raises NotImplementedError on backends
-                # without tool calling (the Claude CLI adapter); the other two
-                # cover a backend that rejects the schema outright.
+            wants = self.structured
+            if wants is None:
+                wants = getattr(self.model, "reliable_structured_output", True)
+            if not wants:
                 self._structured_cache = None
+            else:
+                try:
+                    self._structured_cache = self.model.with_structured_output(
+                        Subgraph, include_raw=True
+                    )
+                except (NotImplementedError, ValueError, TypeError):
+                    # `with_structured_output` raises NotImplementedError on backends
+                    # without tool calling (the Claude CLI adapter); the other two
+                    # cover a backend that rejects the schema outright.
+                    self._structured_cache = None
         runnable = self._structured_cache
         return (runnable, True) if runnable is not None else (self.model, False)
 
@@ -620,8 +746,17 @@ class PlannerNode:
         data = extract_json(text)
         if data is None:
             return None, "no JSON object found in the planner's reply"
+        # Full shape first: a capable backend's raw-text fallback may
+        # legitimately carry `args` or nested subgraphs, and the slim reading
+        # would drop them. Only a reply that fails the full shape is read slim
+        # — and the reported error is the slim model's, because that is the
+        # shape the text path asked for.
         try:
             return Subgraph.model_validate(data), ""
+        except ValidationError:
+            pass
+        try:
+            return PlanProposal.model_validate(data).to_subgraph(), ""
         except ValidationError as exc:
             return None, f"proposal did not validate: {_first_validation_error(exc)}"
 

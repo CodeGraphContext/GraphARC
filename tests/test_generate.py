@@ -103,7 +103,7 @@ def test_the_command_puts_the_source_in_its_payload(tmp_path, monkeypatch, capsy
     """The trace is what an incident review reads; a banner is seen once."""
     monkeypatch.chdir(tmp_path)
 
-    main(["plan", "look into it", "--json"])
+    main(["plan", "look into it", "--scripted", "--json"])
     payload = json.loads(capsys.readouterr().out)
 
     assert "policy_source" in payload
@@ -119,7 +119,7 @@ def test_the_command_puts_the_source_in_its_payload(tmp_path, monkeypatch, capsy
 def test_the_human_view_names_the_source_too(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
 
-    main(["plan", "look into it"])
+    main(["plan", "look into it", "--scripted"])
     out = capsys.readouterr().out
 
     assert "policy    :" in out
@@ -273,11 +273,14 @@ def test_a_scripted_run_never_generates(tmp_path, monkeypatch, capsys):
     that produced a different policy each run would not be one."""
     monkeypatch.chdir(tmp_path)
 
-    main(["plan", "look into it", "--json"])
+    main(["plan", "look into it", "--scripted", "--json"])
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["policy_source"] != "generated"
-    assert not (tmp_path / GENERATED_DIR).exists()
+    # `.grapharc/` itself now exists (the default trace lands under runs/);
+    # what a scripted run must never do is write a *policy* there.
+    generated = list((tmp_path / GENERATED_DIR).glob("generated-policy*.toml"))
+    assert generated == []
 
 
 # -- the description is derived, not written ---------------------------------
@@ -316,3 +319,72 @@ def test_a_description_names_every_tier_that_has_rules():
     assert "deny -> deploy" in described
     assert "ask -> patch" in described
     assert "otherwise deny" in described
+
+
+# -- the cache is keyed by the registry that generated it ---------------------
+
+
+STALE_INCIDENT_POLICY = """\
+version = "1"
+default = "allow"
+
+[[rule]]
+id = "deny-deploy"
+resource = "edge"
+match = "*->deploy"
+effect = "deny"
+reason = "generated for the incident registry, knows nothing of stdlib"
+"""
+
+
+def test_a_cached_policy_is_keyed_to_the_registry_that_generated_it(tmp_path):
+    first = _generate(tmp_path, registry_target="pkg.one:build_registry")
+    keyed = generated_policy_path(tmp_path, registry="pkg.one:build_registry")
+    assert keyed.is_file()
+    assert "pkg.one-build_registry" in keyed.name
+    # A different registry's run does not read it.
+    _, _, source = _generate(tmp_path, registry_target="pkg.two:build_registry")
+    assert source == "generated"
+    assert generated_policy_path(tmp_path, registry="pkg.two:build_registry").is_file()
+    # The same registry's second run does.
+    _, _, source = _generate(tmp_path, registry_target="pkg.one:build_registry")
+    assert source == "generated-cached"
+    assert first  # the first result existed; silences the unused warning
+
+
+def test_a_stale_incident_policy_cannot_neuter_the_stdlib_mutating_deny(tmp_path):
+    """The proof test for the reproduced safety bug: an un-keyed cache file
+    generated for another registry must not override this registry's own
+    default deny of its mutating kind."""
+    from grapharc.harness.permissions import Decision
+
+    legacy = generated_policy_path(tmp_path)
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(STALE_INCIDENT_POLICY, encoding="utf-8")
+
+    policy, description, source = resolve_or_generate_policy(
+        None,
+        tenant="default",
+        model=None,  # scripted run: no generation, fallback must win
+        workdir=tmp_path,
+        fallback=stdlib.default_edge_policy(),
+        fallback_label="grapharc.stdlib:build_registry default",
+        registry_target="grapharc.stdlib:build_registry",
+    )
+    assert source == "registry-default"
+    assert policy.edge.decide("investigate", "apply_change") is Decision.DENY
+    assert "ignoring un-keyed" in description
+    # The operator's file survives untouched for an explicit --policy.
+    assert legacy.read_text(encoding="utf-8") == STALE_INCIDENT_POLICY
+
+
+def test_a_legacy_unkeyed_cache_is_still_honoured_without_a_registry_target(tmp_path):
+    """Direct callers that never pass a target keep the old behavior — the
+    refusal is scoped to runs that *can* say which registry they are."""
+    legacy = generated_policy_path(tmp_path)
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(STALE_INCIDENT_POLICY, encoding="utf-8")
+    _, _, source = resolve_or_generate_policy(
+        None, tenant="default", workdir=tmp_path
+    )
+    assert source == "generated-cached"
