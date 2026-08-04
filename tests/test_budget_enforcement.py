@@ -665,3 +665,43 @@ def test_an_unreachable_max_seconds_does_not_disable_the_next_run(unreachable):
 def test_a_deadline_exceeded_is_a_budget_exceeded():
     """Callers that already catch BudgetExceeded must keep catching timeouts."""
     assert issubclass(NodeDeadlineExceeded, BudgetExceeded)
+
+
+def test_a_run_stopped_for_overspending_reports_what_it_spent(tmp_path):
+    """The audit trail must not lose the spend the stop was about.
+
+    Tokens were attributed on `end` events only, and an interrupted node emits
+    `error` instead — so a run killed *for* exceeding `max_tokens` reported
+    `tokens: 0`, contradicting the enforcement message that named the figure.
+    """
+    import json
+
+    from grapharc.observe.metrics import summarize
+    from grapharc.observe.replay import replay
+    from grapharc.observe.trace import TraceRecorder
+
+    class State(GraphARCState):
+        out: str = ""
+
+    def spend(state: State) -> dict:
+        model = ScriptedChatModel(responses=["x" * 200], on_exhausted="repeat")
+        return {"out": str(model.invoke("hi").content)[:10]}
+
+    trace = TraceRecorder(tmp_path / "t.jsonl")
+    g = GraphARC(State, name="overspend", trace=trace, budget=Budget(max_tokens=5))
+    g.add_node("spend", spend, writes={"out"})
+    g.add_edge(START, "spend")
+    g.add_edge("spend", END)
+
+    with pytest.raises(BudgetExceeded) as caught:
+        g.compile().invoke({})
+
+    spent = int(str(caught.value).split("(")[1].split("/")[0])
+    assert spent > 0, "the meter charged something, or this test proves nothing"
+
+    run_id = json.loads((tmp_path / "t.jsonl").read_text().splitlines()[0])["run_id"]
+    metrics = summarize(trace, run_id)
+    assert metrics.tokens == spent, "the audit trail must agree with the enforcement"
+    assert metrics.errors == 1
+    # The cost report and the audit trail must never disagree.
+    assert replay(trace, run_id).tokens == metrics.tokens

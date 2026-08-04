@@ -803,7 +803,7 @@ Output:
 {'attempt': 1, 'graph': 'counter', 'node': 'load', 'phase': 'start', 'step': 1}
 {'attempt': 1, 'graph': 'counter', 'node': 'load', 'phase': 'end', 'step': 1, 'state_delta': {'items': ['a', 'b', 'c']}, 'tokens': 0}
 {'attempt': 1, 'graph': 'counter', 'node': 'count', 'phase': 'start', 'step': 2}
-{'attempt': 1, 'graph': 'counter', 'node': 'count', 'phase': 'error', 'step': 2, 'error': "ValueError('the counter is not implemented yet')"}
+{'attempt': 1, 'graph': 'counter', 'node': 'count', 'phase': 'error', 'step': 2, 'tokens': 0, 'error': "ValueError('the counter is not implemented yet')"}
 ```
 
 The four fields the snippet filtered out are on every line too: `ts` (ISO-8601 UTC),
@@ -823,8 +823,12 @@ So, by phase:
   node never returns.
 - **`end`** adds `state_delta` (exactly the validated update that was applied),
   `duration_ms`, and `tokens` charged during that node.
-- **`error`** adds `duration_ms` and `error` — `repr()` of the exception, so the type
-  is preserved. There is no `state_delta`, because a node that raised wrote nothing.
+- **`error`** adds `duration_ms`, `error` — `repr()` of the exception, so the type is
+  preserved — and `tokens`, the spend charged during that node before it failed.
+  There is no `state_delta`, because a node that raised wrote nothing. The token
+  count is there for the same reason `end` carries one: a run stopped *for*
+  overspending used to report having spent nothing, because the only number the
+  audit trail read was on the event an interrupted node never writes.
 
 **Why it works this way.** `start` and `end` share a step number; the pair is the
 node execution. That means step numbers do not order the file — read events in file

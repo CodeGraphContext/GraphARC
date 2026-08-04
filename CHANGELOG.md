@@ -7,6 +7,10 @@ and "used to be true" — the two things a reader most needs kept apart.
 
 Entries are newest-last within a release, matching the order they were written.
 
+## Unreleased
+
+- a run **stopped for overspending reported spending nothing**. Tokens were attributed from `end` events, and a node the budget interrupts emits `error` instead — so `grapharc metrics` answered `tokens: 0` for a run whose own enforcement message named the figure that stopped it (`max_tokens reached (51/5)`). The audit trail lost precisely the number the stop was about, and per-node attribution dropped the most expensive node in the run. Every `error` event is now stamped with what its node spent, exactly as `end` is, and both `summarize` and the cost report count it; sub-events inside a node remain a breakdown of its total rather than an addition, so the disjointness that kept `ends + orphans` from double-counting is unchanged, and `RunCost.tokens == RunMetrics.tokens` still holds.
+
 ## 0.1.3
 
 - `grapharc plan` drives the governed loop; `PolicyEngine.edge_policy()` compiles the TOML document into the gate `AdmissionChecker` consults, and `grapharc plan --policy` is the caller; `grapharc demo --memory PATH` hands the shipped graphs the durable SQLite store.
