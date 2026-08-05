@@ -1,0 +1,51 @@
+{
+  "ok": true,
+  "command": "go",
+  "goal": "Find the deploy id in deploys.txt that shipped closest before the first TLS handshake timeout in the logs. Write just the deploy id to answer.txt.",
+  "model": "ollama/qwen3:8b",
+  "registry": "grapharc.stdlib:build_registry",
+  "kinds": [
+    "apply_change",
+    "checkpoint",
+    "collect_context",
+    "investigate",
+    "summarize",
+    "verify"
+  ],
+  "policy": "/home/shashank/Desktop/GraphARC/.grapharc/generated-policy.grapharc.stdlib-build_registry.toml (tenant 'default', 1 edge rule(s), 0 node rule(s))  [previously generated]",
+  "policy_source": "generated-cached",
+  "trace": "/tmp/bench-grapharc-qwen-f4bhnq6m/grapharc-trace.json",
+  "config_file": "/home/shashank/Desktop/GraphARC/grapharc.toml",
+  "sources": {
+    "model": "flag",
+    "registry": "config",
+    "policy": "generated-cached",
+    "tenant": "default",
+    "max_rounds": "default",
+    "max_tokens": "default",
+    "max_planning_failures": "default"
+  },
+  "stop": "goal_met",
+  "detail": "the goal check was satisfied",
+  "rounds": [
+    {
+      "round": 1,
+      "status": "admitted",
+      "nodes": 3,
+      "executed": true,
+      "rejections": []
+    }
+  ],
+  "rejections": [],
+  "state": {
+    "goal": "Find the deploy id in deploys.txt that shipped closest before the first TLS handshake timeout in the logs. Write just the deploy id to answer.txt.",
+    "findings": [
+      "d-7841",
+      "d-7841"
+    ],
+    "notes": [
+      "d-7841"
+    ]
+  },
+  "watch_url": null
+}

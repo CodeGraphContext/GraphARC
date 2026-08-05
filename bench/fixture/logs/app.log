@@ -1,0 +1,4 @@
+2026-08-05 09:01:00 INFO  web-app request ok /home
+2026-08-05 09:05:20 ERROR web-app slow template render /checkout
+2026-08-05 09:14:30 ERROR web-app upstream 5xx from payments-svc /checkout
+2026-08-05 09:16:00 INFO  web-app request ok /home

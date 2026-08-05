@@ -1,0 +1,4 @@
+09:00 payments-svc pool_in_use=12/64 p99=180ms
+09:10 payments-svc pool_in_use=18/64 p99=210ms
+09:12 payments-svc pool_in_use=61/64 p99=2400ms
+09:14 payments-svc pool_in_use=64/64 p99=8400ms
