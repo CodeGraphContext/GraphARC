@@ -2198,6 +2198,43 @@ def test_an_init_scaffold_plans_end_to_end(tmp_path, monkeypatch, capsys):
     assert "goal_met" in printed
 
 
+def test_the_scaffold_state_merges_parallel_writers(tmp_path, monkeypatch):
+    """Two kinds writing `notes` in the same superstep compose via the reducer.
+
+    The shape any real planner eventually proposes: `gather` and `analyse`
+    both fanned out of START, joining at `report`. With a plain `list[str]`
+    this run died on LangGraph's InvalidUpdateError before `report` ever ran;
+    the scaffold's `notes` is a reducer now, and this test is what keeps it
+    one.
+    """
+    monkeypatch.chdir(tmp_path)
+    from grapharc.cli.init_cmd import REGISTRY_TEMPLATE
+    from grapharc.testing import ScriptedChatModel
+
+    module = ModuleType("scaffold_registry")
+    # The path-form loader registers the module before executing it, and
+    # pydantic needs that to resolve the template's deferred annotations.
+    monkeypatch.setitem(sys.modules, "scaffold_registry", module)
+    exec(compile(REGISTRY_TEMPLATE, "registry.py", "exec"), module.__dict__)
+    plan = json.dumps(
+        {
+            "nodes": [{"name": "gather"}, {"name": "analyse"}, {"name": "report"}],
+            "edges": [
+                {"source": "__start__", "target": "gather"},
+                {"source": "__start__", "target": "analyse"},
+                {"source": "gather", "target": "report"},
+                {"source": "analyse", "target": "report"},
+                {"source": "report", "target": "__end__"},
+            ],
+        }
+    )
+    loop = module.build_loop(ScriptedChatModel(responses=[plan]))
+    result = loop.run("report on this directory, twice over", module.State())
+    assert result.stop.value == "goal_met"
+    assert any(note.startswith("gather:") for note in result.state.notes)
+    assert any(note.startswith("analyse:") for note in result.state.notes)
+
+
 def test_the_path_form_registry_shares_one_module_object(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "reg.py").write_text(
