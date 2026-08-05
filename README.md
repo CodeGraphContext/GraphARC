@@ -9,7 +9,7 @@
 # GraphARC
 
 [![PyPI](https://img.shields.io/pypi/v/grapharc.svg)](https://pypi.org/project/grapharc/)
-[![Downloads](https://img.shields.io/pypi/dm/grapharc.svg)](https://pypistats.org/packages/grapharc)
+[![Downloads](https://static.pepy.tech/badge/grapharc)](https://pepy.tech/project/grapharc)
 [![Python](https://img.shields.io/pypi/pyversions/grapharc.svg)](https://pypi.org/project/grapharc/)
 [![CI](https://github.com/CodeGraphContext/GraphARC/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeGraphContext/GraphARC/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
