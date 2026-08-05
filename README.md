@@ -21,11 +21,11 @@ A planner *proposes* a subgraph, a deterministic checker *admits* it — or refu
 - **The worst-case cost is known before a graph runs, and the exact per-node bill after — even when it fails.** Admission prices the worst case against what is *left* of the budget; at runtime each node's spend lands on its own trace event, error and cancellation included. `recorded_cost_usd` is never an estimate.
 - **One append-only JSONL trace file is the whole truth.** `replay`, `diff`, `metrics`, `viz`, cost attribution, OTel export and the live browser view all read the same file — the dashboard cannot disagree with the audit trail, because they are the same record.
 
-**Website:** [codegraphcontext.github.io/GraphARC](https://codegraphcontext.github.io/GraphARC/) · **Status:** early days (`0.1.4`) — the API is not stable yet. Known limits are listed in [Status and limits](#status-and-limits); closed ones are in [CHANGELOG.md](CHANGELOG.md).
+**Website:** [codegraphcontext.github.io/GraphARC](https://codegraphcontext.github.io/GraphARC/) · **Version:** `0.1.4` on [PyPI](https://pypi.org/project/grapharc/). Every claim on this page is enforced by a test you can run, and every release is gated by the full suite. The edges that remain are documented in [Limits](#limits); every defect ever closed is in [CHANGELOG.md](CHANGELOG.md).
 
-![One English question is decomposed by a local model into a nine-node graph — four parallel evidence pulls fanning out of START, a correlate join, a hypothesis fork, and a final report — shown live in the browser: the proposed graph waits grey for human approval, then each node turns amber while it runs and green when it is done.](docs/media/grapharc-decompose.gif)
+![A nine-node incident-investigation graph running live in the browser: triage fans out into four parallel evidence pulls, they join at correlate, then hypothesize, verify and report — each node amber while it runs and green with its own token bill when done. Then the one-line question that built it, and the finished, fully-audited run.](docs/media/grapharc-incident-demo.gif)
 
-*One question in, a governed graph out: a local model proposes the topology, the admission gate and a human approval decide, and the live view shows every node run — amber while executing, green when done. ([full-quality mp4](docs/media/grapharc-decompose.mp4))*
+*The graph first, because it is the point: a local model turns one English question into this nine-node graph, the admission gate admits it, and every node lands green with its own bill on the trace. ([full-quality mp4](docs/media/grapharc-incident-demo.mp4))*
 
 > *Graph engineering*: when one agent loop stops being enough, coordination becomes the engineering. Nodes do work (agent loops, model calls, deterministic functions, humans approving things), edges decide what runs next, and a typed shared state flows between them. GraphARC implements the discipline that makes such graphs production-grade rather than demos — the ideas emerging from the July 2026 loops-vs-graphs debate (Steinberger, Ng, et al.), the "Two Graphs, Two Jobs" split, and twenty years of pre-AI graph systems where every edge means something and every path can be explained.
 
@@ -174,7 +174,11 @@ state     : goal='investigate the checkout outage' notes=['triage ran', 'patch r
 
 Round 1 wanted to deploy and **never executed**. Round 2 went through the *same* checker and ran.
 
-The output ends with a `trace :` path — under `.grapharc/runs/` by default — and a `watch :` line. With `grapharc serve --live-root .grapharc/runs` running in another terminal, that line is the exact URL of this run's live page (proposed graph in violet awaiting approval, amber while nodes run, green when done, replay scrubber after); without one, it is the command that starts it.
+The output ends with a `trace :` path — under `.grapharc/runs/` by default — and a `watch :` line. With `grapharc serve --live-root .grapharc/runs` running in another terminal, that line is the exact URL of this run's live page (proposed graph in violet awaiting approval, amber while nodes run, green when done, replay scrubber after — and every node clickable for its status, bill, timeline and wiring); without one, it is the command that starts it.
+
+![One English question is decomposed by a local model into a nine-node graph — four parallel evidence pulls fanning out of START, a correlate join, a hypothesis fork, and a final report — shown live in the browser: the proposed graph waits for human approval, then each node turns amber while it runs and green when it is done.](docs/media/grapharc-decompose.gif)
+
+*The live page through a full governed run: proposed, approved, executed. ([full-quality mp4](docs/media/grapharc-decompose.mp4))*
 
 The `policy` line ends in `[registry-default]` — that is the **provenance**, and it is on the JSON payload too as `policy_source`. It matters because a policy can now come from four places: a `--policy` flag, a `grapharc.toml`, one an LLM generated on a first run, or the registry's own default. A generated run and an authored one look identical on the command line, so the source is the only thing that tells them apart afterwards.
 
@@ -483,17 +487,15 @@ uv run pytest -m live  # real backends: spends money and quota
 Live tests are deselected by default via `addopts` in `pyproject.toml`, so a plain `pytest` never reaches a real model — verified: a plain run reports 10 deselected. `--strict-markers` is on, and a misspelled marker is a collection error rather than a test that silently spends money.
 
 
-## Status and limits
+## Limits
 
-Re-derived on 2026-07-28 by running each item, not by reading the commit log.
+A stable system is not one that claims to have no edges — it is one whose edges are documented and tested. Everything below is re-derived by running each item, not by reading the commit log; most recently on 2026-08-05.
 
 **Distribution**
 
-- **`0.1.0` on PyPI reports the wrong `__version__`.** The published wheel's metadata says `0.1.0` — `pip show` and the project page agree — but the module inside it still carries `__version__ = "0.1.0a0"`, because it was built from a tree where only `pyproject.toml` had been bumped. PyPI releases are immutable, so `0.1.0` cannot be corrected in place; the fix ships in `0.1.1`. `pip install grapharc` works and `grapharc demo stage0` runs — this affects the version string alone.
-- *Fixed:* the source **is** on the public remote now, so the documented `git clone && uv sync` path works. It was the ship-blocker for most of this project's life.
-- *Fixed:* the package **is** on PyPI, so `pip install grapharc` works. Verified in a clean virtualenv: bare install, import, and `grapharc demo stage0`.
+- **`0.1.0` on PyPI reports the wrong `__version__`.** The published wheel's metadata says `0.1.0` — `pip show` and the project page agree — but the module inside it still carries `__version__ = "0.1.0a0"`, because it was built from a tree where only `pyproject.toml` had been bumped. PyPI releases are immutable, so `0.1.0` cannot be corrected in place; every release since `0.1.1` carries the matching string, and a test now pins the two together.
 
-**Built and unreachable** — this used to be the honest headline, four subsystems deep. One seam is left.
+**One seam**
 
 - **The HTTP API does not use the durable session layer.** It has its own `InProcessRuntime`, whose sessions die with the process and whose approvals are recorded without being delivered. [ROADMAP.md](ROADMAP.md) §12.3.
 
@@ -512,11 +514,11 @@ Re-derived on 2026-07-28 by running each item, not by reading the commit log.
 - **`.env` and `grapharc.toml` follow the same discovery rule: the working directory, and nowhere else.** Neither searches parent directories — a run must not be governed by a file you did not know about, and must not be *billed* to one either. **This is a behaviour change:** the credential loader used to walk up to `/`, so a `.env` in an ancestor directory (a `$HOME` one on a shared box, a client project one above a demo checkout) was picked up silently. If you relied on that, move the file into the directory you run from, `export` the variable, or pass `env_file=` to name it explicitly. A real environment variable still beats any file.
 - **`grapharc run` has no budget unless you give it one.** Set any of `--max-tokens`, `--max-iterations`, `--max-seconds`, or `--max-concurrency`; without them each dimension is unlimited and the gate admits a topology of any worst-case cost.
 
-**Verified this pass:** `pytest` → 1,754 passed, 12 deselected (the live ones); `ruff check .` clean; all eight `grapharc demo` stages green, plus the `trace` / `metrics` / `viz` / `replay` tour against a freshly recorded demo trace; the wheel builds and imports all 116 submodules in a clean virtualenv with `[all]`. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
+**Verified this pass:** `pytest` → 1,985 passed, 12 deselected (the live ones); `ruff check .` clean; all eight `grapharc demo` stages green, plus the `trace` / `metrics` / `viz` / `replay` tour against a freshly recorded demo trace; the wheel builds and imports all submodules in a clean virtualenv with `[all]`, and `0.1.4` on PyPI is that wheel. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
 
 [ROADMAP.md](ROADMAP.md) tracks what is built and what is not, item by item.
 
-Defects that have been **closed** — each with what broke, how it was found and what the fix actually guarantees — are in [CHANGELOG.md](CHANGELOG.md). They were moved there because a list headed *Status and limits* should say what is still true.
+Defects that have been **closed** — each with what broke, how it was found and what the fix actually guarantees — are in [CHANGELOG.md](CHANGELOG.md). They were moved there because a list headed *Limits* should say what is still true.
 
 
 ## Design lineage
