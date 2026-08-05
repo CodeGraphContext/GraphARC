@@ -36,8 +36,6 @@ signalling a shared event-loop thread would land in the wrong coroutine.
 from __future__ import annotations
 
 import asyncio
-import copy
-import functools
 import inspect
 import threading
 import time
@@ -46,7 +44,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from enum import Enum
-from typing import Any, Literal, get_args, get_origin, get_type_hints
+from typing import Any, Literal, get_args, get_origin
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
@@ -426,14 +424,60 @@ class GraphARC:
             raise GraphCycleError(
                 f"graph {self.name!r} is dag=True: conditional edges are not allowed"
             )
-        self._check_mapping(source, router, mapping)
-        self._graph.add_conditional_edges(
-            source, self._checked_router(source, router, mapping), mapping
-        )
+        self._validate_conditional_edge(source, router, mapping)
+        self._graph.add_conditional_edges(source, router, mapping)
         self._conditional_edges.extend(
             (source, target) for target in dict.fromkeys(mapping.values())
         )
         return self
+
+    def _validate_conditional_edge(
+        self,
+        source: str,
+        router: Callable[[Any], str],
+        mapping: dict[str, str],
+    ) -> None:
+        """Validate a conditional-edge mapping at declaration time."""
+        if not mapping:
+            raise GraphRoutingError(
+                f"conditional edge from node {source!r} has an empty mapping"
+            )
+
+        for key, target in mapping.items():
+            if target == END or target in self._nodes:
+                continue
+            raise GraphRoutingError(
+                f"conditional edge from node {source!r} uses mapping key {key!r} -> "
+                f"{target!r}, but {target!r} is not a node of graph {self.name!r}; "
+                f"valid destinations: {self._destinations()}"
+            )
+
+        try:
+            signature = inspect.signature(router)
+        except (TypeError, ValueError):
+            return
+
+        annotation = signature.return_annotation
+        if annotation is inspect.Signature.empty:
+            return
+
+        if get_origin(annotation) is Literal:
+            allowed = get_args(annotation)
+        elif isinstance(annotation, type) and issubclass(annotation, Enum):
+            allowed = [member.value for member in annotation]
+        else:
+            return
+
+        if not all(isinstance(value, str) for value in allowed):
+            return
+
+        missing = [value for value in allowed if value not in mapping]
+        if missing:
+            missing_repr = ", ".join(repr(value) for value in missing)
+            raise GraphRoutingError(
+                f"conditional edge from node {source!r} has router return values "
+                f"{missing_repr}, but mapping is missing those keys"
+            )
 
     def add_fanout_edge(
         self,
