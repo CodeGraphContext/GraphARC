@@ -9,6 +9,7 @@
 # GraphARC
 
 [![PyPI](https://img.shields.io/pypi/v/grapharc.svg)](https://pypi.org/project/grapharc/)
+[![Downloads](https://img.shields.io/pypi/dm/grapharc.svg)](https://pypistats.org/packages/grapharc)
 [![Python](https://img.shields.io/pypi/pyversions/grapharc.svg)](https://pypi.org/project/grapharc/)
 [![CI](https://github.com/CodeGraphContext/GraphARC/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeGraphContext/GraphARC/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -21,7 +22,7 @@ A planner *proposes* a subgraph, a deterministic checker *admits* it — or refu
 - **The worst-case cost is known before a graph runs, and the exact per-node bill after — even when it fails.** Admission prices the worst case against what is *left* of the budget; at runtime each node's spend lands on its own trace event, error and cancellation included. `recorded_cost_usd` is never an estimate.
 - **One append-only JSONL trace file is the whole truth.** `replay`, `diff`, `metrics`, `viz`, cost attribution, OTel export and the live browser view all read the same file — the dashboard cannot disagree with the audit trail, because they are the same record.
 
-**Website:** [codegraphcontext.github.io/GraphARC](https://codegraphcontext.github.io/GraphARC/) · **Version:** `0.1.4` on [PyPI](https://pypi.org/project/grapharc/). Every claim on this page is enforced by a test you can run, and every release is gated by the full suite. The edges that remain are documented in [Limits](#limits); every defect ever closed is in [CHANGELOG.md](CHANGELOG.md).
+**Website:** [codegraphcontext.github.io/GraphARC](https://codegraphcontext.github.io/GraphARC/) · **Version:** `0.1.5` on [PyPI](https://pypi.org/project/grapharc/). Every claim on this page is enforced by a test you can run, and every release is gated by the full suite. The edges that remain are documented in [Limits](#limits); every defect ever closed is in [CHANGELOG.md](CHANGELOG.md).
 
 ![A nine-node incident-investigation graph running live in the browser: triage fans out into four parallel evidence pulls, they join at correlate, then hypothesize, verify and report — each node amber while it runs and green with its own token bill when done. Then the one-line question that built it, and the finished, fully-audited run.](docs/media/grapharc-incident-demo.gif)
 
@@ -514,7 +515,7 @@ A stable system is not one that claims to have no edges — it is one whose edge
 - **`.env` and `grapharc.toml` follow the same discovery rule: the working directory, and nowhere else.** Neither searches parent directories — a run must not be governed by a file you did not know about, and must not be *billed* to one either. **This is a behaviour change:** the credential loader used to walk up to `/`, so a `.env` in an ancestor directory (a `$HOME` one on a shared box, a client project one above a demo checkout) was picked up silently. If you relied on that, move the file into the directory you run from, `export` the variable, or pass `env_file=` to name it explicitly. A real environment variable still beats any file.
 - **`grapharc run` has no budget unless you give it one.** Set any of `--max-tokens`, `--max-iterations`, `--max-seconds`, or `--max-concurrency`; without them each dimension is unlimited and the gate admits a topology of any worst-case cost.
 
-**Verified this pass:** `pytest` → 1,985 passed, 12 deselected (the live ones); `ruff check .` clean; all eight `grapharc demo` stages green, plus the `trace` / `metrics` / `viz` / `replay` tour against a freshly recorded demo trace; the wheel builds and imports all submodules in a clean virtualenv with `[all]`, and `0.1.4` on PyPI is that wheel. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
+**Verified this pass:** `pytest` → 1,985 passed, 12 deselected (the live ones); `ruff check .` clean; all eight `grapharc demo` stages green, plus the `trace` / `metrics` / `viz` / `replay` tour against a freshly recorded demo trace; the wheel builds and imports all submodules in a clean virtualenv with `[all]`, and `0.1.5` on PyPI is that wheel. The test count is a snapshot, not a property of the project — `pytest` re-derives it in one command, which is the only reason it is quoted.
 
 [ROADMAP.md](ROADMAP.md) tracks what is built and what is not, item by item.
 

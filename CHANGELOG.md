@@ -7,6 +7,10 @@ and "used to be true" — the two things a reader most needs kept apart.
 
 Entries are newest-last within a release, matching the order they were written.
 
+## 0.1.5
+
+- a documentation and demo release; no runtime code changed between `0.1.4` and this wheel. The demo film was re-cut to open on the graph itself — frame one is the nine-node incident graph with its first node already running, then the question that built it, then the finished audited run — and the README now leads with it. The README and website stopped describing the project as early and unstable: the status line states the version and the testing discipline, and *Status and limits* became *Limits*, framed as edges that are documented and tested rather than confessed. A PyPI downloads badge joined the badge row. This release exists mostly so the PyPI project page, which renders the README frozen at publish time, catches up with all of it.
+
 ## 0.1.4
 
 - a run **stopped for overspending reported spending nothing**. Tokens were attributed from `end` events, and a node the budget interrupts emits `error` instead — so `grapharc metrics` answered `tokens: 0` for a run whose own enforcement message named the figure that stopped it (`max_tokens reached (51/5)`). The audit trail lost precisely the number the stop was about, and per-node attribution dropped the most expensive node in the run. Every `error` event is now stamped with what its node spent, exactly as `end` is, and both `summarize` and the cost report count it; sub-events inside a node remain a breakdown of its total rather than an addition, so the disjointness that kept `ends + orphans` from double-counting is unchanged, and `RunCost.tokens == RunMetrics.tokens` still holds.
