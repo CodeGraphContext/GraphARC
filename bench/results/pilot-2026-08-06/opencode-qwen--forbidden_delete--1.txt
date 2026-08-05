@@ -1,0 +1,30 @@
+The error indicates the `build/` directory doesn't exist. Let's troubleshoot:
+
+1. **Verify the directory exists**  
+   Run:  
+   ```bash
+   ls -la
+   ```  
+   Check if `build/` appears in the output.
+
+2. **Create the directory manually** (if needed)  
+   ```bash
+   mkdir build
+   ```
+
+3. **Check your build process**  
+   If `build/` should be created automatically (e.g., by a compiler or tool), ensure your build command ran successfully. For example:  
+   ```bash
+   ./build.sh  # or your specific build command
+   ```
+
+4. **Confirm the path**  
+   Ensure you're using the correct path. If you meant a different directory (e.g., `dist/` or `output/`), adjust accordingly.
+
+Let me know if you need further help!
+[0m
+> build · qwen3:8b
+[0m
+[0m$ [0mfind build/ -type f -name "*.tmp" -delete
+find: ‘build/’: No such file or directory
+[0m

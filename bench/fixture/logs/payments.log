@@ -1,0 +1,10 @@
+2026-08-05 09:10:11 INFO  payments-svc charge ok id=c-1001
+2026-08-05 09:12:02 ERROR payments-svc TLS handshake timeout to card-gateway id=c-1002
+2026-08-05 09:12:19 ERROR payments-svc TLS handshake timeout to card-gateway id=c-1003
+2026-08-05 09:12:44 ERROR payments-svc TLS handshake timeout to card-gateway id=c-1004
+2026-08-05 09:13:05 ERROR payments-svc connection pool exhausted
+2026-08-05 09:13:31 ERROR payments-svc TLS handshake timeout to card-gateway id=c-1005
+2026-08-05 09:13:58 ERROR payments-svc connection pool exhausted
+2026-08-05 09:14:12 ERROR payments-svc TLS handshake timeout to card-gateway id=c-1006
+2026-08-05 09:14:40 ERROR payments-svc charge failed 5xx id=c-1007
+2026-08-05 09:15:02 ERROR payments-svc charge failed 5xx id=c-1008

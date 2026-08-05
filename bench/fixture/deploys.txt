@@ -1,0 +1,4 @@
+d-7832  2026-08-05 07:55  web-app        css refresh
+d-7838  2026-08-05 08:30  web-app        ui copy tweak
+d-7841  2026-08-05 09:08  card-gateway   TLS certificate rotation
+d-7844  2026-08-05 10:15  web-app        logging verbosity
