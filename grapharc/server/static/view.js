@@ -26,6 +26,15 @@ const playback = el("playback"), playBtn = el("play");
 const speedPick = el("speed"), scrub = el("scrub"), clock = el("clock");
 const approvalBar = el("approvalbar"), approveCmd = el("approvecmd");
 const copyApprove = el("copyapprove");
+const inspector = el("inspector"), iName = el("i-name"), iStatus = el("i-status");
+const iProps = el("i-props"), iError = el("i-error");
+const iSpans = el("i-spans"), iEdges = el("i-edges"), iClose = el("i-close");
+
+// The node the inspector is pinned to, or null. Survives snapshot patches
+// (the panel re-renders from each one) and topology rebuilds when the id
+// still exists; cleared when its node leaves the graph.
+let selectedId = null;
+let lastStats = null;
 
 // Whether the current snapshot is parked at an approval gate. Proposed nodes
 // (status pending while parked) render in the approval colour, not plain grey.
@@ -134,7 +143,10 @@ function patchNode(node, statusOverride) {
   // run is no longer awaiting anything.
   const shown =
     awaiting && status === "pending" && !statusOverride ? "proposed" : status;
-  entry.group.setAttribute("class", "node st-" + shown);
+  entry.group.setAttribute(
+    "class",
+    "node st-" + shown + (node.id === selectedId ? " sel" : "")
+  );
   entry.name.textContent = GLYPH[shown] + " " + entry.shortLabel;
   entry.meta.textContent =
     shown === "proposed"
@@ -249,9 +261,15 @@ function buildGraph(g) {
     const shortLabel =
       node.label.length > room ? node.label.slice(0, room - 1) + "…" : node.label;
     nodeGroups.set(node.id, { group, rect, name, meta, title, shortLabel });
+    group.addEventListener("click", (event) => {
+      event.stopPropagation();
+      select(node.id === selectedId ? null : node.id);
+    });
     patchNode(node);
   }
   patchEdges(g);
+  // A rebuild means a new topology; keep the pin only if its node survived.
+  if (selectedId && !nodeGroups.has(selectedId)) select(null);
 }
 
 function renderGraph(g, note) {
@@ -262,18 +280,151 @@ function renderGraph(g, note) {
     empty.className = "empty";
     empty.textContent = note || (g && g.note) || "waiting for the run to start…";
     panel.appendChild(empty);
+    lastGraph = null;
+    select(null);
     return;
   }
   const key = graphKey(g);
   if (key !== topologyKey) {
     topologyKey = key;
+    lastGraph = g;
     buildGraph(g);
   } else {
+    lastGraph = g;
     for (const node of g.nodes) if (node.role === "node") patchNode(node);
     patchEdges(g);
   }
-  lastGraph = g;
+  renderInspector();
 }
+
+/* --------------------------------------------------------- node inspector */
+
+function select(id) {
+  if (id === selectedId) {
+    if (id === null) { inspector.hidden = true; return; }
+  }
+  const previous = selectedId;
+  selectedId = id;
+  // Re-stamp both groups' classes so exactly one carries `sel`.
+  if (lastGraph) {
+    for (const node of lastGraph.nodes) {
+      if (node.role === "node" && (node.id === previous || node.id === id)) {
+        patchNode(node);
+      }
+    }
+  }
+  renderInspector();
+}
+
+function prop(term, value, mono) {
+  const dt = document.createElement("dt");
+  dt.textContent = term;
+  const dd = document.createElement("dd");
+  dd.textContent = value;
+  if (mono === false) dd.style.fontFamily = "inherit";
+  iProps.append(dt, dd);
+}
+
+function section(parent, heading, items) {
+  parent.textContent = "";
+  if (!items.length) return;
+  const h = document.createElement("h3");
+  h.textContent = heading;
+  parent.append(h);
+  const list = document.createElement("ul");
+  for (const spans of items) {
+    const li = document.createElement("li");
+    for (const [text, cls] of spans) {
+      const piece = document.createElement("span");
+      piece.textContent = text;
+      if (cls) piece.className = cls;
+      li.append(piece);
+    }
+    list.append(li);
+  }
+  parent.append(list);
+}
+
+function peerLabel(id) {
+  if (!lastGraph) return id;
+  const node = lastGraph.nodes.find((n) => n.id === id);
+  if (node) return node.label;
+  const cluster = lastGraph.clusters.find((c) => c.id === id);
+  return cluster ? cluster.label : id;
+}
+
+function renderInspector() {
+  if (!selectedId || !lastGraph) { inspector.hidden = true; return; }
+  const node = lastGraph.nodes.find(
+    (n) => n.id === selectedId && n.role === "node"
+  );
+  if (!node) { inspector.hidden = true; return; }
+
+  const shown = awaiting && node.status === "pending" ? "proposed" : node.status;
+  iName.textContent = node.label;
+  iStatus.textContent =
+    GLYPH[shown] + " " + (shown === "proposed" ? "proposed — awaiting approval" : shown);
+  iStatus.className = "st-" + shown;
+
+  iProps.textContent = "";
+  if (node.cluster) {
+    const cluster = lastGraph.clusters.find((c) => c.id === node.cluster);
+    if (cluster) prop("round", cluster.label, false);
+  }
+  prop("executions", String(node.executions));
+  if (node.status === "running" && node.live_tokens) {
+    prop("tokens", fmtTokens(node.live_tokens) + " so far");
+  } else if (node.tokens) {
+    prop("tokens", fmtTokens(node.tokens));
+    if (lastStats && lastStats.tokens) {
+      prop("share", Math.round((node.tokens / lastStats.tokens) * 100) + "% of run");
+    }
+  }
+  const cost = fmtCost(node.cost_usd);
+  if (cost) prop("cost", cost);
+  if (node.duration_ms != null) prop("duration", fmtMs(node.duration_ms));
+  if (node.id !== node.label) prop("id", node.id);
+
+  iError.hidden = !node.error;
+  iError.textContent = node.error || "";
+
+  const spans = (lastGraph.timeline || []).filter((s) => s.node === node.id);
+  section(
+    iSpans,
+    "executions on the timeline",
+    spans.map((s) => {
+      if (s.t1 == null) {
+        return [["▸ started at " + fmtMs(s.t0) + " · still open", "open"]];
+      }
+      return [
+        [s.ok === false ? "✗ " : "✓ ", s.ok === false ? "bad" : "ok"],
+        [fmtMs(s.t0) + " → " + fmtMs(s.t1) + " · " + fmtMs(s.t1 - s.t0), ""],
+      ];
+    })
+  );
+
+  const kindTag = (kind) => (kind === "static" ? "" : " · " + kind);
+  const wiring = [];
+  for (const e of lastGraph.edges) {
+    if (e.target === node.id) {
+      wiring.push([["← from ", ""], [peerLabel(e.source), "peer"], [kindTag(e.kind), ""]]);
+    }
+  }
+  for (const e of lastGraph.edges) {
+    if (e.source === node.id) {
+      wiring.push([["→ to ", ""], [peerLabel(e.target), "peer"], [kindTag(e.kind), ""]]);
+    }
+  }
+  section(iEdges, "wiring", wiring);
+
+  inspector.hidden = false;
+}
+
+iClose.addEventListener("click", () => select(null));
+panel.addEventListener("click", () => select(null));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") select(null);
+});
 
 /* -------------------------------------------------------- planning panel */
 
@@ -412,6 +563,7 @@ function connect() {
     const s = JSON.parse(event.data);
     const planningOnly = s.planning && !s.planning.has_topology;
     awaiting = Boolean(s.awaiting_approval);
+    lastStats = s.stats || null;
     runEl.textContent = s.run_id ? "run " + s.run_id : "";
     goalEl.textContent = s.goal ? "· " + s.goal : "";
     if (awaiting && s.approve_command) {

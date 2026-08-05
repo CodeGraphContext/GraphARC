@@ -9,7 +9,7 @@ from grapharc.runtime.budget import Budget, BudgetExceeded, BudgetMeter
 from grapharc.runtime.graph import GraphARC, WritePermissionError
 from grapharc.runtime.state import GraphARCState
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 __all__ = [
     "GraphARC",

@@ -14,7 +14,7 @@ projection instead and says which fields it dropped.
 `tests/test_cookbook_basics.py` reproduces every recipe here and asserts these
 exact strings, so the page cannot rot quietly.
 
-Verified against `grapharc 0.1.3`, Python 3.14.6, `langgraph 1.2.9`,
+Verified against `grapharc 0.1.4`, Python 3.14.6, `langgraph 1.2.9`,
 `langchain-core 1.5.1`, `pydantic 2.13.4`.
 
 Each snippet is a complete file. Save it and run it; nothing carries over between
@@ -41,7 +41,7 @@ uv run grapharc --version
 Output:
 
 ```
-grapharc 0.1.3
+grapharc 0.1.4
 ```
 
 Everything below uses only the base install — no API key, no network, no optional

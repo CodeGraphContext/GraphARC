@@ -21,7 +21,7 @@ A planner *proposes* a subgraph, a deterministic checker *admits* it — or refu
 - **The worst-case cost is known before a graph runs, and the exact per-node bill after — even when it fails.** Admission prices the worst case against what is *left* of the budget; at runtime each node's spend lands on its own trace event, error and cancellation included. `recorded_cost_usd` is never an estimate.
 - **One append-only JSONL trace file is the whole truth.** `replay`, `diff`, `metrics`, `viz`, cost attribution, OTel export and the live browser view all read the same file — the dashboard cannot disagree with the audit trail, because they are the same record.
 
-**Website:** [codegraphcontext.github.io/GraphARC](https://codegraphcontext.github.io/GraphARC/) · **Status:** early days (`0.1.3`) — the API is not stable yet. Known limits are listed in [Status and limits](#status-and-limits); closed ones are in [CHANGELOG.md](CHANGELOG.md).
+**Website:** [codegraphcontext.github.io/GraphARC](https://codegraphcontext.github.io/GraphARC/) · **Status:** early days (`0.1.4`) — the API is not stable yet. Known limits are listed in [Status and limits](#status-and-limits); closed ones are in [CHANGELOG.md](CHANGELOG.md).
 
 ![One English question is decomposed by a local model into a nine-node graph — four parallel evidence pulls fanning out of START, a correlate join, a hypothesis fork, and a final report — shown live in the browser: the proposed graph waits grey for human approval, then each node turns amber while it runs and green when it is done.](docs/media/grapharc-decompose.gif)
 

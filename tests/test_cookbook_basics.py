@@ -55,7 +55,7 @@ from grapharc.testing import ScriptedChatModel
 
 
 def test_version_matches_the_page():
-    assert __version__ == "0.1.3"
+    assert __version__ == "0.1.4"
 
 
 # -- "How do I build and run my first graph?" ------------------------------
