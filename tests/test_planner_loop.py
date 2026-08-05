@@ -1661,3 +1661,72 @@ def test_the_incident_example_state_merges_parallel_writers():
     result = loop.run("triage, patch and verify at once", IncidentState())
     assert result.stop.value == "goal_met"
     assert sorted(result.state.notes) == ["patch ran", "triage ran", "verify ran"]
+
+
+def test_an_empty_proposal_against_an_unmet_goal_gets_one_nudge():
+    """Empty plan, goal check unsatisfied: the contradiction is named once.
+
+    The planner is told the goal check is not met and asked to either propose
+    the remaining work or repeat the empty proposal. Here it proposes the
+    work, and the run finishes on the goal — where before the nudge existed,
+    round 1's empty reply ended the run as `no_further_work` with the goal
+    never mentioned to the model.
+    """
+    loop, model, bodies = build_loop(
+        [NOTHING_MORE, plan(("write", "summarise"))], goal_reached=goal_is_done
+    )
+
+    result = loop.run("summarise the findings", LoopState())
+
+    assert result.stop is LoopStop.GOAL_MET
+    assert bodies.ran == ["write"]
+    assert len(result.rounds) == 2
+    assert not result.rounds[0].executed and result.rounds[0].admitted
+    assert any(
+        "goal check is not yet satisfied" in str(message.content)
+        for message in model.calls[1]
+    )
+
+
+def test_a_second_empty_proposal_is_believed():
+    """The nudge is one round, not a counter: a repeat empty plan is an answer."""
+    loop, model, bodies = build_loop(
+        [NOTHING_MORE, NOTHING_MORE], goal_reached=goal_is_done
+    )
+
+    result = loop.run("summarise the findings", LoopState())
+
+    assert result.stop is LoopStop.NO_FURTHER_WORK
+    assert "confirmed no further work" in result.detail
+    assert bodies.ran == []
+    assert len(result.rounds) == 2
+    assert model.call_count == 2
+
+
+def test_an_unusable_reply_after_the_nudge_confirms_no_further_work():
+    """A planner with nothing left to say after the nudge is not a failure.
+
+    The scripted stand-ins end their reply lists with an empty proposal; the
+    nudge asks one more question than the script answers. Exhaustion there
+    must read as the confirmation it is — never as `planning_failed` burning
+    the failure allowance on a planner that already said "nothing more".
+    """
+    loop, model, bodies = build_loop([NOTHING_MORE], goal_reached=goal_is_done)
+
+    result = loop.run("summarise the findings", LoopState())
+
+    assert result.stop is LoopStop.NO_FURTHER_WORK
+    assert "nothing usable" in result.detail
+    assert bodies.ran == []
+    assert result.rounds[-1].planner_error
+
+
+def test_an_empty_proposal_with_no_goal_check_stops_without_a_nudge():
+    """No goal check means nothing to contradict: one round, one clean stop."""
+    loop, model, bodies = build_loop([NOTHING_MORE])
+
+    result = loop.run("nothing needs doing", LoopState())
+
+    assert result.stop is LoopStop.NO_FURTHER_WORK
+    assert len(result.rounds) == 1
+    assert model.call_count == 1

@@ -392,6 +392,10 @@ class GovernedLoop:
         unplanned_in_a_row = 0
         failed_in_a_row = 0
         stalled_in_a_row = 0
+        # One nudge per run when an empty proposal contradicts an unmet goal
+        # check; `confirm_pending` marks the single round right after it.
+        empty_nudged = False
+        confirm_pending = False
 
         stop, detail = self._precheck(current)
         round_number = 0
@@ -441,6 +445,19 @@ class GovernedLoop:
                 break
 
             if not outcome.ok or outcome.proposal is None:
+                if confirm_pending:
+                    # The planner already said "nothing more"; the nudge asked
+                    # it to confirm and the follow-up produced nothing usable.
+                    # Read that as the confirmation it is, not as a planning
+                    # failure to burn the allowance on — a scripted planner
+                    # whose replies simply ran out lands here too.
+                    stop = LoopStop.NO_FURTHER_WORK
+                    detail = (
+                        "the planner proposed no further work, and the "
+                        "follow-up produced nothing usable"
+                    )
+                    close(planner_error=outcome.error, tokens=outcome.tokens)
+                    break
                 unplanned_in_a_row += 1
                 # The retry note shows the model what it actually said and what
                 # was wanted. The bare error string alone ("no JSON object
@@ -466,6 +483,7 @@ class GovernedLoop:
                 close(planner_error=outcome.error, tokens=outcome.tokens)
                 continue
             unplanned_in_a_row = 0
+            confirm_pending = False
 
             proposal = outcome.proposal
             verdict = self.checker.check(
@@ -490,11 +508,36 @@ class GovernedLoop:
 
             if not proposal.nodes:
                 # Admitted, and it authorises nothing: the planner is saying
-                # there is no further work. Admitting that is the right answer.
+                # there is no further work. With no goal check, or a satisfied
+                # one, admitting that is the right answer. With an UNMET goal
+                # check it contradicts the operator's own definition of done,
+                # so it gets one nudge naming the contradiction — one, not a
+                # counter, because a planner that says "nothing more" twice is
+                # answering, not failing.
+                if (
+                    self.goal_reached is not None
+                    and not self._goal_met(current)
+                    and not empty_nudged
+                ):
+                    empty_nudged = True
+                    confirm_pending = True
+                    note = (
+                        "Your previous proposal was empty, but the run's goal "
+                        "check is not yet satisfied. Propose the remaining "
+                        "work, or reply with an empty proposal again to "
+                        "confirm there is nothing more this catalog can do."
+                    )
+                    close(**judged)
+                    continue
                 stop = (
                     LoopStop.GOAL_MET if self._goal_met(current) else LoopStop.NO_FURTHER_WORK
                 )
-                detail = "the planner proposed no further work"
+                detail = (
+                    "the planner confirmed no further work; the goal check is "
+                    "still unsatisfied"
+                    if empty_nudged and not self._goal_met(current)
+                    else "the planner proposed no further work"
+                )
                 close(**judged)
                 break
 
