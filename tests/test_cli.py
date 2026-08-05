@@ -2039,6 +2039,103 @@ def test_a_stale_marker_with_no_listener_falls_back_to_the_hint(
     assert payload["watch_url"] is None
 
 
+def test_a_malformed_marker_degrades_to_the_hint_instead_of_crashing(
+    tmp_path, monkeypatch
+):
+    """The marker shapes JSON allows but the reader does not: null port, a
+    non-object document. Both used to escape `watch_url` as a TypeError
+    traceback from a command that only wanted to print a courtesy URL."""
+    from grapharc.cli.plan import watch_url
+
+    monkeypatch.chdir(tmp_path)
+    marker = tmp_path / ".grapharc" / "live-server.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    trace = tmp_path / ".grapharc" / "runs" / "r1" / "trace.jsonl"
+    trace.parent.mkdir(parents=True, exist_ok=True)
+    trace.write_text("", encoding="utf-8")
+
+    marker.write_text(
+        json.dumps(
+            {
+                "url": "http://127.0.0.1:8000",
+                "host": "127.0.0.1",
+                "port": None,
+                "live_root": str((tmp_path / ".grapharc" / "runs").resolve()),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert watch_url(trace) is None
+
+    marker.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+    assert watch_url(trace) is None
+
+
+def test_an_unresolved_marker_root_still_matches_through_a_symlink(
+    tmp_path, monkeypatch
+):
+    """`serve` writes its root resolved; a hand-edited marker may not be. The
+    comparison resolves both sides now, so a symlinked spelling of the same
+    directory is the same directory rather than a lexical mismatch."""
+    import socket
+
+    from grapharc.cli.plan import watch_url
+
+    monkeypatch.chdir(tmp_path)
+    real = tmp_path / "real-runs"
+    real.mkdir()
+    link = tmp_path / "link-runs"
+    link.symlink_to(real, target_is_directory=True)
+    trace = real / "r1" / "trace.jsonl"
+    trace.parent.mkdir(parents=True)
+    trace.write_text("", encoding="utf-8")
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        marker = tmp_path / ".grapharc" / "live-server.json"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps(
+                {
+                    "url": f"http://127.0.0.1:{port}",
+                    "host": "127.0.0.1",
+                    "port": port,
+                    "live_root": str(link),  # deliberately unresolved
+                }
+            ),
+            encoding="utf-8",
+        )
+        url = watch_url(trace)
+    finally:
+        listener.close()
+    assert url is not None and "trace=r1%2Ftrace.jsonl" in url
+
+
+def test_the_hint_quotes_the_marker_port_when_the_server_is_down(
+    tmp_path, monkeypatch, capsys
+):
+    """A stale marker still names the port the operator actually serves on;
+    an instruction quoting a different port than their own `grapharc serve`
+    command is a wrong instruction."""
+    import socket
+
+    monkeypatch.chdir(tmp_path)
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    dead_port = probe.getsockname()[1]
+    probe.close()
+    _write_live_marker(tmp_path, port=dead_port)
+    code = main(["plan", "look into it", "--scripted"])
+    printed = capsys.readouterr().out
+    assert code == 0
+    watch = next(line for line in printed.splitlines() if line.startswith("watch"))
+    assert "grapharc serve --live-root .grapharc/runs" in watch
+    assert f"127.0.0.1:{dead_port}/live/view?trace=" in watch
+
+
 def test_a_trace_outside_the_live_root_gets_no_exact_url(tmp_path, monkeypatch, capsys):
     import socket
 

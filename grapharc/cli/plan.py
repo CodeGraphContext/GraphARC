@@ -107,14 +107,22 @@ def watch_url(trace_path: Path, *, run_id: str | None = None, timeout: float = 0
     marker = Path(".grapharc") / "live-server.json"
     try:
         record = json.loads(marker.read_text(encoding="utf-8"))
+        # TypeError is in the net for the marker shapes JSON allows but this
+        # code does not: a non-object document (indexing a list raises it) and
+        # a null port (`int(None)`). A malformed marker must degrade to the
+        # hint, never escape as a traceback from a command that only wanted to
+        # print a courtesy URL.
         root = Path(record["live_root"])
         base = str(record["url"])
         host, port = str(record["host"]), int(record["port"])
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, TypeError):
         return None
     try:
-        rel = trace_path.resolve().relative_to(root)
-    except ValueError:
+        # The marker's root is resolved by the serve that wrote it; resolve it
+        # again here so a hand-edited or symlinked root still matches the same
+        # directory instead of failing the lexical comparison.
+        rel = trace_path.resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
         return None
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -127,22 +135,42 @@ def watch_url(trace_path: Path, *, run_id: str | None = None, timeout: float = 0
     return url
 
 
+def _marker_base() -> str:
+    """The last-known server base URL, from the marker; the default otherwise.
+
+    A marker that exists but whose server stopped answering still names the
+    host and port the operator actually uses — an instruction quoting a
+    different port than their `grapharc serve` command is a wrong instruction.
+    Read with the same tolerance as `watch_url`: any defect means the default.
+    """
+    import json
+
+    try:
+        record = json.loads(
+            (Path(".grapharc") / "live-server.json").read_text(encoding="utf-8")
+        )
+        return str(record["url"]).rstrip("/")
+    except (OSError, ValueError, KeyError, TypeError):
+        return "http://127.0.0.1:8000"
+
+
 def watch_hint(trace_path: Path) -> str:
     """What to print when no live server answers: the command, then the URL.
 
     The user asked for the link to always exist — so when it cannot be exact,
     it is an instruction that produces the exact one.
     """
+    base = _marker_base()
     try:
         rel = trace_path.resolve().relative_to((Path(".grapharc") / "runs").resolve())
         from urllib.parse import quote
 
-        would_be = f"http://127.0.0.1:8000/live/view?trace={quote(rel.as_posix(), safe='')}"
+        would_be = f"{base}/live/view?trace={quote(rel.as_posix(), safe='')}"
         return f"run `grapharc serve --live-root .grapharc/runs` then open {would_be}"
     except ValueError:
         return (
             f"run `grapharc serve --live-root {trace_path.parent}` "
-            f"then open http://127.0.0.1:8000/live"
+            f"then open {base}/live"
         )
 
 
