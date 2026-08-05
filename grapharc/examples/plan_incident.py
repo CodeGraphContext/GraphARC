@@ -20,7 +20,8 @@ factory; a proposal names a *kind*. Swap the scripted model for a real one with
 from __future__ import annotations
 
 import json
-from typing import Any
+import operator
+from typing import Annotated, Any
 
 from pydantic import BaseModel
 
@@ -44,10 +45,17 @@ from grapharc.runtime.graph import END, START
 
 
 class IncidentState(BaseModel):
-    """One state contract for the whole run, however the topology changes."""
+    """One state contract for the whole run, however the topology changes.
+
+    `notes` is a reducer (`Annotated` + `operator.add`): each writer returns
+    only its own lines and LangGraph merges them, so a planner that runs two
+    writers in the same parallel step — including two instances of one kind —
+    composes instead of colliding. A plain `list[str]` here raises
+    `InvalidUpdateError` the first time that happens.
+    """
 
     goal: str = ""
-    notes: list[str] = []
+    notes: Annotated[list[str], operator.add] = []
 
 
 def _step_factory(spec: NodeSpec) -> Any:
@@ -59,7 +67,7 @@ def _step_factory(spec: NodeSpec) -> Any:
     """
 
     def body(state: IncidentState) -> dict:
-        return {"notes": [*state.notes, f"{spec.name} ran"]}
+        return {"notes": [f"{spec.name} ran"]}
 
     body.writes = {"notes"}
     return body

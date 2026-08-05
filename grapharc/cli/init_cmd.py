@@ -58,7 +58,8 @@ Then make it yours: rename the kinds, rewrite the bodies, grow the State.
 
 from __future__ import annotations
 
-from typing import Any
+import operator
+from typing import Annotated, Any
 
 from pydantic import BaseModel
 
@@ -87,7 +88,13 @@ from grapharc.runtime.budget import Budget
 
 class State(BaseModel):
     goal: str = ""          # filled from the CLI argument; the planner reads it
-    notes: list[str] = []   # the working record every kind appends to
+    # `notes` is a REDUCER (Annotated + operator.add): each writer returns just
+    # its own lines and LangGraph merges them, so two nodes — or two
+    # planner-named instances of ONE kind — may write it in the same parallel
+    # step. A plain `list[str]` here crashes the first time a planner runs two
+    # writers concurrently (InvalidUpdateError); keep the pattern for any field
+    # more than one node may write.
+    notes: Annotated[list[str], operator.add] = []
     report: str = ""        # the deliverable; the goal check below watches it
 
 
@@ -111,7 +118,7 @@ def _gather(state: State) -> dict:
         f"({', '.join(dirs[:12]) or 'none'}) and {len(files)} file(s) "
         f"({', '.join(files[:12]) or 'none'})"
     )
-    return {"notes": [*state.notes, note]}
+    return {"notes": [note]}
 
 
 def _analyse(state: State) -> dict:
@@ -126,7 +133,7 @@ def _analyse(state: State) -> dict:
     note = "analyse: file types by count — " + ", ".join(
         f"{ext} x{count}" for ext, count in top
     )
-    return {"notes": [*state.notes, note]}
+    return {"notes": [note]}
 
 
 def _report_for(model: Any):
@@ -142,7 +149,7 @@ def _report_for(model: Any):
         if model is None or scripted or not hasattr(model, "invoke"):
             return {
                 "report": "report: run with --model SPEC for a model-written report",
-                "notes": [*state.notes, "report: written without a model"],
+                "notes": ["report: written without a model"],
             }
         try:
             reply = model.invoke(
@@ -153,7 +160,7 @@ def _report_for(model: Any):
             text = str(getattr(reply, "content", reply)).strip()[:2000]
         except Exception as exc:  # a failed call is a note, not a crash
             text = f"report: model call failed ({exc}); notes stand"
-        return {"report": text, "notes": [*state.notes, "report: written"]}
+        return {"report": text, "notes": ["report: written"]}
 
     return body
 
@@ -164,7 +171,7 @@ def _apply(state: State) -> dict:
     propose it) and DENIED by the edge policy below (no admitted graph may
     reach it) until you decide otherwise. Keep the pattern even after you
     rename it: a gate with nothing to refuse proves nothing."""
-    return {"notes": [*state.notes, "apply: this should not have run"]}
+    return {"notes": ["apply: this should not have run"]}
 
 
 # ── 3. Write permissions ────────────────────────────────────────────────────

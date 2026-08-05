@@ -1632,3 +1632,32 @@ def test_the_disclosure_is_not_what_refuses_the_edge():
     assert [r.model_dump() for r in with_disclosure.rejections()] == [
         r.model_dump() for r in without.rejections()
     ]
+
+
+def test_the_incident_example_state_merges_parallel_writers():
+    """Three kinds writing `notes` in one superstep compose via the reducer.
+
+    The shipped example's state used a plain `list[str]`, so the first plan
+    that fanned kinds out of START died on LangGraph's InvalidUpdateError.
+    `IncidentState.notes` is a reducer now; this run is the shape that broke.
+    """
+    from grapharc.examples.plan_incident import IncidentState
+    from grapharc.examples.plan_incident import build_loop as build_incident_loop
+
+    fan_out = json.dumps(
+        {
+            "nodes": [{"name": "triage"}, {"name": "patch"}, {"name": "verify"}],
+            "edges": [
+                {"source": "__start__", "target": "triage"},
+                {"source": "__start__", "target": "patch"},
+                {"source": "__start__", "target": "verify"},
+                {"source": "triage", "target": "__end__"},
+                {"source": "patch", "target": "__end__"},
+                {"source": "verify", "target": "__end__"},
+            ],
+        }
+    )
+    loop = build_incident_loop(ScriptedChatModel(responses=[fan_out]))
+    result = loop.run("triage, patch and verify at once", IncidentState())
+    assert result.stop.value == "goal_met"
+    assert sorted(result.state.notes) == ["patch ran", "triage ran", "verify ran"]
