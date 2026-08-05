@@ -1,12 +1,12 @@
 """Novita backend — a GPU cloud hosting open-weight models, one key.
 
-`novita/deepseek/deepseek-r1` reaches Novita's own OpenAI-compatible endpoint
+`novita/moonshotai/kimi-k3` reaches Novita's own OpenAI-compatible endpoint
 (`https://api.novita.ai/openai`), not api.openai.com, so this builds on
 `OpenAICompatChatModel` the same way `openrouter.py` and `ollama.py` do rather
 than on `openai.py`: the endpoint is fixed, not an override of OpenAI's own.
 
-Model ids on Novita are themselves `author/slug` — `deepseek/deepseek-r1`,
-`qwen/qwen3-235b-a22b` — the same shape OpenRouter uses, so `vendor()` in
+Model ids on Novita are themselves `author/slug` — `moonshotai/kimi-k3`,
+`zai-org/glm-5.2` — the same shape OpenRouter uses, so `vendor()` in
 `registry.py` already reads the right author off a Novita spec with no
 backend-specific handling: `BACKEND_VENDOR` stays absent for `novita`, exactly
 as it is absent for `openrouter`.

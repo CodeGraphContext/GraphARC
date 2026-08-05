@@ -24,7 +24,7 @@ for spec in (
     "claude-cli/claude-sonnet-5",
     "openrouter/anthropic/claude-haiku-4.5",
     "openai/gpt-4o-mini",
-    "novita/deepseek/deepseek-r1",
+    "novita/moonshotai/kimi-k3",
     "ollama/llama3.1",
     "mock/anything",
 ):
@@ -39,7 +39,7 @@ print(model.invoke("say hi").content)
 {'spec': 'claude-cli/claude-sonnet-5', 'backend': 'claude-cli', 'model': 'claude-sonnet-5'}
 {'spec': 'openrouter/anthropic/claude-haiku-4.5', 'backend': 'openrouter', 'model': 'anthropic/claude-haiku-4.5'}
 {'spec': 'openai/gpt-4o-mini', 'backend': 'openai', 'model': 'gpt-4o-mini'}
-{'spec': 'novita/deepseek/deepseek-r1', 'backend': 'novita', 'model': 'deepseek/deepseek-r1'}
+{'spec': 'novita/moonshotai/kimi-k3', 'backend': 'novita', 'model': 'moonshotai/kimi-k3'}
 {'spec': 'ollama/llama3.1', 'backend': 'ollama', 'model': 'llama3.1'}
 {'spec': 'mock/anything', 'backend': 'mock', 'model': 'anything'}
 hello from a scripted model
@@ -136,7 +136,7 @@ examples:
   openrouter/anthropic/claude-haiku-4.5   many providers, one key
   openrouter/openai/gpt-4o-mini:floor     cheapest provider for that model
   openai/gpt-4o-mini                      the OpenAI API directly, your key
-  novita/deepseek/deepseek-r1             Novita's own endpoint, your key
+  novita/moonshotai/kimi-k3             Novita's own endpoint, your key
   ollama/llama3.1                         a local server, no key and no bill
 
 grapharc models --check  probes which of these this machine can use

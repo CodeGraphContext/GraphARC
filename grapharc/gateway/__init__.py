@@ -6,7 +6,7 @@ a node is configuration rather than code:
     get_model("claude-cli/claude-sonnet-5")             # subscription, no API key
     get_model("openrouter/anthropic/claude-sonnet-4.5") # many providers, one key
     get_model("openai/gpt-4o-mini")                     # OPENAI_API_KEY
-    get_model("novita/deepseek/deepseek-r1")            # NOVITA_API_KEY
+    get_model("novita/moonshotai/kimi-k3")            # NOVITA_API_KEY
     get_model("ollama/llama3.1")                        # local server, no key
     get_model("mock/x", responses=[...])                # deterministic tests
 

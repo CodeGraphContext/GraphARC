@@ -7,7 +7,7 @@ nodes take a spec string and the registry decides which adapter serves it:
     openrouter/anthropic/claude-sonnet-4.5  -> OpenRouter
     openrouter/openai/gpt-4o:floor          -> OpenRouter, cheapest provider
     openai/gpt-4o-mini                      -> OpenAI directly (OPENAI_API_KEY)
-    novita/deepseek/deepseek-r1             -> Novita (NOVITA_API_KEY)
+    novita/moonshotai/kimi-k3             -> Novita (NOVITA_API_KEY)
     ollama/llama3.1                         -> a local Ollama server, no key
     mock/anything                           -> scripted test double
 
@@ -72,7 +72,7 @@ BARE_BACKEND_MODEL = {
 _BARE_BACKEND_EXAMPLE = {
     "openrouter": "openrouter/anthropic/claude-sonnet-4.5",
     "openai": "openai/gpt-4o-mini",
-    "novita": "novita/deepseek/deepseek-r1",
+    "novita": "novita/moonshotai/kimi-k3",
     "ollama": "ollama/llama3.1",
 }
 

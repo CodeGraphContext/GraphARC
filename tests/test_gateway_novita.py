@@ -56,20 +56,20 @@ def test_novita_process_env_beats_the_file(tmp_path, monkeypatch):
 
 def test_constructing_novita_without_a_key_explains_how_to_fix_it(no_credentials):
     with pytest.raises(NovitaError, match="NOVITA_API_KEY"):
-        NovitaChatModel("deepseek/deepseek-r1")
+        NovitaChatModel("moonshotai/kimi-k3")
 
 
 def test_novita_key_never_appears_in_a_description_or_a_redaction(monkeypatch):
     secret = "sk-novita-0123456789abcdef0123456789abcdef"
     monkeypatch.setenv("NOVITA_API_KEY", secret)
-    assert secret not in str(describe("novita/deepseek/deepseek-r1"))
+    assert secret not in str(describe("novita/moonshotai/kimi-k3"))
     assert secret not in config.redact(secret)
 
 
 def test_novita_always_points_at_its_own_endpoint(monkeypatch):
     """Unlike OpenAI, there is no override — the endpoint is fixed."""
     monkeypatch.setenv("NOVITA_API_KEY", "sk-test")
-    model = NovitaChatModel("deepseek/deepseek-r1")
+    model = NovitaChatModel("moonshotai/kimi-k3")
     assert str(model.openai_api_base) == NOVITA_BASE_URL
     assert NOVITA_BASE_URL == "https://api.novita.ai/openai"
 
@@ -80,8 +80,8 @@ def test_novita_always_points_at_its_own_endpoint(monkeypatch):
 @pytest.mark.parametrize(
     ("spec", "backend", "model"),
     [
-        ("novita/deepseek/deepseek-r1", "novita", "deepseek/deepseek-r1"),
-        ("novita/qwen/qwen3-235b-a22b", "novita", "qwen/qwen3-235b-a22b"),
+        ("novita/moonshotai/kimi-k3", "novita", "moonshotai/kimi-k3"),
+        ("novita/zai-org/glm-5.2", "novita", "zai-org/glm-5.2"),
     ],
 )
 def test_novita_specs_split_the_way_the_docs_say(spec, backend, model):
@@ -91,24 +91,24 @@ def test_novita_specs_split_the_way_the_docs_say(spec, backend, model):
 
 def test_the_registry_builds_the_novita_backend(monkeypatch):
     monkeypatch.setenv("NOVITA_API_KEY", "sk-test")
-    assert get_model("novita/deepseek/deepseek-r1")._llm_type == "grapharc-novita"
+    assert get_model("novita/moonshotai/kimi-k3")._llm_type == "grapharc-novita"
 
 
 def test_a_missing_novita_key_surfaces_through_the_registry(no_credentials):
     with pytest.raises(NovitaError):
-        get_model("novita/deepseek/deepseek-r1")
+        get_model("novita/moonshotai/kimi-k3")
 
 
 def test_an_unknown_backend_still_names_novita():
     with pytest.raises(UnknownBackendError, match="novita"):
-        get_model("nvita/deepseek/deepseek-r1")
+        get_model("nvita/moonshotai/kimi-k3")
 
 
 def test_vendor_reads_the_model_authors_novita_ids_carry():
     """Novita ids are themselves `author/slug`, the same shape OpenRouter uses,
     so `vendor()` needs no Novita-specific entry in `BACKEND_VENDOR`."""
-    assert vendor("novita/deepseek/deepseek-r1") == "deepseek"
-    assert vendor("novita/qwen/qwen3-235b-a22b") == "qwen"
+    assert vendor("novita/moonshotai/kimi-k3") == "moonshotai"
+    assert vendor("novita/zai-org/glm-5.2") == "zai-org"
 
 
 # ------------------------------------------------- capabilities and accounting
@@ -128,14 +128,14 @@ def test_novita_can_bind_tools_and_structure_output(monkeypatch):
         supported: bool
 
     monkeypatch.setenv("NOVITA_API_KEY", "sk-test")
-    model = NovitaChatModel("deepseek/deepseek-r1")
+    model = NovitaChatModel("moonshotai/kimi-k3")
     model.bind_tools([get_weather])
     model.with_structured_output(Verdict)
 
 
 def test_the_usage_envelope_matches_every_other_backend(monkeypatch):
     monkeypatch.setenv("NOVITA_API_KEY", "sk-test")
-    model = NovitaChatModel("deepseek/deepseek-r1")
+    model = NovitaChatModel("moonshotai/kimi-k3")
     model._record_usage(
         _result(
             prompt_tokens=1000,
@@ -155,7 +155,7 @@ def test_novita_reports_no_cost_and_says_so_rather_than_guessing(monkeypatch):
     invented number would be worse than an admitted gap, so the call is
     counted as unpriced."""
     monkeypatch.setenv("NOVITA_API_KEY", "sk-test")
-    model = NovitaChatModel("deepseek/deepseek-r1")
+    model = NovitaChatModel("moonshotai/kimi-k3")
     model._settle(_result(prompt_tokens=1000, completion_tokens=50))
     assert model.last_usage["cost_usd"] is None
     assert model.spend.unpriced_calls == 1
@@ -165,7 +165,7 @@ def test_novita_reports_no_cost_and_says_so_rather_than_guessing(monkeypatch):
 def test_a_rate_card_prices_novita_the_way_it_prices_openai(monkeypatch):
     monkeypatch.setenv("NOVITA_API_KEY", "sk-test")
     model = NovitaChatModel(
-        "deepseek/deepseek-r1",
+        "moonshotai/kimi-k3",
         price_per_million={"input": 0.15, "cached_input": 0.075, "output": 0.60},
     )
     model._settle(
@@ -184,7 +184,7 @@ def test_novita_sets_no_max_tokens_ceiling_of_its_own(monkeypatch):
     """OpenRouter defaults it to dodge a credit-reservation 402. Novita has no
     such reservation, so a default here would only truncate replies."""
     monkeypatch.setenv("NOVITA_API_KEY", "sk-test")
-    assert NovitaChatModel("deepseek/deepseek-r1").max_tokens is None
+    assert NovitaChatModel("moonshotai/kimi-k3").max_tokens is None
 
 
 # ------------------------------------------------------------------ live ----
@@ -201,7 +201,7 @@ def test_live_novita_tool_calling():
         """Get the current weather for a city."""
         return f"sunny in {city}"
 
-    model = get_model("novita/deepseek/deepseek-r1", temperature=0, max_tokens=512)
+    model = get_model("novita/moonshotai/kimi-k3", temperature=0, max_tokens=512)
     reply = model.bind_tools([get_weather]).invoke(
         [HumanMessage(content="What is the weather in Paris? Use the tool.")]
     )
