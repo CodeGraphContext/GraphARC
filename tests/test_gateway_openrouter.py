@@ -148,7 +148,9 @@ def test_spec_splitting_keeps_openrouter_author_slugs_intact(spec, backend, mode
 def test_a_typoed_backend_is_caught_early_not_folded_into_a_model_name():
     """`opnerouter/...` must fail here, not become a Claude-CLI call with a
     nonsense model that errors confusingly much later."""
-    with pytest.raises(UnknownBackendError, match="claude-cli, openrouter, openai, ollama, mock"):
+    with pytest.raises(
+        UnknownBackendError, match="claude-cli, openrouter, openai, novita, ollama, mock"
+    ):
         split_spec("opnerouter/anthropic/claude-haiku-4.5")
     with pytest.raises(UnknownBackendError):
         get_model("nope/some-model")

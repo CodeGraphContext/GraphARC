@@ -175,7 +175,7 @@ def test_a_missing_openai_key_surfaces_through_the_registry(no_credentials):
 
 
 def test_an_unknown_backend_still_names_every_real_one():
-    with pytest.raises(UnknownBackendError, match="openai, ollama"):
+    with pytest.raises(UnknownBackendError, match="openai, novita, ollama"):
         get_model("opnai/gpt-4o-mini")
 
 

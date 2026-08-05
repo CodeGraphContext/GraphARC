@@ -449,6 +449,7 @@ def _cmd_approve(args: argparse.Namespace) -> int:
 def _cmd_models(args: argparse.Namespace) -> int:
     from grapharc.gateway import (
         describe,
+        novita_api_key,
         ollama_base_url,
         openai_api_key,
         openrouter_api_key,
@@ -497,6 +498,7 @@ def _cmd_models(args: argparse.Namespace) -> int:
         "openrouter/anthropic/claude-haiku-4.5": "many providers, one key",
         "openrouter/openai/gpt-4o-mini:floor": "cheapest provider for that model",
         "openai/gpt-4o-mini": "the OpenAI API directly, your key",
+        "novita/deepseek/deepseek-r1": "Novita's own endpoint, your key",
         "ollama/llama3.1": "a local server, no key and no bill",
     }
     payload = {
@@ -505,6 +507,7 @@ def _cmd_models(args: argparse.Namespace) -> int:
         "backends": list(BACKENDS),
         "openrouter_key": redact(openrouter_api_key()),
         "openai_key": redact(openai_api_key()),
+        "novita_key": redact(novita_api_key()),
         # An address, not a secret: it is printed whole, and it is where a
         # request would go rather than proof that anything is listening.
         "ollama_base_url": ollama_base_url(),
@@ -516,6 +519,7 @@ def _cmd_models(args: argparse.Namespace) -> int:
         style.kv("backends", ", ".join(BACKENDS)),
         style.kv("openrouter key", redact(openrouter_api_key())),
         style.kv("openai key", redact(openai_api_key())),
+        style.kv("novita key", redact(novita_api_key())),
         style.kv("ollama url", ollama_base_url(), tint=style.accent),
         "",
         style.heading("examples:"),

@@ -20,7 +20,7 @@ still wins over any file, and a caller can still name a file anywhere with
 Secrets are returned, never logged. Anything that renders a config for humans
 goes through `redact`.
 
-Three key-holding backends, plus one that usually holds none:
+Four key-holding backends, plus one that usually holds none:
 
 - **OpenRouter** — `OPENROUTER_API_KEY`.
 - **OpenAI** — `OPENAI_API_KEY`, optionally with `OPENAI_BASE_URL` for an
@@ -28,6 +28,9 @@ Three key-holding backends, plus one that usually holds none:
   from the process environment on its own; going through here as well is what
   adds `.env` support, the alternate spellings, and a failure that names the
   variable instead of surfacing an SDK error.
+- **Novita** — `NOVITA_API_KEY`. The endpoint is fixed
+  (`grapharc.gateway.novita.NOVITA_BASE_URL`), so unlike OpenAI there is no
+  base-url override to resolve here.
 - **Ollama** — no credential by default: it is a server on your own machine.
   What it needs is an address, so `ollama_base_url()` always returns one
   (`OLLAMA_HOST` / `OLLAMA_BASE_URL`, else localhost). `OLLAMA_API_KEY` exists
@@ -54,6 +57,13 @@ OPENAI_KEYS = (
     "OPENAI_KEY",
     "openai-api-key",
     "openai_api_key",
+)
+
+NOVITA_KEYS = (
+    "NOVITA_API_KEY",
+    "NOVITA_KEY",
+    "novita-api-key",
+    "novita_api_key",
 )
 
 # `OPENAI_API_BASE` is the older spelling and is still what a lot of tooling
@@ -131,6 +141,10 @@ def openrouter_api_key(*, env_file: Path | None = None) -> str | None:
 
 def openai_api_key(*, env_file: Path | None = None) -> str | None:
     return get_secret(OPENAI_KEYS, env_file=env_file)
+
+
+def novita_api_key(*, env_file: Path | None = None) -> str | None:
+    return get_secret(NOVITA_KEYS, env_file=env_file)
 
 
 def openai_base_url(*, env_file: Path | None = None) -> str | None:

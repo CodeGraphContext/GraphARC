@@ -95,6 +95,26 @@ def _probe_openai() -> dict[str, Any]:
     }
 
 
+def _probe_novita() -> dict[str, Any]:
+    from grapharc.gateway import novita_api_key, redact
+
+    key = novita_api_key()
+    has_dependency = importlib.util.find_spec("langchain_openai") is not None
+    missing = []
+    if not key:
+        missing.append("no API key (set NOVITA_API_KEY, or add one to .env)")
+    if not has_dependency:
+        missing.append("langchain-openai not installed (uv sync --extra novita)")
+    return {
+        "backend": "novita",
+        "kind": KIND_PROVIDER,
+        "usable": bool(key) and has_dependency,
+        "credential": redact(key),
+        "detail": "; ".join(missing) or "api key configured and langchain-openai installed",
+        "checked": "credential presence only; no request was sent to api.novita.ai",
+    }
+
+
 def _probe_ollama() -> dict[str, Any]:
     from grapharc.gateway import ollama_base_url
 
@@ -152,6 +172,7 @@ def probe_backends(*, claude_path: str = "claude") -> list[dict[str, Any]]:
         "claude-cli": lambda: _probe_claude_cli(claude_path),
         "openrouter": _probe_openrouter,
         "openai": _probe_openai,
+        "novita": _probe_novita,
         "ollama": _probe_ollama,
         "mock": _probe_mock,
     }

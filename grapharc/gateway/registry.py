@@ -7,6 +7,7 @@ nodes take a spec string and the registry decides which adapter serves it:
     openrouter/anthropic/claude-sonnet-4.5  -> OpenRouter
     openrouter/openai/gpt-4o:floor          -> OpenRouter, cheapest provider
     openai/gpt-4o-mini                      -> OpenAI directly (OPENAI_API_KEY)
+    novita/deepseek/deepseek-r1             -> Novita (NOVITA_API_KEY)
     ollama/llama3.1                         -> a local Ollama server, no key
     mock/anything                           -> scripted test double
 
@@ -28,7 +29,7 @@ class UnknownBackendError(Exception):
     """The spec named a backend that is not registered."""
 
 
-BACKENDS = ("claude-cli", "openrouter", "openai", "ollama", "mock")
+BACKENDS = ("claude-cli", "openrouter", "openai", "novita", "ollama", "mock")
 
 # Authors that appear in OpenRouter model ids. A spec starting with one of
 # these is a model name, not a mistyped backend — `anthropic/claude-haiku-4.5`
@@ -71,6 +72,7 @@ BARE_BACKEND_MODEL = {
 _BARE_BACKEND_EXAMPLE = {
     "openrouter": "openrouter/anthropic/claude-sonnet-4.5",
     "openai": "openai/gpt-4o-mini",
+    "novita": "novita/deepseek/deepseek-r1",
     "ollama": "ollama/llama3.1",
 }
 
@@ -159,6 +161,17 @@ def get_model(spec: str, **kwargs: Any) -> BaseChatModel:
             ) from exc
 
         return OpenAIChatModel(model, **kwargs)
+
+    if backend == "novita":
+        try:
+            from grapharc.gateway.novita import NovitaChatModel
+        except ImportError as exc:  # pragma: no cover - depends on install extras
+            raise UnknownBackendError(
+                "The Novita backend needs langchain-openai. "
+                "Install it with: uv sync --extra novita"
+            ) from exc
+
+        return NovitaChatModel(model, **kwargs)
 
     if backend == "ollama":
         try:
