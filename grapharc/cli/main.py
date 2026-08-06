@@ -399,6 +399,8 @@ def _cmd_go(args: argparse.Namespace) -> int:
             run_id=args.run_id,
             max_tokens=args.max_tokens,
             config_path=args.config,
+            approve=args.approve,
+            approval_timeout=args.approval_timeout,
             as_json=args.json,
         )
     candidate = Path(target)
@@ -415,6 +417,8 @@ def _cmd_go(args: argparse.Namespace) -> int:
             run_id=args.run_id,
             max_tokens=args.max_tokens,
             config_path=args.config,
+            approve=args.approve,
+            approval_timeout=args.approval_timeout,
             as_json=args.json,
         )
     return plan(

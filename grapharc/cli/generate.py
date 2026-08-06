@@ -158,7 +158,7 @@ def resolve_or_generate_policy(
     workdir: Path | None = None,
     write: bool = True,
     catalog: dict[str, str] | None = None,
-    mutating: tuple[str, ...] = (),
+    mutating: tuple[str, ...] | None = (),
     fallback: Any = None,
     fallback_label: str = "",
     registry_target: str = "",

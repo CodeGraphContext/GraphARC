@@ -228,6 +228,52 @@ def find_unexecuted_plan(runs_root: Path | None = None) -> Path | None:
     return None
 
 
+def _approval_gate(
+    trace_path: Path,
+    *,
+    run_id: str | None,
+    approval_timeout: float | None,
+    as_json: bool,
+) -> Any:
+    """The file-handshake gate `--approve` configures, announce included.
+
+    Shared by `plan` and `go` so the two commands cannot drift on how a
+    parked run asks its question. The announce is printed and flushed before
+    the run parks — a terminal user (or a log tailer) must learn how to
+    answer without waiting for the exit — and silent in JSON mode, where
+    stdout carries exactly one document; a JSON caller detects the park by
+    watching for `approval-request.json` in the run directory.
+    """
+    import sys
+
+    from grapharc.planner.approval_file import DEFAULT_TIMEOUT_SECONDS, file_approval
+
+    watch_shown = False
+
+    def _announce(message: str) -> None:
+        if as_json:
+            return
+        # The live link first, once: the page is where the parked proposal
+        # is drawn, and it should be open while the human decides.
+        nonlocal watch_shown
+        if not watch_shown:
+            watch_shown = True
+            url = watch_url(trace_path, run_id=run_id)
+            if url:
+                print(
+                    style.kv("watch", url, width=style.LABEL_WIDTH, tint=style.accent),
+                    flush=True,
+                    file=sys.stdout,
+                )
+        print(message, flush=True, file=sys.stdout)
+
+    return file_approval(
+        trace_path.parent,
+        timeout_seconds=approval_timeout or DEFAULT_TIMEOUT_SECONDS,
+        announce=_announce,
+    )
+
+
 def execute_plan(
     target: str | None,
     *,
@@ -239,6 +285,8 @@ def execute_plan(
     run_id: str | None = None,
     max_tokens: int | None = None,
     config_path: Path | None = None,
+    approve: bool = False,
+    approval_timeout: float | None = None,
     as_json: bool = False,
 ) -> int:
     """`grapharc go [<run-dir>]` — execute a plan `grapharc plan` saved.
@@ -246,8 +294,11 @@ def execute_plan(
     The stored proposal is replayed through the full governed loop — a
     scripted planner whose one reply *is* the plan — so admission judges it
     again on the way in: what runs is what the gate admits now, not what a
-    file claims was admitted before. Executing is the human approval; there
-    is no second gate.
+    file claims was admitted before. Bare, executing is the human approval;
+    with `--approve` the run parks on the file handshake first and executes
+    only an answered yes — the gate an external driver relies on when the
+    plan can change things. These flags used to be accepted here and
+    silently dropped, which was worse than refusing them.
     """
     import json
 
@@ -344,7 +395,16 @@ def execute_plan(
         registry=bundle.registry,
         state_schema=schema,
         writes=bundle.writes,
-        approval=None,
+        approval=(
+            _approval_gate(
+                trace_path,
+                run_id=run_id,
+                approval_timeout=approval_timeout,
+                as_json=as_json,
+            )
+            if approve
+            else None
+        ),
     )
     initial = schema(goal=goal) if "goal" in schema.model_fields else schema()
     result = loop.run(goal, initial, run_id=run_id)
@@ -471,9 +531,11 @@ class RegistryBundle:
     #: that do not exist and permit ones that do.
     default_policy: Any = None
     #: Kinds the module considers dangerous, from its `MUTATING_KINDS`. Handed to
-    #: the policy generator so it knows what to deny; empty means it denies
-    #: nothing, which is why a module that can change things should say so.
-    mutating: tuple[str, ...] = ()
+    #: the policy generator so it knows what to deny. `None` means the module
+    #: said nothing at all — which readers must treat as "assume mutating",
+    #: never as "declared safe" — while an explicit empty tuple is a
+    #: declaration that nothing here can change anything.
+    mutating: tuple[str, ...] | None = None
     #: The module's own `build_loop`, when it ships one. This is how a registry
     #: owns its goal check and observer instead of inheriting the incident
     #: demo's (`len(notes) >= 3`) — a registry whose state never accumulates
@@ -526,12 +588,13 @@ def resolve_registry(
             registry(model, **kwargs) if _accepts_an_argument(registry) else registry(**kwargs)
         )
     default_policy = getattr(module, "default_edge_policy", None)
+    declared_mutating = getattr(module, "MUTATING_KINDS", None)
     return RegistryBundle(
         registry=registry,
         state_schema=getattr(module, "STATE_SCHEMA", None),
         writes=getattr(module, "WRITES", None),
         default_policy=default_policy() if callable(default_policy) else default_policy,
-        mutating=tuple(getattr(module, "MUTATING_KINDS", ())),
+        mutating=None if declared_mutating is None else tuple(declared_mutating),
         build_loop=getattr(module, "build_loop", None),
     )
 
@@ -810,40 +873,13 @@ def plan(
 
     schema = state_schema or IncidentState
     trace = TraceRecorder(trace_path)
-    approval = None
-    if approve:
-        import sys
-
-        from grapharc.planner.approval_file import DEFAULT_TIMEOUT_SECONDS, file_approval
-
-        watch_shown = False
-
-        def _announce(message: str) -> None:
-            # Printed *and flushed* before the run parks: a terminal user (or a
-            # log tailer) must learn how to answer without waiting for the exit.
-            # Silent in JSON mode: stdout there carries exactly one document, and
-            # a notice printed ahead of it makes the whole output unparseable.
-            if as_json:
-                return
-            # The live link first, once: the page is where the parked proposal
-            # is drawn, and it should be open while the human decides.
-            nonlocal watch_shown
-            if not watch_shown:
-                watch_shown = True
-                url = watch_url(trace_path, run_id=run_id)
-                if url:
-                    print(
-                        style.kv("watch", url, width=style.LABEL_WIDTH, tint=style.accent),
-                        flush=True,
-                        file=sys.stdout,
-                    )
-            print(message, flush=True, file=sys.stdout)
-
-        approval = file_approval(
-            trace_path.parent,
-            timeout_seconds=approval_timeout or DEFAULT_TIMEOUT_SECONDS,
-            announce=_announce,
+    approval = (
+        _approval_gate(
+            trace_path, run_id=run_id, approval_timeout=approval_timeout, as_json=as_json
         )
+        if approve
+        else None
+    )
     # The registry module's own loop builder wins; the incident demo's is the
     # fallback that keeps the default path byte-identical.
     build_loop = bundle.build_loop or incident_build_loop
@@ -889,6 +925,32 @@ def plan(
         }
         for record in result.rounds
     ]
+    # The admitted shape as data, in the payload itself: an external driver —
+    # the MCP server first among them — must not have to re-read plan.json to
+    # learn what was admitted, under what fingerprint, and whether executing
+    # it can change anything.
+    admitted_record = next(
+        (
+            record
+            for record in reversed(result.rounds)
+            if record.proposal is not None
+            and record.admission is not None
+            and record.admission.admitted
+        ),
+        None,
+    )
+    if bundle.mutating is None:
+        # The registry module never said which kinds mutate. A reader must
+        # treat that as "assume mutating", so the payload says so rather than
+        # implying a safety nobody declared.
+        is_mutating = True
+    else:
+        admitted_kinds = (
+            {node.kind for node in admitted_record.proposal.nodes}
+            if admitted_record
+            else set()
+        )
+        is_mutating = bool(admitted_kinds & set(bundle.mutating))
     payload = {
         "ok": result.succeeded or result.stop is LoopStop.PLANNED,
         "command": command,
@@ -899,13 +961,25 @@ def plan(
         "policy": policy_description,
         "policy_source": policy_source,
         "trace": str(trace_path),
+        "run_dir": str(trace_path.parent),
         **settings.provenance(policy_source=policy_source),
         "stop": result.stop.value,
         "detail": result.detail,
         "rounds": rounds,
         "rejections": [r.code for r in result.rejections()],
+        "mutating": is_mutating,
         "state": result.state.model_dump() if hasattr(result.state, "model_dump") else result.state,
     }
+    if admitted_record is not None:
+        payload["fingerprint"] = admitted_record.admission.fingerprint
+        payload["proposal"] = {
+            "nodes": [
+                node.model_dump(mode="json", exclude={"subgraph"})
+                for node in admitted_record.proposal.nodes
+            ],
+            "edges": [edge.model_dump(mode="json") for edge in admitted_record.proposal.edges],
+            "rationale": admitted_record.proposal.rationale,
+        }
 
     # The plain text of every line below is exactly what it was before colour
     # existed — the labels are still ten characters wide and the round rows still
