@@ -555,6 +555,23 @@ def _cmd_agent(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    from grapharc.cli import optional
+
+    try:
+        module = optional.load(
+            "grapharc.mcp",
+            needed_for="grapharc mcp",
+            hint="pip install 'grapharc[mcp]'",
+        )
+    except optional.Unavailable as exc:
+        return fail(str(exc), as_json=args.json, command="mcp")
+    root = Path(args.root).resolve() if args.root else None
+    if root is not None and not root.is_dir():
+        return fail(f"--root: not a directory: {root}", as_json=args.json, command="mcp")
+    return int(module.serve_stdio(root))
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     from grapharc.cli.serve import serve
 
@@ -1064,6 +1081,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent.add_argument("--system-prompt", default=None)
     agent.set_defaults(handler=_cmd_agent)
+
+    mcp = sub.add_parser(
+        "mcp",
+        parents=[common],
+        help=(
+            "run the MCP supervision server on stdio (plan / show_graph / "
+            "execute; approval stays out of band)"
+        ),
+    )
+    mcp.add_argument(
+        "--root",
+        default=None,
+        metavar="PATH",
+        help=(
+            "directory whose grapharc.toml and registry govern every plan, and "
+            "which confines every run_dir a client names (default: the working "
+            "directory)"
+        ),
+    )
+    mcp.set_defaults(handler=_cmd_mcp)
 
     serve = sub.add_parser("serve", parents=[common], help="run the HTTP API")
     serve.add_argument("--host", default="127.0.0.1")

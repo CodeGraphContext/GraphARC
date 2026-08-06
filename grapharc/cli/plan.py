@@ -178,12 +178,17 @@ class PlanSetupError(Exception):
     """Raised before anything runs, so a bad flag never half-executes a plan."""
 
 
-def _write_plan_file(run_dir: Path, *, goal, registry_target, model_spec, result) -> None:
+def _write_plan_file(
+    run_dir: Path, *, goal, registry_target, model_spec, result, mutating: bool = True
+) -> None:
     """Persist the admitted-but-unexecuted plan next to its trace.
 
     What `grapharc go` reads. The proposal is stored whole and re-judged by
     admission at execution time — a hand-edited plan.json is a new proposal,
-    not a pre-approved one.
+    not a pre-approved one. `mutating` records the verdict the payload
+    carries, so a later driver deciding whether execution needs an approval
+    park does not have to re-import the registry; a plan file without the
+    field reads as mutating, never as safe.
     """
     import json
     from datetime import UTC, datetime
@@ -203,6 +208,7 @@ def _write_plan_file(run_dir: Path, *, goal, registry_target, model_spec, result
                 "model": model_spec,
                 "fingerprint": admitted.proposal.fingerprint(),
                 "proposal": admitted.proposal.model_dump(mode="json"),
+                "mutating": mutating,
                 "planned_at": datetime.now(UTC).isoformat(),
             },
             indent=2,
@@ -906,29 +912,10 @@ def plan(
     loop.plan_only = command == "plan" and not go_after
     result = loop.run(goal, initial, run_id=run_id)
 
-    if result.stop is LoopStop.PLANNED:
-        _write_plan_file(
-            trace_path.parent,
-            goal=goal,
-            registry_target=registry_target,
-            model_spec=model_spec,
-            result=result,
-        )
-
-    rounds = [
-        {
-            "round": record.round,
-            "status": record.admission.status.value if record.admission else "not_proposed",
-            "nodes": record.proposal.node_count() if record.proposal else 0,
-            "executed": record.executed,
-            "rejections": [r.code for r in (record.rejections or ())],
-        }
-        for record in result.rounds
-    ]
-    # The admitted shape as data, in the payload itself: an external driver —
-    # the MCP server first among them — must not have to re-read plan.json to
-    # learn what was admitted, under what fingerprint, and whether executing
-    # it can change anything.
+    # The admitted shape as data, computed before the plan file so the file
+    # can carry the same `mutating` verdict the payload does. An external
+    # driver — the MCP server first among them — must not have to re-read
+    # plan.json for the shape, nor re-import the registry for the verdict.
     admitted_record = next(
         (
             record
@@ -951,6 +938,27 @@ def plan(
             else set()
         )
         is_mutating = bool(admitted_kinds & set(bundle.mutating))
+
+    if result.stop is LoopStop.PLANNED:
+        _write_plan_file(
+            trace_path.parent,
+            goal=goal,
+            registry_target=registry_target,
+            model_spec=model_spec,
+            result=result,
+            mutating=is_mutating,
+        )
+
+    rounds = [
+        {
+            "round": record.round,
+            "status": record.admission.status.value if record.admission else "not_proposed",
+            "nodes": record.proposal.node_count() if record.proposal else 0,
+            "executed": record.executed,
+            "rejections": [r.code for r in (record.rejections or ())],
+        }
+        for record in result.rounds
+    ]
     payload = {
         "ok": result.succeeded or result.stop is LoopStop.PLANNED,
         "command": command,
