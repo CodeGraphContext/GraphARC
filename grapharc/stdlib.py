@@ -241,7 +241,13 @@ def _agent_factory(model: Any, harness_for: Any, kind: str) -> Any:
     return factory
 
 
-def default_harness(tools: tuple[str, ...], workspace: Any = None) -> Any:
+def default_harness(
+    tools: tuple[str, ...],
+    workspace: Any = None,
+    *,
+    leases: Any = None,
+    lease_holder: str = "agent",
+) -> Any:
     """A `Harness` whose registry holds exactly `tools`, everything else denied.
 
     Two independent controls, deliberately: a tool that is not **registered**
@@ -252,6 +258,11 @@ def default_harness(tools: tuple[str, ...], workspace: Any = None) -> Any:
     `workspace` defaults to the working directory, and every core tool confines
     its own path arguments to it — the confinement is in the tool, not only in
     the executor, because `LocalExecutor` confines nothing.
+
+    `leases` is a `grapharc.tools.leases.PathLeases` shared by the run: with
+    one, the write tools contend for per-path leases under `lease_holder`'s
+    name, so two concurrent writers to one file become a named refusal instead
+    of an interleaving. Without one, nothing changes.
     """
     from pathlib import Path
 
@@ -265,7 +276,8 @@ def default_harness(tools: tuple[str, ...], workspace: Any = None) -> Any:
     from grapharc.tools import core_tools
 
     registry = ToolRegistry()
-    for spec in core_tools(Path(workspace or Path.cwd()), include=tools):
+    root = Path(workspace or Path.cwd())
+    for spec in core_tools(root, include=tools):
         registry.register(spec)
     # `literal`, not a bare pattern: these names come from a registry, not from
     # an operator writing globs, and an ALLOW rule is the one tier where a name
@@ -274,7 +286,10 @@ def default_harness(tools: tuple[str, ...], workspace: Any = None) -> Any:
         rules=[PermissionRule.literal(Decision.ALLOW, name) for name in tools],
         default=Decision.DENY,
     )
-    return Harness(registry=registry, policy=policy, executor=LocalExecutor())
+    pre_hooks = () if leases is None else (leases.hook(lease_holder, root),)
+    return Harness(
+        registry=registry, policy=policy, executor=LocalExecutor(), pre_hooks=pre_hooks
+    )
 
 
 def build_registry(

@@ -241,12 +241,17 @@ def _split_issues(text: str) -> list[str]:
     return dedupe([line for line in lines if line], key=str.casefold)
 
 
-def _agent_factory(model: Any, harness_for: Any, kind: str) -> Any:
+def _agent_factory(model: Any, harness_builder: Any, kind: str, leases: Any = None) -> Any:
     """Build one agent-backed role, its tool allowlist fixed in `TOOLS_FOR`.
 
     The listener's body parses the agent's report into one issue per entry —
     the planner fans out over *entries*, so a report that arrived as one blob
     would collapse the whole run to a single fixer.
+
+    Leases are per *instance*: the harness is built under the node's own name,
+    so a refusal names which fixer holds the file, and the body's `finally`
+    releases everything that instance held — a lease lives exactly as long as
+    its node's execution.
     """
     field = OUTPUT_FIELD[kind]
 
@@ -255,7 +260,7 @@ def _agent_factory(model: Any, harness_for: Any, kind: str) -> Any:
 
         node = AgentNode(
             model,
-            harness_for(TOOLS_FOR[kind]),
+            harness_builder(TOOLS_FOR[kind], spec.name),
             name=kind,
             system_prompt=_PROMPTS[kind],
         )
@@ -265,15 +270,23 @@ def _agent_factory(model: Any, harness_for: Any, kind: str) -> Any:
         assigned = (getattr(spec, "args", None) or {}).get("issue", "")
 
         def body(state: FixState, ctx: Any) -> dict:
-            prompt = _context(state)
-            if assigned:
-                prompt += f"\nYour assigned issue — fix this one and no other:\n{assigned}"
-            result = node.run(prompt, ctx)
-            reason = result.termination_reason.value
-            if kind == "scan_issues" and reason == "target_met":
-                return {field: _split_issues(result.output)}
-            line = result.output if reason == "target_met" else f"[{reason}] {result.output}"
-            return {field: [line]}
+            try:
+                prompt = _context(state)
+                if assigned:
+                    prompt += (
+                        f"\nYour assigned issue — fix this one and no other:\n{assigned}"
+                    )
+                result = node.run(prompt, ctx)
+                reason = result.termination_reason.value
+                if kind == "scan_issues" and reason == "target_met":
+                    return {field: _split_issues(result.output)}
+                line = (
+                    result.output if reason == "target_met" else f"[{reason}] {result.output}"
+                )
+                return {field: [line]}
+            finally:
+                if leases is not None:
+                    leases.release_all(spec.name)
 
         body.writes = {field}
         return body
@@ -296,7 +309,11 @@ def _is_bare_scripted(model: Any) -> bool:
 
 
 def build_registry(
-    model: Any = None, *, harness_for: Any = None, workspace: Any = None
+    model: Any = None,
+    *,
+    harness_for: Any = None,
+    workspace: Any = None,
+    leases: Any = None,
 ) -> Any:
     """The listener/fixer registry. Kinds exist only when a model does.
 
@@ -308,6 +325,9 @@ def build_registry(
 
     `workspace` confines the agent kinds' tools to one directory; ignored when
     the caller supplies its own `harness_for`, which already decided that.
+    `leases` is a `PathLeases` shared by the run: with one, each instance's
+    write tools contend under its own node name, so two fixers touching one
+    file become a named refusal the loser reads instead of an interleaving.
     """
     from grapharc.planner import CostEstimate, NodeRegistry, NodeSpec
     from grapharc.stdlib import default_harness
@@ -315,7 +335,14 @@ def build_registry(
     if model is None:
         return NodeRegistry([])
     scripted = _is_bare_scripted(model)
-    harness_for = harness_for or (lambda tools: default_harness(tools, workspace))
+    if harness_for is not None:
+        # The caller's harness decided its own confinement; a holder name has
+        # nowhere to go in the public one-argument contract.
+        def harness_builder(tools: tuple[str, ...], holder: str) -> Any:
+            return harness_for(tools)
+    else:
+        def harness_builder(tools: tuple[str, ...], holder: str) -> Any:
+            return default_harness(tools, workspace, leases=leases, lease_holder=holder)
     described = {
         "scan_issues": "find issues; one per entry, ready to hand to a fixer",
         "fix_one": (
@@ -341,7 +368,7 @@ def build_registry(
                 factory=(
                     _scripted_factory(kind)
                     if scripted
-                    else _agent_factory(model, harness_for, kind)
+                    else _agent_factory(model, harness_builder, kind, leases)
                 ),
                 worst_case=CostEstimate(iterations=1, tokens=tokens),
                 # Every fixer proposal must say which issue it takes, and
@@ -492,7 +519,12 @@ def build_loop(
         PlannerNode,
     )
 
-    registry = registry or build_registry(model)
+    if registry is None:
+        # One lease table per loop: fixers landing in one superstep contend
+        # for paths under their own names, and the losers read the refusal.
+        from grapharc.tools.leases import PathLeases
+
+        registry = build_registry(model, leases=PathLeases())
     registry.freeze()
     # One policy object, disclosed to the planner and applied by the checker —
     # resolving the default twice would describe one object and enforce another.

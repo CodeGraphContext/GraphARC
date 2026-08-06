@@ -19,13 +19,16 @@ larger decision than the rest.
 
 from grapharc.tools.core import CORE_TOOL_NAMES, core_tools, register_core_tools
 from grapharc.tools.files import AmbiguousEdit
+from grapharc.tools.leases import LEASED_TOOLS, PathLeases
 from grapharc.tools.search import SKIPPED_DIRECTORIES
 from grapharc.tools.workspace import ToolError, ToolLimits, Workspace, WorkspaceEscape
 
 __all__ = [
     "CORE_TOOL_NAMES",
+    "LEASED_TOOLS",
     "SKIPPED_DIRECTORIES",
     "AmbiguousEdit",
+    "PathLeases",
     "ToolError",
     "ToolLimits",
     "Workspace",
