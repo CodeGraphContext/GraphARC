@@ -427,8 +427,9 @@ def trust_boundary() -> None:
         with cluster("③ THE CHECKER DECIDES  ·  deterministic, model-free", GATE):
             gate = Decision(
                 "AdmissionChecker.check()\n"
-                "all five, every round:\n"
-                "kind registered? edge permitted?\n"
+                "all six, every round:\n"
+                "kind registered? args per schema?\n"
+                "edge permitted?\n"
                 "worst case within REMAINING budget?\n"
                 "depth? acyclic?"
             )

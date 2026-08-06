@@ -13,7 +13,7 @@ import json
 
 import pytest
 from langchain_core.runnables import RunnableLambda
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from grapharc.harness.permissions import Decision
 from grapharc.planner import (
@@ -828,15 +828,17 @@ def test_a_diamond_is_not_a_cycle():
 def all_checks_failing() -> Subgraph:
     """One proposal that trips every gate at once.
 
-    Registry (an unregistered kind), policy (a deny-all policy), budget (a
-    costly kind against a tiny remainder), depth (a nested subgraph),
-    acyclicity (a -> b -> a), and reachability (nothing leaves START).
+    Registry (an unregistered kind), args (a schema-declaring kind proposed
+    argless), policy (a deny-all policy), budget (a costly kind against a tiny
+    remainder), depth (a nested subgraph), acyclicity (a -> b -> a), and
+    reachability (nothing leaves START).
     """
     inner = Subgraph(nodes=(ProposedNode(name="inner", kind="step"),))
     return Subgraph(
         nodes=(
             ProposedNode(name="a", kind="step", subgraph=inner),
             ProposedNode(name="b", kind="unregistered"),
+            ProposedNode(name="c", kind="assigned"),
         ),
         edges=(
             ProposedEdge(source="a", target="b"),
@@ -845,8 +847,21 @@ def all_checks_failing() -> Subgraph:
     )
 
 
-def test_every_failed_check_is_reported_not_just_the_first():
+def _all_checks_registry() -> NodeRegistry:
     reg = registry("step", step=CostEstimate(tokens=10_000))
+    reg.register(
+        NodeSpec(
+            name="assigned",
+            description="a kind whose proposals must carry args",
+            factory=_explode,
+            args_schema=_Assignment,
+        )
+    )
+    return reg
+
+
+def test_every_failed_check_is_reported_not_just_the_first():
+    reg = _all_checks_registry()
     result = checker(
         reg, edge_policy=EdgePolicy(), limits=AdmissionLimits(require_entry=True)
     ).check(all_checks_failing(), remaining=RemainingBudget(tokens=5))
@@ -856,7 +871,7 @@ def test_every_failed_check_is_reported_not_just_the_first():
 
 
 def test_every_rejection_names_a_check_a_code_and_a_subject():
-    reg = registry("step", step=CostEstimate(tokens=10_000))
+    reg = _all_checks_registry()
     result = checker(
         reg, edge_policy=EdgePolicy(), limits=AdmissionLimits(require_entry=True)
     ).check(all_checks_failing(), remaining=RemainingBudget(tokens=5))
@@ -869,7 +884,7 @@ def test_every_rejection_names_a_check_a_code_and_a_subject():
 
 
 def test_feedback_is_a_planner_readable_list_of_every_failure():
-    reg = registry("step", step=CostEstimate(tokens=10_000))
+    reg = _all_checks_registry()
     result = checker(
         reg, edge_policy=EdgePolicy(), limits=AdmissionLimits(require_entry=True)
     ).check(all_checks_failing(), remaining=RemainingBudget(tokens=5))
@@ -1525,3 +1540,83 @@ def test_entry_is_not_required_by_default_so_a_live_graph_can_be_extended():
     result = checker(registry("step"), known_nodes={"live": "step"}).check(proposal)
     assert result.admitted
     assert Check.REACHABILITY not in result.checks_run
+
+# -- args, where a kind declared a schema for them (ROADMAP §5.6) ---------------
+
+
+class _Assignment(BaseModel):
+    """An operator's declaration: a fixer proposal carries its issue, nothing else."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    issue: str = Field(min_length=1)
+
+
+def _schema_registry() -> NodeRegistry:
+    return NodeRegistry(
+        [
+            NodeSpec(
+                name="fix",
+                description="fix one issue",
+                factory=_explode,
+                args_schema=_Assignment,
+            ),
+            NodeSpec(name="scan", description="scan", factory=_explode),
+        ]
+    )
+
+
+def _one_node(name: str, kind: str, args: dict) -> Subgraph:
+    return Subgraph(
+        nodes=(ProposedNode(name=name, kind=kind, args=args),),
+        edges=(
+            ProposedEdge(source=START, target=name),
+            ProposedEdge(source=name, target=END),
+        ),
+        rationale="one node",
+    )
+
+
+def test_args_failing_the_kinds_schema_are_rejected_with_the_field_named():
+    """The rejection names the field and the remedy names the schema — feedback
+    a planner can replan against, not a build failure later."""
+    result = checker(_schema_registry()).check(_one_node("fix_1", "fix", {}))
+
+    assert not result.admitted
+    rejection = next(r for r in result.rejections if r.check is Check.ARGS)
+    assert rejection.code == "args_schema_violation"
+    assert rejection.subject == "fix_1"
+    assert "issue" in rejection.detail
+    assert "_Assignment" in rejection.remedy
+
+
+def test_an_argument_nobody_declared_is_refused():
+    """`extra="forbid"` on the operator's schema means an argument nobody
+    declared is an argument nobody checked — refused, not dropped."""
+    result = checker(_schema_registry()).check(
+        _one_node("fix_1", "fix", {"issue": "a real issue", "sneaky": 1})
+    )
+
+    assert not result.admitted
+    assert any(
+        r.code == "args_schema_violation" and "sneaky" in r.detail
+        for r in result.rejections
+    )
+
+
+def test_args_on_a_kind_without_a_schema_stay_uninspected():
+    """The old contract holds where nobody declared otherwise: args pass the
+    gate uninspected (and the materialiser drops them by default)."""
+    result = checker(_schema_registry()).check(
+        _one_node("scan_1", "scan", {"anything": "at all"})
+    )
+
+    assert result.admitted
+    assert Check.ARGS in result.checks_run
+
+
+def test_valid_args_admit_and_nothing_ran():
+    result = checker(_schema_registry()).check(
+        _one_node("fix_1", "fix", {"issue": "the changelog is wrong"})
+    )
+    assert result.admitted  # _explode factories prove nothing was called

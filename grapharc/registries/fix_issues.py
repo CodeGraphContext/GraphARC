@@ -43,7 +43,7 @@ from __future__ import annotations
 import operator
 from typing import Annotated, Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from grapharc.harness.permissions import Decision
 
@@ -94,6 +94,22 @@ WRITES: dict[str, set[str]] = {
 STATE_SCHEMA = FixState
 AGENT_KINDS = ("scan_issues", "fix_one", "verify_fixes", "report")
 
+
+class FixAssignment(BaseModel):
+    """The one argument a `fix_one` proposal must carry: its issue, verbatim.
+
+    Declared as the kind's `args_schema`, so admission validates every fixer's
+    assignment and the fingerprint an approval binds to includes who was
+    assigned what. `extra="forbid"` because an argument nobody declared is an
+    argument nobody checked. The text feeds the fixer's *prompt*, never a tool
+    call — each tool call is still gated per call — and the length bound is
+    also a performance bound: state is deep-copied per node entry.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    issue: str = Field(min_length=1, max_length=2000)
+
 #: The one kind that can change files, and therefore the one the default
 #: policy denies. Read by the policy generator through `RegistryBundle`.
 MUTATING_KINDS = ("fix_one",)
@@ -114,10 +130,10 @@ _PROMPTS = {
         "have no tools that can."
     ),
     "fix_one": (
-        "Pick exactly ONE outstanding issue from the list you were given and "
-        "fix it with the file tools, making the smallest change that resolves "
-        "it. State which issue you took and which paths you changed. Leave "
-        "every other issue alone: each has its own fixer."
+        "Fix exactly the ONE issue you were assigned, with the file tools, "
+        "making the smallest change that resolves it. Quote the assigned "
+        "issue and state which paths you changed. Leave every other issue "
+        "alone: each has its own fixer."
     ),
     "verify_fixes": (
         "Check each reported fix against its issue using the read-only tools. "
@@ -183,14 +199,19 @@ def _scripted_factory(kind: str) -> Any:
     """
 
     def factory(spec: Any) -> Any:
+        assigned = (getattr(spec, "args", None) or {}).get("issue", "")
+
         def body(state: FixState) -> dict:
             if kind == "scan_issues":
                 from grapharc.runtime.fanout import dedupe
 
                 return {"issues": dedupe(list(_SCRIPTED_ISSUES), key=str)}
             if kind == "fix_one":
-                remaining = unfixed(state)
-                taken = remaining[0] if remaining else "nothing left to fix"
+                if assigned:
+                    taken = assigned
+                else:
+                    remaining = unfixed(state)
+                    taken = remaining[0] if remaining else "nothing left to fix"
                 return {"fixes": [f"fixed: {taken}"]}
             if kind == "verify_fixes":
                 return {"failures": [f"unfixed: {line}" for line in unfixed(state)]}
@@ -238,9 +259,16 @@ def _agent_factory(model: Any, harness_for: Any, kind: str) -> Any:
             name=kind,
             system_prompt=_PROMPTS[kind],
         )
+        # The admission-validated assignment, when this kind carries one. It
+        # reaches the prompt and nothing else; every tool call the fixer makes
+        # with it is still gated per call.
+        assigned = (getattr(spec, "args", None) or {}).get("issue", "")
 
         def body(state: FixState, ctx: Any) -> dict:
-            result = node.run(_context(state), ctx)
+            prompt = _context(state)
+            if assigned:
+                prompt += f"\nYour assigned issue — fix this one and no other:\n{assigned}"
+            result = node.run(prompt, ctx)
             reason = result.termination_reason.value
             if kind == "scan_issues" and reason == "target_met":
                 return {field: _split_issues(result.output)}
@@ -316,6 +344,10 @@ def build_registry(
                     else _agent_factory(model, harness_for, kind)
                 ),
                 worst_case=CostEstimate(iterations=1, tokens=tokens),
+                # Every fixer proposal must say which issue it takes, and
+                # admission checks it — the assignment is part of what the
+                # fingerprint binds, so an approval covers who fixes what.
+                args_schema=FixAssignment if kind == "fix_one" else None,
             )
         )
     return NodeRegistry(specs)
@@ -370,11 +402,13 @@ _PLANNER_INSTRUCTIONS = (
     "`notes`, and only `report` writes there. Start with `scan_issues`. Then "
     "propose one `fix_one` node PER outstanding issue — named fix_1, fix_2, … "
     "with kind fix_one — all taking an edge from the same predecessor so they "
-    "execute in parallel. A `scan_issues` may run in the same round as fixers "
-    "for issues already found. Finish with `verify_fixes`, then `report`. "
-    "Edges into `fix_one` may be denied by policy: if a round is rejected for "
-    "that, replan without fixers and still finish with `verify_fixes` and a "
-    "`report` that says what was refused."
+    'execute in parallel. Every fix_one MUST carry "args": {"issue": "<the '
+    'issue text, verbatim from the outstanding list>"}; a fixer without its '
+    "assignment is rejected at admission. A `scan_issues` may run in the same "
+    "round as fixers for issues already found. Finish with `verify_fixes`, "
+    "then `report`. Edges into `fix_one` may be denied by policy: if a round "
+    "is rejected for that, replan without fixers and still finish with "
+    "`verify_fixes` and a `report` that says what was refused."
 )
 
 
@@ -505,6 +539,7 @@ __all__ = [
     "TOOLS_FOR",
     "WRITES",
     "WRITE_TOOLS",
+    "FixAssignment",
     "FixState",
     "build_loop",
     "build_registry",

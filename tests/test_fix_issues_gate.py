@@ -70,7 +70,10 @@ def test_a_round_of_fixers_beyond_the_budget_is_rejected_with_the_recorded_reaso
             "scan first",
         ),
         _plan(
-            [{"name": f"fix_{i}", "kind": "fix_one"} for i in (1, 2, 3)],
+            [
+                {"name": f"fix_{i}", "kind": "fix_one", "args": {"issue": f"issue {i}"}}
+                for i in (1, 2, 3)
+            ],
             [(START, f"fix_{i}") for i in (1, 2, 3)]
             + [(f"fix_{i}", END) for i in (1, 2, 3)],
             "one fixer per issue",
@@ -124,9 +127,20 @@ def test_parallel_fixers_merge_instead_of_colliding():
             "scan",
         ),
         _plan(
-            [{"name": "fix_1", "kind": "fix_one"}, {"name": "fix_2", "kind": "fix_one"}],
+            [
+                {
+                    "name": "fix_1",
+                    "kind": "fix_one",
+                    "args": {"issue": fix_issues._SCRIPTED_ISSUES[0]},
+                },
+                {
+                    "name": "fix_2",
+                    "kind": "fix_one",
+                    "args": {"issue": fix_issues._SCRIPTED_ISSUES[1]},
+                },
+            ],
             [(START, "fix_1"), (START, "fix_2"), ("fix_1", END), ("fix_2", END)],
-            "two fixers in parallel",
+            "two fixers in parallel, each with its assignment",
         ),
         _plan(
             [{"name": "verify_fixes"}, {"name": "report"}],
@@ -141,7 +155,73 @@ def test_parallel_fixers_merge_instead_of_colliding():
 
     assert result.stop is LoopStop.GOAL_MET
     assert len(result.state.fixes) == 2
+    # Each fixer took exactly its admission-checked assignment, so the third
+    # issue is the one still outstanding.
+    assert {f"fixed: {fix_issues._SCRIPTED_ISSUES[0]}", f"fixed: {fix_issues._SCRIPTED_ISSUES[1]}"} == set(
+        result.state.fixes
+    )
+    assert unfixed(result.state) == [fix_issues._SCRIPTED_ISSUES[2]]
     assert len(result.state.notes) == 1
+
+
+def test_a_fixer_without_its_assignment_is_rejected_at_the_gate():
+    """`fix_one` declares `FixAssignment`, so a fixer proposal with no args is
+    refused at admission with the field named — not built and hoped about."""
+    replies = [
+        _plan(
+            [{"name": "fix_1", "kind": "fix_one"}],
+            [(START, "fix_1"), ("fix_1", END)],
+            "an unassigned fixer",
+        ),
+        NO_FURTHER_WORK,
+        NO_FURTHER_WORK,
+    ]
+    loop = fix_issues.build_loop(
+        ScriptedChatModel(responses=replies), edge_policy=ALLOW_EVERYTHING
+    )
+    result = loop.run("fix the issues", FixState(goal="fix the issues"))
+
+    assert "args_schema_violation" in [r.code for r in result.rejections()]
+    assert not result.rounds[0].executed
+
+
+def test_an_assignment_edited_after_admission_refuses_to_build():
+    """`ProposedNode` is frozen but its args dict is mutable in place — the
+    documented gap. The fingerprint is what closes it: an edited assignment is
+    a different proposal, and the materialiser refuses it."""
+    import pytest
+
+    from grapharc.planner import (
+        AdmissionChecker,
+        Materializer,
+        NotAdmitted,
+        ProposedEdge,
+        ProposedNode,
+        Subgraph,
+    )
+
+    registry = fix_issues.build_registry(ScriptedChatModel(responses=[])).freeze()
+    proposal = Subgraph(
+        nodes=(
+            ProposedNode(name="fix_1", kind="fix_one", args={"issue": "issue: a"}),
+        ),
+        edges=(
+            ProposedEdge(source=START, target="fix_1"),
+            ProposedEdge(source="fix_1", target=END),
+        ),
+        rationale="one assigned fixer",
+    )
+    checker = AdmissionChecker(registry=registry, edge_policy=ALLOW_EVERYTHING)
+    result = checker.check(proposal)
+    assert result.admitted
+
+    proposal.nodes[0].args["issue"] = "issue: something else entirely"
+
+    materializer = Materializer(
+        registry=registry, state_schema=FixState, writes=fix_issues.WRITES
+    )
+    with pytest.raises(NotAdmitted):
+        materializer.materialize(result, proposal)
 
 
 def test_the_module_ships_the_full_registry_contract():

@@ -174,7 +174,7 @@ Different jobs, not competitors — GraphARC's default backend drives the Claude
 
 The edges are documented, not denied — the full list with mechanisms is in the [deep dive](docs/deep-dive.md#limits).
 
-- Admission authorises a node's *kind*, never its arguments.
+- Admission authorises a node's *kind*; its arguments only where the kind declares an `args_schema`, and a schema bounds their shape, not what a factory lets them reach.
 - The in-process sandbox is defense in depth; `ContainerExecutor` is the real boundary. `run_command` children are unconfined.
 - The HTTP API does not yet use the durable session layer.
 - On the Claude CLI backend an agent node is *delegated*, not governed.

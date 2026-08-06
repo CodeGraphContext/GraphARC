@@ -230,7 +230,7 @@ A stable system is not one that claims to have no edges — it is one whose edge
 
 **Real limits of things that do work**
 
-- **Admission authorises a kind, not its arguments.** A proposal carrying `args={"path": "/etc/passwd"}` is admitted on the strength of its kind alone.
+- **Admission authorises a kind; its arguments only where the kind declared a schema.** `NodeSpec.args_schema` puts a proposal's `args` under `Check.ARGS`, and the validated dump is what reaches the factory. A kind without one keeps the old contract: `args={"path": "/etc/passwd"}` is admitted on the strength of the kind alone, and dropped unless `forward_args=True`. Either way the schema bounds the argument's shape, not what a factory lets it reach — the shipped registries feed an admitted argument to a prompt, never to a tool call.
 - **The audit-hook sandbox is in-process confinement, not a kernel boundary.** `os.stat` outside the workspace is not blocked, because CPython raises no event for it. `ContainerExecutor` is the boundary where one is needed.
 - **`run_command` is not confined.** Argv-only and never a shell, but the child is an ordinary process with your privileges.
 - **`interrupt()` suspends but cannot be resumed.** LangGraph's native interrupt stops the graph and shows on `get_state`, and there is no supported resume path — resuming means passing a `Command` as *input*, which is closed by design. Use the session layer's approval gate for human-in-the-loop.

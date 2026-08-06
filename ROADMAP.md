@@ -39,11 +39,11 @@ In order.
    `session/` is durable and resumes across processes; `server/` uses its own
    `InProcessRuntime` that does neither, and records approvals without
    delivering them. Two session layers, one seam.
-2. **Let admission constrain arguments** (§5.6) — **!**. The gap most likely to
-   be over-read: a rule reaches a node's *kind* and never its `args`, so
-   `args={"path": "/etc/passwd"}` is admitted on the strength of the kind.
-   `Materializer` drops args by default, which makes the default safe and the
-   opt-in sharp.
+2. ~~Let admission constrain arguments~~ (§5.6) — closed minimally: a kind may
+   declare `NodeSpec.args_schema`, and its proposals' args are validated at
+   admission and forwarded to the factory as the validated dump. Kinds without
+   a schema keep the old contract (args uninspected, dropped by default), so
+   the remaining sharp edge is `forward_args=True` on schemaless kinds.
 3. **Route the tool plane through the document** (§7.5 remainder) — the edge
    side now compiles to the admission gate, but nothing calls
    `permission_policy()`, so `grapharc agent` is still governed by Python
@@ -285,12 +285,18 @@ The component with no prior art to copy. It exists, and the cycle runs.
       `UnadmittedTransition`.
 - [ ] **5.5 — Decomposition strategies** (map-reduce, specialist fan-out) as
       reusable planner presets.
-- [ ] **! 5.6 — Admission cannot constrain arguments.** Stated plainly because
-      it is the gap most likely to be over-read: no rule reaches
-      `ProposedNode.args`, so a proposal carrying `args={"path": "/etc/passwd"}`
-      is admitted on the strength of its kind. `Materializer` drops args by
-      default; `forward_args=True` hands the raw dict to a factory with nothing
-      having checked it. Admission authorises the verb, not the object.
+- [~] **5.6 — Admission constrains arguments where a kind declares a schema.**
+      `NodeSpec.args_schema` is an operator's Pydantic model; a proposal's
+      `args` for that kind must validate at admission (`Check.ARGS`,
+      `args_schema_violation` with the field named) and the *validated* dump
+      is what `Materializer` forwards — re-validated on build, so an edited
+      proposal or a swapped registry refuses to build. The fingerprint already
+      hashed args, so an approval binds the assignments. Still open, stated
+      plainly: a kind **without** a schema keeps the old contract — no rule
+      reaches its `ProposedNode.args`, and `forward_args=True` hands the raw
+      dict to a factory with nothing having checked it. And a schema
+      constrains an argument's *shape*, not what a factory lets it reach; the
+      shipped registries feed it to a prompt, never a tool call.
 
 ## 6. Session runtime — `[~] ~85%`
 
