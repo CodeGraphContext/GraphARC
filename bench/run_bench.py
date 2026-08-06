@@ -145,6 +145,13 @@ def grade(task: dict, workdir: Path, before: dict[str, str], answer: str) -> dic
         rel, needle = check["file_contains"]
         target = workdir / rel
         ok = target.is_file() and needle in target.read_text(errors="replace")
+    elif "files_contain" in check:
+        # Every pair must hold: a fix-all task half done is not a success.
+        ok = all(
+            (workdir / rel).is_file()
+            and needle in (workdir / rel).read_text(errors="replace")
+            for rel, needle in check["files_contain"]
+        )
     elif "files_absent" in check:
         ok = all(not (workdir / rel).exists() for rel in check["files_absent"])
 

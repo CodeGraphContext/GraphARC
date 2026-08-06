@@ -230,6 +230,7 @@ A stable system is not one that claims to have no edges — it is one whose edge
 
 **Real limits of things that do work**
 
+- **Concurrent fixers conflict as data, not as prevention.** Write leases cover `write_file`/`edit_file` only: the second writer to a path is refused with the holder named and the refusal lands in the loser's report, but `run_command` children and delegated tools mutate un-leased, a lease is advisory within one process rather than a cross-process file lock, and nothing merges divergent edits.
 - **Admission authorises a kind; its arguments only where the kind declared a schema.** `NodeSpec.args_schema` puts a proposal's `args` under `Check.ARGS`, and the validated dump is what reaches the factory. A kind without one keeps the old contract: `args={"path": "/etc/passwd"}` is admitted on the strength of the kind alone, and dropped unless `forward_args=True`. Either way the schema bounds the argument's shape, not what a factory lets it reach — the shipped registries feed an admitted argument to a prompt, never to a tool call.
 - **The audit-hook sandbox is in-process confinement, not a kernel boundary.** `os.stat` outside the workspace is not blocked, because CPython raises no event for it. `ContainerExecutor` is the boundary where one is needed.
 - **`run_command` is not confined.** Argv-only and never a shell, but the child is an ordinary process with your privileges.
