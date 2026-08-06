@@ -18,13 +18,19 @@ free-form field, is JSON a model wrote. A callable put there in-process cannot
 even be hashed, so such a proposal never yields the `AdmissionResult` this
 module demands.
 
-**What a planner's `args` can reach.** Nothing, by default. Admission states
-plainly that it does not inspect `ProposedNode.args`, so forwarding them is
-opt-in here: with `forward_args=False` (the default) `NodeBuild.args` is empty
-whatever the proposal said. `forward_args=True` hands the raw dict to your
-factory unchecked — no gate has looked at it, and a factory that pulls a
-callable out of it and runs it has re-opened the boundary this module exists to
-hold.
+**What a planner's `args` can reach.** Nothing, by default — with one declared
+exception. A kind whose `NodeSpec.args_schema` names a shape has its args
+validated at admission and re-validated here, and `NodeBuild.args` carries the
+*validated* dump: the operator declared the fields, the gate checked them, and
+a mismatch at this point means the registry changed underneath the decision or
+the proposal was edited after it, both of which refuse to build. For every
+other kind, forwarding stays opt-in: with `forward_args=False` (the default)
+`NodeBuild.args` is empty whatever the proposal said, and `forward_args=True`
+hands the raw dict to your factory unchecked — no gate has looked at it, and a
+factory that pulls a callable out of it and runs it has re-opened the boundary
+this module exists to hold. What an admitted argument may *reach* is the
+factory's decision either way; the shipped registries feed it to a prompt,
+never to a tool call.
 
 **Built through the kernel, not around it.** The graph is assembled with
 `GraphARC.add_node` / `add_edge` / `compile`, so every promise the kernel makes
@@ -82,7 +88,7 @@ from dataclasses import replace
 from typing import Any
 
 from langgraph.types import Command, Send
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from grapharc.observe.trace import TraceRecorder
 from grapharc.planner.admission import AdmissionResult, NodeRegistry
@@ -121,9 +127,10 @@ class UnadmittedTransition(Exception):
 class NodeBuild(BaseModel):
     """What a `NodeSpec.factory` is told about the one instance it is building.
 
-    `args` is the planner's own dictionary and is empty unless the materialiser
-    was built with `forward_args=True`. Nothing has validated it: admission
-    authorises a *kind*, never that kind's arguments.
+    `args` is empty unless the kind declared an `args_schema` — then it is the
+    schema-validated dump, checked at admission and again on build — or the
+    materialiser was built with `forward_args=True`, in which case it is the
+    planner's raw dictionary and nothing has validated it.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -445,10 +452,29 @@ class Materializer:
                 "no body for it; the registry is the only place a node body may come "
                 "from, and a proposal cannot supply one"
             )
+        if spec.args_schema is not None:
+            # Admission already validated these against the same schema; this
+            # re-validation is the checked equality, not a convention — a
+            # registry swapped underneath the decision, or a proposal edited
+            # after it, fails here rather than reaching a factory.
+            try:
+                validated = spec.args_schema.model_validate(node.args)
+            except ValidationError as exc:
+                raise MaterializationError(
+                    f"args for node {node.name!r} do not satisfy kind {node.kind!r}'s "
+                    f"{spec.args_schema.__name__}; admission passed, so the registry "
+                    f"changed underneath the decision or the proposal was edited after "
+                    f"it: {exc}"
+                ) from exc
+            args = validated.model_dump()
+        elif self.forward_args:
+            args = dict(node.args)
+        else:
+            args = {}
         build = NodeBuild(
             name=node.name,
             kind=node.kind,
-            args=dict(node.args) if self.forward_args else {},
+            args=args,
             note=node.note,
             proposal_id=proposal.proposal_id,
             fingerprint=proposal.fingerprint(),

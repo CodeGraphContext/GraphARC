@@ -114,10 +114,12 @@ class ProposedNode(BaseModel):
     outside the charset. That is not governance — it is keeping a model-chosen
     string from reaching machinery that would crash on it.
 
-    `args` are **not** inspected by admission — see
-    `grapharc.planner.admission`. They reach a factory only when the operator
-    builds the materialiser with `forward_args=True`, which is opt-in precisely
-    because nothing has gated them; the default drops them.
+    `args` are inspected by admission only for kinds whose `NodeSpec` declares
+    an `args_schema` — validated there and forwarded as the validated dump.
+    For every other kind they reach a factory only when the operator builds
+    the materialiser with `forward_args=True`, which is opt-in precisely
+    because nothing has gated them; the default drops them. See
+    `grapharc.planner.admission`.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -271,12 +273,32 @@ ProposedNode.model_rebuild()
 
 
 class SlimNode(BaseModel):
-    """One node as a small model states it: a name, optionally a kind."""
+    """One node as a small model states it: a name, optionally a kind.
+
+    `args` and `note` ride along because the tolerant path must not drop what
+    admission can now judge: a schema-declaring kind proposed by a small model
+    would otherwise always arrive argless — and always be refused — purely for
+    having come through the slim reading.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
     name: str
     kind: str = ""
+    args: dict[str, Any] = Field(default_factory=dict)
+    note: str = ""
+
+    @field_validator("args", mode="before")
+    @classmethod
+    def _tolerate_non_dict_args(cls, value: Any) -> Any:
+        """A null or prose `args` reads as none — tolerance in reading; the
+        admission check is what judges whether none was enough."""
+        return value if isinstance(value, dict) else {}
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def _tolerate_non_string_note(cls, value: Any) -> Any:
+        return value if isinstance(value, str) else ""
 
 
 class SlimEdge(BaseModel):
@@ -320,7 +342,10 @@ class PlanProposal(BaseModel):
         validation happens there, so a bad slim proposal fails with the same
         named reason a bad full one does."""
         return Subgraph(
-            nodes=tuple(ProposedNode(name=n.name, kind=n.kind) for n in self.nodes),
+            nodes=tuple(
+                ProposedNode(name=n.name, kind=n.kind, args=n.args, note=n.note)
+                for n in self.nodes
+            ),
             edges=tuple(ProposedEdge(source=e.source, target=e.target) for e in self.edges),
             rationale=self.rationale,
         )

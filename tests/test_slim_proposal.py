@@ -214,3 +214,37 @@ def test_a_missing_model_is_unreachable_not_a_retry():
         pass
 
     assert _is_unreachable(NotFoundError("model 'qwen3:8' not found"))
+
+
+def test_the_slim_reading_keeps_args_and_note():
+    """A schema-declaring kind proposed by a small model must not arrive
+    argless purely for having come through the slim path."""
+    from grapharc.planner.proposal import PlanProposal
+
+    slim = PlanProposal.model_validate(
+        {
+            "nodes": [
+                {"name": "fix_1", "kind": "fix", "args": {"issue": "x"}, "note": "n"}
+            ],
+            "edges": [["__start__", "fix_1"]],
+        }
+    )
+    node = slim.to_subgraph().nodes[0]
+    assert node.args == {"issue": "x"}
+    assert node.note == "n"
+
+
+def test_the_slim_reading_tolerates_null_args_and_note():
+    """Tolerance in reading: a null or prose `args` reads as none, and the
+    admission check is what judges whether none was enough."""
+    from grapharc.planner.proposal import PlanProposal
+
+    slim = PlanProposal.model_validate(
+        {
+            "nodes": [{"name": "a", "args": None, "note": None}],
+            "edges": [],
+        }
+    )
+    node = slim.to_subgraph().nodes[0]
+    assert node.args == {}
+    assert node.note == ""

@@ -84,13 +84,13 @@ print("worst case: ", result.worst_case)
 ```
 status:      admitted
 admitted:    True
-checks run:  ['registry', 'policy', 'budget', 'depth', 'acyclicity']
+checks run:  ['registry', 'args', 'policy', 'budget', 'depth', 'acyclicity']
 worst case:  tokens=0 iterations=2 seconds=0.0
 ```
 
 **Why it works this way.** `EdgePolicy`'s default is `deny`, so an empty policy
 admits nothing — the allow-all rule above is what you write when you have not
-decided yet, and it is deliberately something you have to type. All five checks
+decided yet, and it is deliberately something you have to type. All six checks
 run on every proposal rather than short-circuiting on the first failure, because
 a planner replanning from feedback should get the whole list, not one complaint
 at a time.
@@ -440,7 +440,7 @@ print("checks run:      ", [c.value for c in result.checks_run])
 default checker:  rejected
 [acyclicity/cycle] draft -> review -> draft: this checker requires acyclic proposals and found a cycle break the cycle, or use a checker with require_acyclic=False
 permissive:       admitted
-checks run:       ['registry', 'policy', 'budget', 'depth']
+checks run:       ['registry', 'args', 'policy', 'budget', 'depth']
 ```
 
 Note the last line: with `require_acyclic=False` the ACYCLICITY check does not
@@ -766,6 +766,7 @@ print(result.feedback())
     "depth": 1,
     "checks_run": [
       "registry",
+      "args",
       "policy",
       "budget",
       "depth",
