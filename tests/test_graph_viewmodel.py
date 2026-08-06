@@ -160,6 +160,28 @@ def test_an_open_agent_node_reports_its_live_sub_step_tokens(tmp_path):
     assert node.live_tokens == 340
 
 
+def test_a_rerunning_node_does_not_recount_its_closed_executions(tmp_path):
+    """`live_tokens` is the still-open execution's spend. A node that ran
+    before has its earlier sub-steps already inside `tokens` via their `end`
+    event; scanning every sub-event again displayed that spend twice."""
+    trace = TraceRecorder(tmp_path / "t.jsonl")
+    trace.event(
+        run_id="r1", graph="agent", node="topology", phase="topology", step=0,
+        state_delta={"nodes": ["worker"], "edges": [["__start__", "worker", "static"]]},
+    )
+    trace.event(run_id="r1", graph="agent", node="worker", phase="start", step=1)
+    trace.event(run_id="r1", graph="agent", node="worker:model", phase="model", step=2, tokens=100)
+    trace.event(run_id="r1", graph="agent", node="worker", phase="end", step=1,
+                duration_ms=3.0, tokens=100)
+    trace.event(run_id="r1", graph="agent", node="worker", phase="start", step=3)
+    trace.event(run_id="r1", graph="agent", node="worker:model", phase="model", step=4, tokens=30)
+    view = build_graph_view(replay(trace, "r1"))
+    node = next(n for n in view.nodes if n.label == "worker")
+    assert node.status == "running"
+    assert node.tokens == 100
+    assert node.live_tokens == 30
+
+
 def test_planless_planner_run_is_an_honest_empty(tmp_path):
     trace = TraceRecorder(tmp_path / "t.jsonl")
     trace.event(run_id="r1", graph="loop", node="planner", phase="plan", step=1)

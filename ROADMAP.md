@@ -407,6 +407,17 @@ Everything here works and nothing calls it.
       and the answer was negative, `2` could not run at all.
 - [x] **9.6 — Streaming output to clients** via SSE, with a `last-event-id`
       cursor so a reconnect skips what it already saw.
+- [x] **9.7 — MCP supervision server** (`grapharc mcp`, behind the `mcp`
+      extra that had waited unimported since it was declared). Three stdio
+      tools — plan / show_graph / execute — and deliberately no approval
+      verb: a mutating plan parks on the file handshake for an out-of-band
+      human, a read-only one runs on the host's own prompt, and the verdict
+      fails closed (an undeclared registry and an old plan.json both read as
+      mutating). `grapharc init --claude-code` writes the `.mcp.json` and
+      the skill that adopt it. Distinct from §3.5, which is the MCP *client*
+      — GraphARC calling third-party tools — and remains open. The trust
+      boundary is stated in the deep dive: the gate binds the MCP surface,
+      not a co-located agent's own hands.
 - [ ] **9.3 — Cron schedules** and **9.4 — webhook triggers.**
 - [ ] **9.5 — Chat channels** (Slack / Discord).
 

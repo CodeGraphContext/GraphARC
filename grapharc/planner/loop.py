@@ -718,21 +718,11 @@ class GovernedLoop:
                 },
             )
 
-        if self.plan_only:
-            # The graph is admitted, materialisable, and on the trace — which
-            # is exactly what "planned" means. Executing it is `grapharc go`'s
-            # job, in its own process, whenever the operator says. The
-            # approval gate is skipped on purpose: a plan that executes
-            # nothing has nothing to approve; the act of running `go` *is*
-            # the approval.
-            return _Execution(
-                state=state,
-                executed=False,
-                hard_stop=LoopStop.PLANNED,
-                execution_error="awaiting `grapharc go`",
-            )
-
         if self.approval is not None:
+            # Before the plan_only return, deliberately: `plan --approve` used
+            # to return PLANNED first, which made the flag inert — a gate that
+            # is configured has been asked for, and a parked plan is a real
+            # question whether or not this process will also execute it.
             parked = time.monotonic()
             decision = self._request_approval(
                 proposal, verdict, ctx, round_number, goal=goal
@@ -762,6 +752,19 @@ class GovernedLoop:
                     execution_error=f"the admitted plan was not approved ({decision})",
                     hard_stop=stop,
                 )
+
+        if self.plan_only:
+            # The graph is admitted, materialisable, on the trace — and, when
+            # a gate was configured, approved above before being called a
+            # plan. Executing it is `grapharc go`'s job, in its own process,
+            # whenever the operator says; with no gate configured, the act of
+            # running `go` is the approval.
+            return _Execution(
+                state=state,
+                executed=False,
+                hard_stop=LoopStop.PLANNED,
+                execution_error="awaiting `grapharc go`",
+            )
 
         budget = self._round_budget(meter)
         try:

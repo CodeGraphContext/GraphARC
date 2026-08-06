@@ -372,6 +372,23 @@ def test_an_explicit_policy_still_reports_its_own_layer(project, capsys):
     assert payload["sources"]["policy"] == "flag"
 
 
+def test_go_is_governed_by_the_config_files_policy(project, capsys):
+    """`go` re-admits the saved plan through the gate, so the policy the file
+    names must govern there too. It resolved `model`, `tenant` and
+    `max_tokens` from the config but never `policy`: the plan was admitted
+    under the operator's document and then executed under the registry
+    default."""
+    _, planned = _plan_payload(capsys)
+    run_dir = str(Path(planned["trace"]).parent)
+
+    code = main(["go", run_dir, "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["policy_source"] == "flag-or-config"
+    assert "deny.toml" in payload["policy"]
+
+
 def test_the_demo_command_reads_the_config_too(tmp_path, monkeypatch, capsys):
     """`memory` and `reviewer_model` were declared in KEYS and read by nothing,
     so the same file made `plan` fail on a bad model and left `demo` scripted."""
