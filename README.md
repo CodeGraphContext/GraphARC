@@ -179,5 +179,6 @@ The edges are documented, not denied — the full list with mechanisms is in the
 - The HTTP API does not yet use the durable session layer.
 - On the Claude CLI backend an agent node is *delegated*, not governed.
 - Policy documents govern planning; the tool plane still reads CLI flags.
+- The MCP gate binds the MCP surface, not the host: an agent with its own file tools in the run directory could forge the approval decision. The trust boundary is the working directory, as it is for the Slack workspace.
 
 Version `0.1.5` · [changelog](CHANGELOG.md) · [roadmap](ROADMAP.md) · [website](https://codegraphcontext.github.io/GraphARC/) · MIT

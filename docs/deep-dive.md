@@ -228,6 +228,12 @@ A stable system is not one that claims to have no edges — it is one whose edge
 
 - **The HTTP API does not use the durable session layer.** It has its own `InProcessRuntime`, whose sessions die with the process and whose approvals are recorded without being delivered. [ROADMAP.md](../ROADMAP.md) §12.3.
 
+**The MCP supervision surface**
+
+- **The MCP gate binds the MCP surface, not the host.** The server exposes no approval verb, so a supervised agent cannot decide over its own connection — but the host agent holds its own Write and Bash, and a process in the run directory can forge `approval-decision.json`. The trust boundary is the working directory, the same posture the Slack gate documents for its workspace; the shipped skill states the never-clauses for the hands the server cannot see.
+- **The host's tool-permission prompt is UX, not enforcement.** Allowlists and skip-permissions modes erase it, and GraphARC cannot observe it. The park on the file handshake is the gate; the prompt is a courtesy in front of it.
+- **A parked `execute` lives inside one MCP call.** A host that times the tool out kills the wait; the plan stays unexecuted and the call is safe to reissue. Approval records the decision, never the decider — the trace has no actor field.
+
 **Real limits of things that do work**
 
 - **Admission authorises a kind, not its arguments.** A proposal carrying `args={"path": "/etc/passwd"}` is admitted on the strength of its kind alone.

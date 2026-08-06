@@ -371,6 +371,10 @@ def _cmd_plan(args: argparse.Namespace) -> int:
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
+    if getattr(args, "claude_code", False):
+        from grapharc.cli.adopt import adopt_claude_code
+
+        return adopt_claude_code(as_json=args.json)
     from grapharc.cli.init_cmd import init
 
     return init(as_json=args.json)
@@ -989,6 +993,15 @@ def build_parser() -> argparse.ArgumentParser:
         "init",
         parents=[common],
         help="scaffold a registry, a config and a runs directory in this directory",
+    )
+    ini.add_argument(
+        "--claude-code",
+        action="store_true",
+        help=(
+            "instead of the scaffold, write .mcp.json and the Claude Code "
+            "skill that route this project's multi-step work through "
+            "grapharc mcp supervision"
+        ),
     )
     ini.set_defaults(handler=_cmd_init)
 
