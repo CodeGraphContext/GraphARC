@@ -27,10 +27,12 @@ All but one of the agent kinds want a **tool-calling** backend, because that is
 the only way GraphARC can run the loop itself and gate each call. Given the
 Claude CLI — which has no tool-calling wire format — `AgentNode` delegates the
 whole loop to Claude Code instead, warning at construction and marking the
-trace: the fixed allowlists described above do not apply to a delegated run,
-because the tools are Claude Code's rather than this registry's. `summarize` is
-the exception either way — it is toolless by design, so it binds nothing and
-runs anywhere.
+trace. By default the delegated run is handed an `--allowedTools` list mapped
+from this registry's own allowlist (`read_file`→`Read`, … `run_command`→`Bash`),
+so one declaration governs both tiers — but the *enforcement* is Claude Code's,
+per its own gating, not this graph's per-call policy; the unconfined
+`bypassPermissions` tier is explicit opt-in. `summarize` is the exception
+either way — it is toolless by design, so it binds nothing and runs anywhere.
 
 Registered but denied is the interesting state: **given a model**, `apply_change`
 is in the registry because changing files is a real capability, and the default

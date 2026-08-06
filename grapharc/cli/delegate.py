@@ -22,7 +22,9 @@ Tool names here are Claude Code's (`Read`, `Glob`, `Grep`, `Edit`, `Write`,
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import signal
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -35,6 +37,64 @@ from grapharc.cli.runid import refuse_reused_run_id
 #: What a bare run may use, mirroring the harness default of "the core tools,
 #: shell included". An explicit `--allow` replaces this outright.
 DEFAULT_DELEGATED_TOOLS = ("Read", "Glob", "Grep", "LS", "Edit", "Write", "Bash")
+
+#: GraphARC's seven core tools, in Claude Code's vocabulary. This is what lets
+#: one operator declaration — a kind's `TOOLS_FOR` allowlist — govern both
+#: tiers: the governed loop registers the left-hand names, and a delegated run
+#: pre-approves exactly their right-hand twins via `--allowedTools`. A name
+#: with no mapping simply is not granted, which fails closed under Claude
+#: Code's headless default gating.
+CLAUDE_TOOL_FOR: dict[str, str] = {
+    "read_file": "Read",
+    "list_dir": "LS",
+    "glob": "Glob",
+    "grep": "Grep",
+    "edit_file": "Edit",
+    "write_file": "Write",
+    "run_command": "Bash",
+}
+
+
+def claude_allowlist_for(tool_names: list[str] | tuple[str, ...]) -> list[str]:
+    """Map GraphARC tool names to Claude Code's, order kept, unmapped dropped."""
+    seen: list[str] = []
+    for name in tool_names:
+        mapped = CLAUDE_TOOL_FOR.get(name)
+        if mapped is not None and mapped not in seen:
+            seen.append(mapped)
+    return seen
+
+
+def _spawn(
+    argv: list[str], *, cwd: Path, timeout: float | None, stdin_text: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run the CLI in its own session; on deadline, kill the whole group.
+
+    `subprocess.run(timeout=...)` kills only the direct child, and Claude
+    Code's own spawned shells survived the deadline as orphans. A fresh
+    session makes the child a process-group leader, so the timeout can take
+    the group down with it — the same reason the sandbox executor kills by
+    group.
+    """
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        stdin=None if stdin_text is None else subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(input=stdin_text, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):  # pragma: no cover - a raced exit
+            proc.kill()
+        proc.wait()
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 
 
@@ -127,12 +187,11 @@ def delegate_task(
         argv += ["--append-system-prompt", system_prompt]
 
     try:
-        completed = subprocess.run(
-            argv, cwd=workspace, capture_output=True, text=True, timeout=max_seconds
-        )
+        completed = _spawn(argv, cwd=workspace, timeout=max_seconds)
     except subprocess.TimeoutExpired as exc:
         raise DelegationError(
-            f"max_seconds ({max_seconds}) reached; the delegated run was stopped",
+            f"max_seconds ({max_seconds}) reached; the delegated run and its "
+            "process group were stopped",
             reason="deadline_exceeded",
         ) from exc
 
@@ -246,13 +305,7 @@ def run_delegated(
     )
 
     try:
-        completed = subprocess.run(
-            argv,
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            timeout=max_seconds,
-        )
+        completed = _spawn(argv, cwd=workspace, timeout=max_seconds)
     except subprocess.TimeoutExpired:
         trace.event(
             run_id=run_id, graph="cli-agent", node="claude_code", phase="stop", step=1,
@@ -349,9 +402,11 @@ def run_delegated(
 
 
 __all__ = [
+    "CLAUDE_TOOL_FOR",
     "DEFAULT_DELEGATED_TOOLS",
     "DelegatedRun",
     "DelegationError",
+    "claude_allowlist_for",
     "delegate_task",
     "run_delegated",
 ]

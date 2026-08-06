@@ -1039,8 +1039,12 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument(
         "--max-tokens",
         type=int,
-        default=DEFAULT_MAX_TOKENS,
-        help="run token ceiling, enforced on the call that crosses it (default: %(default)s)",
+        default=None,
+        help=(
+            f"run token ceiling, enforced on the call that crosses it "
+            f"(default: {DEFAULT_MAX_TOKENS}; refused under --executor "
+            f"claude-cli, which cannot enforce one)"
+        ),
     )
     agent.add_argument(
         "--max-seconds",

@@ -309,25 +309,49 @@ class DelegatedToolUseWarning(UserWarning):
     """
 
 
-#: What the delegated loop runs under. `bypassPermissions` is Claude Code's
-#: "no checks at all" mode, and it is deliberate: omitting `--allowedTools`
-#: leaves its default gating in place, and headless there is no one to approve
-#: a Write — the sub-agent simply reports that it could not create the file.
-#: "Every tool Claude Code has" only means that with this set.
+#: The two delegated tiers. `allowlist` — the default — pre-approves exactly
+#: the Claude Code twins of this node's own registered tools, so one operator
+#: declaration governs both the governed loop and the delegated one; anything
+#: unlisted falls to Claude Code's headless default gating, where nobody can
+#: approve a prompt, which fails closed. `bypass` is Claude Code's "no checks
+#: at all" mode and is opt-in by name only.
+DELEGATED_MODES = ("allowlist", "bypass")
+
+#: What the bypass tier runs under. `bypassPermissions` is Claude Code's "no
+#: checks at all" mode: omitting `--allowedTools` leaves its default gating in
+#: place, and headless there is no one to approve a Write — the sub-agent
+#: simply reports that it could not create the file. "Every tool Claude Code
+#: has" only means that with this set.
 DELEGATED_PERMISSION_MODE = "bypassPermissions"
 
-_DELEGATION_WARNING = (
+_DELEGATION_WARNING_ALLOWLIST = (
     "agent node {name!r} is backed by the Claude CLI, which has no tool-calling "
     "wire format, so GraphARC cannot run its own tool loop over it. The whole "
-    "loop is delegated to Claude Code's headless agent, which means: it uses "
-    "EVERY tool Claude Code has (Bash, Write, WebFetch, Task, ...) under its "
-    "bypassPermissions mode, so those calls are NOT checked by this graph's "
-    "permission policy, NOT confined by the sandbox executor, and NOT gated by "
-    "Claude Code's own prompts either. The token figure is what the sub-agent "
-    "reports rather than what GraphARC metered. The workspace boundary and the wall-clock "
-    "ceiling still apply. Every trace event from this node is marked "
-    "executor=delegated so the run stays auditable; use a tool-calling backend "
-    "(openrouter/*, openai/*, ollama/*) for a governed loop."
+    "loop is delegated to Claude Code's headless agent under an allowlist "
+    "derived from this node's own tools ({allowed}): those run pre-approved, "
+    "anything else falls to Claude Code's headless default gating, which fails "
+    "closed. Enforcement is Claude Code's, not this graph's — the calls are NOT "
+    "checked by this graph's permission policy per call, NOT confined by the "
+    "sandbox executor, and produce no per-tool trace events. The token figure "
+    "is what the sub-agent reports rather than what GraphARC metered. The "
+    "workspace boundary and the wall-clock ceiling still apply, and every trace "
+    "event from this node is marked executor=delegated; use a tool-calling "
+    "backend (openrouter/*, openai/*, ollama/*) for a governed loop."
+)
+
+_DELEGATION_WARNING_BYPASS = (
+    "agent node {name!r} is backed by the Claude CLI, which has no tool-calling "
+    "wire format, so GraphARC cannot run its own tool loop over it. The whole "
+    "loop is delegated to Claude Code's headless agent, and delegated_mode="
+    "'bypass' was chosen explicitly: it uses EVERY tool Claude Code has (Bash, "
+    "Write, WebFetch, Task, ...) under its bypassPermissions mode, so those "
+    "calls are NOT checked by this graph's permission policy, NOT confined by "
+    "the sandbox executor, and NOT gated by Claude Code's own prompts either. "
+    "The token figure is what the sub-agent reports rather than what GraphARC "
+    "metered. The workspace boundary and the wall-clock ceiling still apply. "
+    "Every trace event from this node is marked executor=delegated so the run "
+    "stays auditable; use a tool-calling backend (openrouter/*, openai/*, "
+    "ollama/*) for a governed loop."
 )
 
 
@@ -369,9 +393,16 @@ class AgentNode:
         prompt_fn: Callable[[Any], str] | None = None,
         trace: TraceRecorder | None = None,
         max_tool_result_chars: int = DEFAULT_MAX_TOOL_RESULT_CHARS,
+        delegated_mode: str = "allowlist",
     ) -> None:
         if max_iterations < 1:
             raise AgentConfigError("max_iterations must be at least 1")
+        if delegated_mode not in DELEGATED_MODES:
+            raise AgentConfigError(
+                f"delegated_mode must be one of {DELEGATED_MODES}, got "
+                f"{delegated_mode!r}; 'bypass' is the unconfined tier and is "
+                "opt-in by name only"
+            )
         self.model = model
         self.harness = harness
         self.name = name
@@ -389,12 +420,15 @@ class AgentNode:
         #: wire format and therefore cannot be driven as a raw model. The loop
         #: is handed to Claude Code instead — see `_run_delegated`.
         self.delegated = _is_claude_cli(model)
+        self.delegated_mode = delegated_mode
         if self.delegated:
-            warnings.warn(
-                _DELEGATION_WARNING.format(name=name),
-                DelegatedToolUseWarning,
-                stacklevel=2,
-            )
+            if delegated_mode == "bypass":
+                message = _DELEGATION_WARNING_BYPASS.format(name=name)
+            else:
+                message = _DELEGATION_WARNING_ALLOWLIST.format(
+                    name=name, allowed=", ".join(self._delegated_allowlist()) or "none"
+                )
+            warnings.warn(message, DelegatedToolUseWarning, stacklevel=2)
 
     @property
     def writes(self) -> set[str]:
@@ -581,30 +615,55 @@ class AgentNode:
 
     # -- internals ------------------------------------------------------------
 
+    def _delegated_allowlist(self) -> list[str]:
+        """This node's own tools, in Claude Code's vocabulary.
+
+        Derived from the policy-filtered registry — the same set the governed
+        loop would have described to the model — so one operator declaration
+        governs both tiers. A tool with no Claude Code twin is simply not
+        granted, which fails closed under headless default gating.
+        """
+        from grapharc.cli.delegate import claude_allowlist_for
+
+        return claude_allowlist_for([spec.name for spec in self.harness.visible_tools()])
+
     def _run_delegated(self, prompt: str, ctx: RunContext) -> AgentResult:
         """Hand the whole task to Claude Code's headless agent.
 
-        The trade is stated in `_DELEGATION_WARNING` and repeated on every trace
-        event this writes, because a warning at construction is gone by the time
-        anyone reads the run back. `executor="delegated"` on the events is what
-        stops a reader six months later from assuming this graph's permission
-        policy saw these tool calls. It did not.
+        The trade is stated in the construction warning and repeated on every
+        trace event this writes, because a warning at construction is gone by
+        the time anyone reads the run back. `executor="delegated"` on the
+        events is what stops a reader six months later from assuming this
+        graph's permission policy saw these tool calls. It did not.
 
-        The workspace boundary and the wall-clock ceiling still hold: the CLI is
-        spawned with `cwd` set to the harness workspace, and `max_seconds` is
-        enforced from outside by the subprocess timeout. Everything finer than
-        that is Claude Code's.
+        Two tiers. `allowlist` (default) hands Claude Code exactly this node's
+        own tools via `--allowedTools`; anything else falls to its headless
+        default gating, which fails closed. `bypass` (explicit opt-in) runs
+        `bypassPermissions` — no checks at all. Either way the workspace
+        boundary and the wall-clock ceiling still hold: the CLI is spawned
+        with `cwd` set to the harness workspace, and `max_seconds` is enforced
+        from outside, killing the whole process group on the deadline.
         """
         from grapharc.cli.delegate import DelegationError, delegate_task
 
         remaining = ctx.meter.remaining_seconds() if ctx.meter else None
         step = 1
+        bypass = self.delegated_mode == "bypass"
+        allowed = None if bypass else self._delegated_allowlist()
+        # An empty allowlist grants nothing: pass None rather than an empty
+        # --allowedTools, so it is Claude Code's own default gating — headless
+        # and therefore fail-closed on mutation — that decides.
+        allow_arg = allowed if allowed else None
         if self.trace is not None:
             self.trace.event(
                 run_id=ctx.run_id, graph=ctx.graph, node=self.name, phase="model",
                 step=step, thread_id=ctx.thread_id, attempt=ctx.attempt,
-                state_delta={"executor": "delegated", "tools": "all of Claude Code's",
-                             "permission_mode": DELEGATED_PERMISSION_MODE,
+                state_delta={"executor": "delegated",
+                             "delegated_mode": self.delegated_mode,
+                             "tools": ("all of Claude Code's" if bypass
+                                       else (allowed or "claude-code default gating")),
+                             **({"permission_mode": DELEGATED_PERMISSION_MODE}
+                                if bypass else {}),
                              "governed_by": "Claude Code, not this graph's policy"},
             )
         try:
@@ -619,17 +678,20 @@ class AgentNode:
             run = delegate_task(
                 prompt,
                 workspace=Path(workspace),
+                allow=allow_arg,
                 max_turns=self.max_iterations,
                 max_seconds=remaining,
                 system_prompt=self.system_prompt,
-                permission_mode=DELEGATED_PERMISSION_MODE,
+                permission_mode=DELEGATED_PERMISSION_MODE if bypass else None,
             )
         except DelegationError as exc:
             if self.trace is not None:
                 self.trace.event(
                     run_id=ctx.run_id, graph=ctx.graph, node=self.name, phase="stop",
                     step=step, thread_id=ctx.thread_id, attempt=ctx.attempt,
-                    state_delta={"executor": "delegated", "termination_reason": exc.reason},
+                    state_delta={"executor": "delegated",
+                                 "delegated_mode": self.delegated_mode,
+                                 "termination_reason": exc.reason},
                     error=str(exc),
                 )
             return AgentResult(
@@ -648,7 +710,9 @@ class AgentNode:
                 step=step, thread_id=ctx.thread_id, attempt=ctx.attempt,
                 tokens=run.tokens_reported or None,
                 cost_usd=run.cost_usd,
-                state_delta={"executor": "delegated", "termination_reason": reason.value,
+                state_delta={"executor": "delegated",
+                             "delegated_mode": self.delegated_mode,
+                             "termination_reason": reason.value,
                              "turns": run.turns, "tokens_reported": run.tokens_reported,
                              "session_id": run.session_id},
             )

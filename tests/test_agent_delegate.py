@@ -128,7 +128,7 @@ def test_a_missing_binary_is_exit_2_with_the_reason(tmp_path, monkeypatch, capsy
 # construction and afterwards in the trace.
 
 
-def _node(workspace, trace=None, name="worker"):
+def _node(workspace, trace=None, name="worker", **kwargs):
     from grapharc.gateway import get_model
     from grapharc.harness import Harness, PermissionPolicy, PermissionRule, ToolRegistry
     from grapharc.harness.agent import AgentNode
@@ -139,12 +139,12 @@ def _node(workspace, trace=None, name="worker"):
         workspace=str(workspace),
     )
     with pytest.warns(Warning):
-        return AgentNode(get_model("claude-cli"), harness, name=name, trace=trace)
+        return AgentNode(get_model("claude-cli"), harness, name=name, trace=trace, **kwargs)
 
 
 def test_a_claude_cli_agent_node_warns_loudly_at_construction(tmp_path, fake_claude):
-    """A silent switch from "refuses" to "runs with every tool and no checks"
-    is the one thing this must not be. The warning names each thing given up.
+    """A silent switch from "refuses" to "someone else's loop" is the one thing
+    this must not be. Each tier's warning names exactly what that tier gives up.
     """
     from grapharc.gateway import get_model
     from grapharc.harness import Harness, PermissionPolicy, PermissionRule, ToolRegistry
@@ -159,9 +159,17 @@ def test_a_claude_cli_agent_node_warns_loudly_at_construction(tmp_path, fake_cla
         node = AgentNode(get_model("claude-cli"), harness, name="worker")
 
     assert node.delegated is True
+    assert node.delegated_mode == "allowlist"
+    text = str(caught[0].message)
+    for claim in ("allowlist", "fails closed", "NOT checked", "NOT confined"):
+        assert claim in text, f"the default warning does not mention {claim!r}: {text}"
+
+    with pytest.warns(DelegatedToolUseWarning) as caught:
+        AgentNode(get_model("claude-cli"), harness, name="worker", delegated_mode="bypass")
+
     text = str(caught[0].message)
     for claim in ("EVERY tool", "NOT checked", "NOT confined", "bypassPermissions"):
-        assert claim in text, f"the warning does not mention {claim!r}: {text}"
+        assert claim in text, f"the bypass warning does not mention {claim!r}: {text}"
 
 
 def test_a_tool_calling_backend_is_not_delegated_and_does_not_warn(tmp_path):
@@ -188,20 +196,29 @@ def test_a_tool_calling_backend_is_not_delegated_and_does_not_warn(tmp_path):
     assert node.delegated is False
 
 
-def test_the_delegated_node_asks_for_every_tool_and_bypasses_the_prompt(
-    tmp_path, fake_claude
-):
+def test_the_default_tier_leaves_claude_codes_own_gating_on(tmp_path, fake_claude):
     """Two axes, and conflating them was a real bug found by running it.
 
-    Omitting `--allowedTools` does not mean "every tool" — it leaves Claude
-    Code's own gating on, and headless there is nobody to approve a Write, so
-    the sub-agent came back reporting it could not create the file. Only
-    `--permission-mode bypassPermissions` means what "everything Claude Code
-    has" was chosen to mean.
+    This node's registry is empty, so the allowlist tier grants nothing: no
+    `--allowedTools` (an empty one would be a third, unspecified thing) and no
+    `--permission-mode` — Claude Code's own default gating decides, and
+    headless there is nobody to approve a Write, which fails closed. Only the
+    bypass tier below means what "everything Claude Code has" was chosen to
+    mean, and it has to be named to be reached.
     """
     workspace = tmp_path / "ws"
     workspace.mkdir()
     _node(workspace).run("do a thing")
+
+    argv = json.loads(fake_claude.read_text())
+    assert "--allowedTools" not in argv
+    assert "--permission-mode" not in argv
+
+
+def test_bypass_still_means_everything_but_only_by_name(tmp_path, fake_claude):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    _node(workspace, delegated_mode="bypass").run("do a thing")
 
     argv = json.loads(fake_claude.read_text())
     assert "--allowedTools" not in argv, "an allowlist would narrow the tool set"
@@ -229,10 +246,30 @@ def test_every_delegated_trace_event_says_it_was_delegated(tmp_path, fake_claude
     for event in events:
         delta = event.get("state_delta") or {}
         assert delta.get("executor") == "delegated", event
+        assert delta.get("delegated_mode") == "allowlist", event
 
     opening = events[0]["state_delta"]
-    assert opening["permission_mode"] == "bypassPermissions"
+    # The default tier never runs bypassPermissions, and the trace must not
+    # claim it did; an empty registry falls to Claude Code's own gating.
+    assert "permission_mode" not in opening
+    assert opening["tools"] == "claude-code default gating"
     assert "not this graph's policy" in opening["governed_by"]
+
+
+def test_the_bypass_tier_is_stamped_on_the_trace_by_name(tmp_path, fake_claude):
+    from grapharc.observe.trace import TraceRecorder
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    trace_path = tmp_path / "t.jsonl"
+    _node(workspace, trace=TraceRecorder(trace_path), delegated_mode="bypass").run(
+        "do a thing"
+    )
+
+    events = [json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
+    opening = events[0]["state_delta"]
+    assert opening["delegated_mode"] == "bypass"
+    assert opening["permission_mode"] == "bypassPermissions"
 
 
 def test_a_delegated_run_charges_the_meter_what_the_sub_agent_reported(tmp_path, fake_claude):
