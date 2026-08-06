@@ -349,6 +349,7 @@ def execute_plan(
     try:
         settings = load_settings(config_path)
         model_spec = settings.resolve("model", model_spec, record.get("model"))
+        policy_path = settings.resolve_path("policy", policy_path)
         tenant = settings.resolve("tenant", tenant, "default")
         max_tokens = settings.resolve("max_tokens", max_tokens, 100_000)
         model_args = _parse_model_args(model_arg_pairs)

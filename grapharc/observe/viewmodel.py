@@ -194,6 +194,7 @@ def _node_measures(node: NodeView, graph_events: list[TraceEvent], name: str) ->
     """
     costs: list[float] = []
     prefix = f"{name}:"
+    live = 0
     for event in graph_events:
         if event.node == name and event.phase in ("end", "error"):
             node.tokens += event.tokens or 0
@@ -202,11 +203,16 @@ def _node_measures(node: NodeView, graph_events: list[TraceEvent], name: str) ->
             if event.cost_usd is not None:
                 costs.append(event.cost_usd)
             node.executions += 1
+            # Sub-steps before this terminal are a breakdown of the total just
+            # counted; carrying them forward would show a closed execution's
+            # spend twice on a node that runs again.
+            live = 0
         elif node.status == "running" and (
             event.node == name or event.node.startswith(prefix)
         ):
             if event.phase not in ("start",) and event.tokens:
-                node.live_tokens += event.tokens
+                live += event.tokens
+    node.live_tokens += live
     if costs:
         node.cost_usd = round(sum(costs), 6)
     if node.duration_ms is not None:

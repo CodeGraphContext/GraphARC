@@ -15,20 +15,20 @@ Two sources of money, kept apart on purpose:
   never added into `recorded_cost_usd`, so nobody can mistake an estimate for
   an invoice.
 
-Tokens are counted from the `end` events of node executions, which is exactly
-the rule `metrics.summarize` uses. That is not a coincidence and not a
+Tokens are counted from the terminal events of node executions — `end` and
+`error` alike, since the kernel stamps both with the node's spend — which is
+exactly the rule `metrics.summarize` uses. That is not a coincidence and not a
 duplicate implementation: `RunCost.tokens` is asserted equal to
 `RunMetrics.tokens` by the test suite, because a cost report and an audit trail
 that disagree are worse than either alone.
 
 Two limits, stated rather than smoothed over:
 
-- A node that raises never emits an `end` event, and the kernel's `error` event
-  carries no token count — so tokens spent inside a node that then failed are
-  invisible at node level. Where the node was an `AgentNode`, its per-call
-  `"model"` sub-events still hold them, and they are reported as
-  `tokens_before_error` rather than folded into the total that must match
-  `metrics`.
+- A trace whose `error` events carry no token count (an older or hand-built
+  producer) leaves tokens spent inside a failed node invisible at node level.
+  Where the node was an `AgentNode`, its per-call `"model"` sub-events still
+  hold them, and they are reported as `tokens_before_error` rather than folded
+  into the total that must match `metrics`.
 - There is no tenant on a trace event, so tenant attribution is not offered
   here. Run, thread (session) and node are what the format supports today.
 """
@@ -142,10 +142,10 @@ class RunCost(BaseModel):
     unpriced_tokens: int = 0
     per_node: list[NodeCost] = Field(default_factory=list)
     model_calls: list[ModelCallCost] = Field(default_factory=list)
-    # Tokens reported by sub-steps of nodes that ended in `error`. Held apart
-    # from `tokens` because the node-level total must keep matching
-    # `metrics.summarize`, and because "spend that bought nothing" is the
-    # number an incident review actually wants.
+    # Tokens reported by sub-steps of failed nodes whose `error` event carried
+    # no token count of its own. Held apart from `tokens` because the
+    # node-level total must keep matching `metrics.summarize`, and because
+    # "spend that bought nothing" is the number an incident review wants.
     tokens_before_error: int = 0
 
     @property
@@ -291,11 +291,34 @@ def _price_run(run: ReplayedRun, rates: RateCard | None) -> RunCost:
             )
 
         if not execution.ok:
-            # No `end` event was written, so the node-level token count for this
-            # execution does not exist; whatever sub-steps it emitted before
-            # failing are the only record of what it spent.
+            # The kernel stamps a failed execution's terminal `error` event
+            # with what the node spent, exactly as it stamps `end`, and
+            # `metrics.summarize` counts it. Skipping it here made the cost
+            # report disagree with the audit trail by precisely the spend a
+            # budget stop was about.
             entry.errors += 1
-            tokens_before_error += execution.sub_tokens
+            entry.tokens += execution.tokens
+            entry.duration_ms += execution.duration_ms or 0.0
+            if execution.tokens:
+                estimate, unpriced_here, models = _estimate(execution, card)
+                entry.models = list(dict.fromkeys([*entry.models, *models]))
+                if execution.cost_usd is not None:
+                    entry.recorded_cost_usd = _combine(
+                        entry.recorded_cost_usd, execution.cost_usd
+                    )
+                    recorded_total.append(execution.cost_usd)
+                else:
+                    if estimate is not None:
+                        entry.estimated_cost_usd = _combine(
+                            entry.estimated_cost_usd, estimate
+                        )
+                        estimated_total.append(estimate)
+                    entry.unpriced_tokens += unpriced_here
+                    unpriced += unpriced_here
+            # A trace whose `error` event carries no token count (an older or
+            # hand-built producer) still holds the sub-steps' record; that
+            # spend is not in the total and is reported apart.
+            tokens_before_error += max(0, execution.sub_tokens - execution.tokens)
             continue
 
         entry.executions += 1
