@@ -103,6 +103,17 @@ def delegate_task(
     Either way the caller is responsible for having said so out loud;
     `AgentNode` warns at construction and marks every trace event.
     """
+    if max_seconds is not None and max_seconds <= 0:
+        # An exhausted budget must not spawn anything. `subprocess.run` accepts
+        # a negative timeout, starts the child, and kills it on the first wait —
+        # so the old behaviour launched Claude Code, tore it down mid-startup,
+        # and reported "max_seconds (-3.2) reached", a number no caller set.
+        # The deadline had already passed; say that, and spend nothing saying it.
+        raise DelegationError(
+            f"no time left for a delegated run ({max_seconds:.1f}s remaining); "
+            "the deadline passed before it could start",
+            reason="deadline_exceeded",
+        )
     binary = shutil.which("claude")
     if binary is None:
         raise DelegationError(

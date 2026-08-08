@@ -406,6 +406,7 @@ slack = [
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
+    { name = "mcp" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
@@ -437,6 +438,7 @@ provides-extras = ["openrouter", "openai", "ollama", "server", "mcp", "ladybug",
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx", specifier = ">=0.27" },
+    { name = "mcp", specifier = ">=1.2" },
     { name = "pytest", specifier = ">=8.2" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-timeout", specifier = ">=2.3" },

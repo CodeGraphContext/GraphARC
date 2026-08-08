@@ -39,11 +39,19 @@ user types is ever interpreted by a shell.
 
 from __future__ import annotations
 
+import importlib
 import shlex
+import tomllib
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+
+#: What the CLI plans with when neither a flag nor grapharc.toml says
+#: otherwise. A second copy of `cli.plan.DEFAULT_REGISTRY`, kept here so this
+#: module stays importable with nothing but the standard library — a test
+#: asserts the two agree.
+DEFAULT_PLAN_REGISTRY = "grapharc.examples.plan_incident:build_registry"
 
 
 class SlackCommandError(Exception):
@@ -91,6 +99,17 @@ PLAN_REGISTRIES = frozenset(
 #: the human approval gate before anything executes.
 AGENT_PLAN_REGISTRY = "grapharc.stdlib:build_registry"
 
+#: Subcommands whose Slack run *does* something rather than reading a file
+#: back. They get `work_timeout_seconds` instead of the reader timeout: a
+#: delegated Claude Code phase takes minutes, and the 120s that is generous for
+#: `metrics` is a SIGKILL through the middle of an approved run.
+WORK_COMMANDS = frozenset({"agent"})
+
+#: The longest a parked plan may hold its wall clock waiting for a human. The
+#: rest of the budget belongs to the work the human is approving; without a cap
+#: a 30-minute work budget could be spent entirely on nobody answering.
+APPROVAL_WAIT_CAP_SECONDS = 900.0
+
 #: Subcommands that write a trace while they run. The gate gives each of them
 #: a trace path it knows (unless the requester named one), so the bot can tail
 #: the file for live progress and readers (`metrics`, `viz`, `replay`) can be
@@ -123,7 +142,13 @@ ALLOWED_COMMANDS: dict[str, CommandSpec] = {
             "--max-tokens": False,
             "--approval-timeout": False,
         },
-        bool_flags=frozenset({"--approve", "--scripted"}),
+        # `--go` executes the admitted graph in the same run instead of
+        # stopping at PLANNED. Admitted from Slack because without it the
+        # supervised loop had nowhere to go: a parked plan was approved by a
+        # human and then returned "awaiting `grapharc go`" — into a subcommand
+        # this gate does not carry. It is safe to admit only because of the
+        # rule below, which makes `--go` imply `--approve`.
+        bool_flags=frozenset({"--approve", "--scripted", "--go"}),
         model_flags=frozenset({"--model"}),
         choice_flags={"--registry": PLAN_REGISTRIES},
     ),
@@ -148,7 +173,13 @@ ALLOWED_COMMANDS: dict[str, CommandSpec] = {
         repeatable_flags=frozenset({"--allow", "--deny"}),
     ),
     "approve": CommandSpec(
-        bool_flags=frozenset({"--deny"}), path_positionals=frozenset({0})
+        # `--show` decides nothing and `--fingerprint` binds a decision to the
+        # plan that was read, so both make the Slack path safer rather than
+        # wider: from a phone, "look at it first" and "only if it is still
+        # this one" are exactly the two things a reviewer needs.
+        value_flags={"--fingerprint": False},
+        bool_flags=frozenset({"--deny", "--show"}),
+        path_positionals=frozenset({0}),
     ),
     "replay": CommandSpec(path_positionals=frozenset({0})),
     "diff": CommandSpec(path_positionals=frozenset({0})),
@@ -156,6 +187,83 @@ ALLOWED_COMMANDS: dict[str, CommandSpec] = {
     "metrics": CommandSpec(path_positionals=frozenset({0})),
     "viz": CommandSpec(path_positionals=frozenset({0})),
 }
+
+
+def effective_timeout(
+    argv: list[str], *, timeout_seconds: float, work_timeout_seconds: float
+) -> float:
+    """The wall clock this argv gets before the runner kills it.
+
+    Two budgets, because two very different things are being bounded. A reader
+    (`metrics`, `viz`, `trace`) that has not answered in two minutes is stuck,
+    and holding a bot worker thread longer helps nobody. A command that plans
+    and then executes is *supposed* to take minutes — a delegated Claude Code
+    phase reads files and edits them — and killing it at 120s does not protect
+    anything, it just severs an approved run partway through its work.
+
+    `bot.py` calls this on the argv the gate returned, so the runner and the
+    gate's own `--approval-timeout` / `--max-seconds` injections agree on which
+    budget is in play.
+    """
+    if not argv:
+        return timeout_seconds
+    if argv[0] in WORK_COMMANDS:
+        return work_timeout_seconds
+    if argv[0] == "plan" and _has_flag(argv, "--go"):
+        return work_timeout_seconds
+    return timeout_seconds
+
+
+def mutating_kinds_for(argv: list[str], workdir: Path | None = None) -> frozenset[str] | None:
+    """Which kinds of this argv's registry can change things, for the approver.
+
+    None means "assume every kind does" — the same fail-closed reading `plan`
+    takes when a registry declares no `MUTATING_KINDS`. It is returned whenever
+    this cannot *prove* which registry will be in play, because the mark exists
+    to warn and a mark that is wrong in the reassuring direction is worse than
+    no mark at all.
+
+    Only modules in `PLAN_REGISTRIES` are ever imported. A `--registry` outside
+    that set was already refused by the gate; a `grapharc.toml` may point the
+    CLI at any module at all (including a `.py` file beside it), and that one is
+    reported as unknown rather than imported here — this runs inside the bot
+    process, and the bot does not execute the working directory's code.
+    """
+    if not argv or argv[0] != "plan":
+        return frozenset()
+    target = _flag_value(argv, "--registry")
+    if target is None:
+        # No flag: the CLI will resolve `registry` from grapharc.toml in the
+        # working directory (which is the runner's cwd), else its own default.
+        target = _configured_registry(workdir) or DEFAULT_PLAN_REGISTRY
+    if target not in PLAN_REGISTRIES:
+        return None
+    module_name = target.partition(":")[0]
+    try:
+        module = importlib.import_module(module_name)
+    except Exception:
+        return None
+    declared = getattr(module, "MUTATING_KINDS", None)
+    if declared is None:
+        return None
+    return frozenset(str(kind) for kind in declared)
+
+
+def _configured_registry(workdir: Path | None) -> str | None:
+    """`registry` from the working directory's grapharc.toml, if it sets one."""
+    if workdir is None:
+        return None
+    path = workdir / "grapharc.toml"
+    try:
+        with path.open("rb") as handle:
+            loaded = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    section = loaded.get("grapharc")
+    if not isinstance(section, dict):
+        return None
+    value = section.get("registry")
+    return value if isinstance(value, str) else None
 
 
 def usage_text(*, allow_model: bool = False, allow_agent: bool = False) -> str:
@@ -179,7 +287,7 @@ def usage_text(*, allow_model: bool = False, allow_agent: bool = False) -> str:
     return "\n".join(lines)
 
 
-def _confined(raw: str, workdir: Path) -> None:
+def confine_path(raw: str, workdir: Path) -> None:
     """Refuse a path that escapes the working directory, before anything runs.
 
     Lexical resolution only — the target need not exist yet (`--trace` names a
@@ -215,8 +323,15 @@ def parse_command(
     allow_model: bool = False,
     allow_agent: bool = False,
     timeout_seconds: float | None = None,
+    work_timeout_seconds: float | None = None,
 ) -> list[str]:
-    """Turn Slack text into the argv the bot may run, or raise with the reason."""
+    """Turn Slack text into the argv the bot may run, or raise with the reason.
+
+    `work_timeout_seconds` is the budget a command that *executes* gets (see
+    `effective_timeout`); the injected `--approval-timeout` and `--max-seconds`
+    are derived from whichever of the two will actually apply, so the CLI's own
+    graceful limits fire before the runner's kill rather than after it.
+    """
     # People copy commands out of code-formatted Slack messages, and the
     # backticks come along for the ride: "`approve x/trace.jsonl`" arrives
     # with a backtick glued to the first and last token. No admissible
@@ -310,11 +425,11 @@ def parse_command(
                 allowed = ", ".join(f"`{v}`" for v in sorted(spec.choice_flags[flag]))
                 raise SlackCommandError(f"`{flag}` from Slack accepts only: {allowed}")
             if is_path:
-                _confined(value, workdir)
+                confine_path(value, workdir)
             argv.extend([flag, value])
             continue
         if positional_index in spec.path_positionals:
-            _confined(token, workdir)
+            confine_path(token, workdir)
         argv.append(token)
         positional_index += 1
         index += 1
@@ -328,9 +443,12 @@ def parse_command(
             argv.extend(["--workspace", "agent"])
         # The CLI's max_seconds interrupts the run cleanly and reports; the
         # bot's timeout kills the process mid-sentence. Default the ceiling
-        # to just under the timeout so the graceful mechanism fires first.
-        if "--max-seconds" not in argv and timeout_seconds is not None:
-            argv.extend(["--max-seconds", str(max(5.0, timeout_seconds - 10.0))])
+        # to just under the timeout so the graceful mechanism fires first —
+        # `agent` is a work command, so that is the work budget, not the
+        # reader's two minutes.
+        budget = work_timeout_seconds if work_timeout_seconds is not None else timeout_seconds
+        if "--max-seconds" not in argv and budget is not None:
+            argv.extend(["--max-seconds", str(max(5.0, budget - 10.0))])
         # A delegated run uses Claude Code's tools, and its Bash is a real
         # shell on the host with no grapharc sandbox around it. From Slack
         # that defaults off; a requester who set explicit globs made a
@@ -359,20 +477,66 @@ def parse_command(
         if not _has_flag(argv, "--approve"):
             argv.append("--approve")
 
-    # ANY parked plan — stdlib-injected or requester-chosen `--approve` on a
-    # demo registry — must time its wait under the runner's kill: the CLI
-    # default (300s) exceeds the bot default (120s), and a park that outlives
-    # the runner is a hard kill mid-wait instead of a clean approval_timeout.
-    # Half the wall clock for the wait, capped to leave the run 10s to report,
-    # floored so a tiny ceiling still gives a human a moment.
-    if (
-        name == "plan"
-        and _has_flag(argv, "--approve")
-        and not _has_flag(argv, "--approval-timeout")
-        and timeout_seconds is not None
-    ):
-        wait = max(10.0, min(timeout_seconds - 10.0, timeout_seconds / 2))
-        argv.extend(["--approval-timeout", str(wait)])
+    if name == "plan" and _has_flag(argv, "--go") and not _has_flag(argv, "--approve"):
+        # `--go` is the difference between proposing a graph and running one,
+        # and from Slack that difference always goes through a person. Any
+        # workspace member can type into this bot; without this rule a single
+        # message would take a model's proposal straight to execution on the
+        # host, with the graph visible only afterwards.
+        #
+        # It is forced rather than refused so that the useful command stays one
+        # message: `plan "…" --go` means propose it, show it to me, and run it
+        # if I say yes. The stdlib rule above already forces `--approve` for the
+        # agent registry; this extends the same reading to every registry, since
+        # what makes execution worth gating is that it executes.
+        argv.append("--approve")
+
+    # ANY parked plan — stdlib-injected, `--go`-forced, or a requester's own
+    # `--approve` on a demo registry — must time its wait under the runner's
+    # kill: the CLI default (300s) exceeds the bot's reader default (120s), and
+    # a park that outlives the runner is a hard kill mid-wait instead of a clean
+    # approval_timeout.
+    #
+    # How much of the budget the human gets depends on what happens after they
+    # answer. A plan-only park has nothing left to do, so the wait may have half
+    # the clock. With `--go`, saying yes is the *start* of the work — give the
+    # human a third, capped, and leave the rest for the run they authorised.
+    if name == "plan" and _has_flag(argv, "--approve") and timeout_seconds is not None:
+        budget = effective_timeout(
+            argv,
+            timeout_seconds=timeout_seconds,
+            work_timeout_seconds=(
+                timeout_seconds if work_timeout_seconds is None else work_timeout_seconds
+            ),
+        )
+        ceiling = max(10.0, budget - 10.0)
+        supplied = _flag_value(argv, "--approval-timeout")
+        if supplied is None:
+            share = budget / 3 if _has_flag(argv, "--go") else budget / 2
+            wait = max(10.0, min(ceiling, share, APPROVAL_WAIT_CAP_SECONDS))
+            argv.extend(["--approval-timeout", str(wait)])
+        else:
+            # A requester may ask for a shorter wait, never a longer one. The
+            # injection above only fires when the flag is absent, so without
+            # this check `--approval-timeout 100000` sailed past it and the
+            # park outlived the runner — which is not an `approval_timeout`
+            # the run can report, it is a SIGKILL through the middle of the
+            # wait. Refused rather than clamped: silently running a different
+            # command from the one someone typed is how a gate loses its
+            # meaning.
+            try:
+                asked = float(supplied)
+            except ValueError:
+                raise SlackCommandError(
+                    f"`--approval-timeout` wants a number of seconds, got {supplied!r}"
+                ) from None
+            if asked <= 0 or asked > ceiling:
+                raise SlackCommandError(
+                    f"`--approval-timeout {supplied}` does not fit this command's "
+                    f"budget: the wait must be between 1 and {ceiling:.0f} seconds, "
+                    "so that a run nobody answers ends by reporting a timeout "
+                    "rather than by being killed mid-wait"
+                )
 
     # A tracing command whose trace the requester did not place gets one the
     # bot can find: unique per invocation (a reused file would make a tailer's

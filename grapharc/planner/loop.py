@@ -718,21 +718,11 @@ class GovernedLoop:
                 },
             )
 
-        if self.plan_only:
-            # The graph is admitted, materialisable, and on the trace — which
-            # is exactly what "planned" means. Executing it is `grapharc go`'s
-            # job, in its own process, whenever the operator says. The
-            # approval gate is skipped on purpose: a plan that executes
-            # nothing has nothing to approve; the act of running `go` *is*
-            # the approval.
-            return _Execution(
-                state=state,
-                executed=False,
-                hard_stop=LoopStop.PLANNED,
-                execution_error="awaiting `grapharc go`",
-            )
-
         if self.approval is not None:
+            # Before the plan_only return, deliberately: `plan --approve` used
+            # to return PLANNED first, which made the flag inert — a gate that
+            # is configured has been asked for, and a parked plan is a real
+            # question whether or not this process will also execute it.
             parked = time.monotonic()
             decision = self._request_approval(
                 proposal, verdict, ctx, round_number, goal=goal
@@ -762,6 +752,19 @@ class GovernedLoop:
                     execution_error=f"the admitted plan was not approved ({decision})",
                     hard_stop=stop,
                 )
+
+        if self.plan_only:
+            # The graph is admitted, materialisable, on the trace — and, when
+            # a gate was configured, approved above before being called a
+            # plan. Executing it is `grapharc go`'s job, in its own process,
+            # whenever the operator says; with no gate configured, the act of
+            # running `go` is the approval.
+            return _Execution(
+                state=state,
+                executed=False,
+                hard_stop=LoopStop.PLANNED,
+                execution_error="awaiting `grapharc go`",
+            )
 
         budget = self._round_budget(meter)
         try:
@@ -803,6 +806,14 @@ class GovernedLoop:
         so a reader showing "approve this?" needs nothing but the trace. The
         callback may block indefinitely from the loop's point of view — bounding
         the wait is the callback's job, reported as a "timeout" decision.
+
+        `kinds` rides alongside `nodes` because only the kind is governed
+        (`ProposedNode`: the name is an instance label a planner chooses freely).
+        A request that names `fix_it` and omits `apply_change` asks a human to
+        approve a mutating plan while showing them a harmless word — the reader
+        cannot recover the kind from the name, so the event has to carry it.
+        `worst_case` is on the same event for the same reason: what this may
+        cost is part of the question, not something to look up elsewhere.
         """
         self._emit(
             ctx,
@@ -813,7 +824,12 @@ class GovernedLoop:
                 "proposal_id": proposal.proposal_id,
                 "fingerprint": proposal.fingerprint(),
                 "nodes": [n.name for n in proposal.nodes],
+                "kinds": [n.kind for n in proposal.nodes],
                 "edges": [[e.source, e.target] for e in proposal.edges],
+                "rationale": proposal.rationale,
+                "worst_case_tokens": verdict.worst_case.tokens,
+                "worst_case_seconds": verdict.worst_case.seconds,
+                "worst_case_complete": verdict.worst_case_complete,
                 "goal": goal,
             },
         )

@@ -993,8 +993,34 @@ def test_rate_card_matches_the_longest_prefix(trace):
     assert RateCard().rate_for("anything") is None
 
 
+def test_a_stamped_error_events_tokens_are_counted_and_priced(trace):
+    """The kernel stamps `error` terminals with the node's spend and
+    `metrics.summarize` counts them; the cost report skipped the whole
+    execution — a run stopped *for overspending* was billed as nearly free
+    while claiming to be complete."""
+    trace.event(run_id="r1", graph="demo", node="a", phase="start", step=1)
+    trace.event(run_id="r1", graph="demo", node="a:model", phase="model", step=2,
+                tokens=100)
+    trace.event(run_id="r1", graph="demo", node="a", phase="error", step=1,
+                duration_ms=5.0, error="budget: tokens", tokens=150)
+    trace.event(run_id="r1", graph="demo", node="b", phase="start", step=3)
+    trace.event(run_id="r1", graph="demo", node="b", phase="end", step=3,
+                duration_ms=2.0, tokens=50)
+
+    cost = attribute(trace, "r1", rates=RateCard(default=1.0))
+
+    assert cost.tokens == summarize(trace, "r1").tokens == 200
+    assert cost.node("a").tokens == 150
+    assert cost.errors == 1
+    assert cost.estimated_cost_usd == pytest.approx(0.2)
+    assert cost.unpriced_tokens == 0 and cost.complete
+    assert cost.tokens_before_error == 0, "the stamp already includes the sub-steps"
+
+
 def test_tokens_spent_inside_a_failed_node_are_reported_separately(trace):
-    """The kernel's error event carries no tokens; the spend must not vanish."""
+    """An error event with no token count (an older or hand-built producer):
+    the sub-steps' spend must not vanish, and must not be folded into the
+    total that matches `metrics`."""
     trace.event(run_id="r1", graph="demo", node="agent", phase="start", step=1)
     trace.event(run_id="r1", graph="demo", node="agent:model", phase="model", step=2,
                 tokens=700)
