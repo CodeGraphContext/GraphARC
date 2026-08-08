@@ -81,9 +81,14 @@ server = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
 ]
-# MCP client (ROADMAP 3.5).
+# MCP client (ROADMAP 3.5). Upper-bounded on purpose: `grapharc/mcp/server.py`
+# builds on `mcp.server.fastmcp`, which exists in the 1.x line and was removed
+# in 2.0. `>=1.2` alone resolved to 2.0.0 for anyone installing fresh, so
+# `grapharc mcp` was broken on arrival while the lockfile kept development on
+# 1.28 and every local test green. Raising this ceiling means porting the
+# server off FastMCP, which is a change with a diff, not a resolver accident.
 mcp = [
-    "mcp>=1.2",
+    "mcp>=1.2,<2",
 ]
 # LadybugDB-backed claim store — grapharc/memory/ladybug_store.py imports this
 # one, unlike the `memory` extra above. The distribution is `real-ladybug`, not

@@ -424,7 +424,7 @@ requires-dist = [
     { name = "langchain-openai", marker = "extra == 'openrouter'", specifier = ">=0.2" },
     { name = "langgraph", specifier = ">=0.4" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=2.0" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2,<2" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.27" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.27" },
