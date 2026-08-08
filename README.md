@@ -43,6 +43,10 @@ grapharc serve --live-root .grapharc/runs   # live browser view of every run
 grapharc replay <trace> <run-id>  # reconstruct a run from its trace
 ```
 
+![A terminal running grapharc plan: round 1 is rejected with edge_denied and never executes, round 2 replans and runs, then viz draws the graph and metrics prints the per-node bill — all from the one trace file.](docs/media/grapharc-cli-gate.gif)
+
+*Free and deterministic — `--scripted` runs the registry's own stand-in planner, so this reproduces exactly on any checkout. Three more recordings, and what is and is not staged in each, in [docs/demo/](docs/demo/).*
+
 Building a graph directly:
 
 ```python
@@ -159,6 +163,31 @@ goal_met
 
 Both blocks are executed by `tests/test_readme.py` against every commit, so this page cannot drift from the code.
 
+### What a policy actually does to an agent
+
+Not "blocks the bad call at the last moment" — it decides what the planner is *able to propose*. The planner is told the policy before it plans, so a denied edge changes the shape of the graph rather than producing a refusal to retry.
+
+![A terminal: a failing test, then a policy denying any edge into apply_change, then a plan under that policy proposing three read-only nodes whose rationale says it cannot reach apply_change, then the amended policy, then the same goal producing a five-node mutating graph, then the execution, the diff, and the test passing.](docs/media/grapharc-cli-fix-bug.gif)
+
+That is GraphARC fixing a bug in GraphARC — a real one, from this project's backlog, in a copy of this repository. Under `deny *->apply_change` the planner proposes three read-only nodes and says so itself:
+
+> Since `apply_change` cannot be reached by an edge, this round investigates the torn trace bug and writes findings to notes **for a human to act on**.
+
+`mutating: false`. A person then amends the rule, and the same goal on the same model returns a five-node graph containing `apply_change`, `mutating: true`. Claude Code executes it and the red test goes green. The recording, and exactly what in it is staged (the pacing) and what is not (everything else), is in [docs/demo/](docs/demo/).
+
+## Supervised Claude Code, from Slack
+
+One message asks for work; the answer is the *graph* it intends to run — nodes, their governed kinds, edges, worst-case cost — and two buttons. Nothing executes until a human presses one.
+
+![A Slack thread: the bot replies with the proposed three-node graph and Approve / Deny buttons, the plan is approved, the nodes then run one by one, and the closing frame reads the trace back — approval_request, approval_response, then the first node's start.](docs/media/grapharc-slack-supervised.gif)
+
+```
+/grapharc plan "explain what flaky.py does and why it is not reproducible" --go \
+    --model claude-cli --registry grapharc.stdlib:build_registry
+```
+
+`--go` means plan *and* execute. From Slack the gate appends `--approve` to it unconditionally, so the run parks before its first node — a message from anyone in the workspace can propose work, and only a person can start it. The click is bound to the plan's fingerprint, so a button on a superseded proposal is refused rather than honoured. Setup and the full rule list are in the [Slack cookbook](docs/cookbook/07-slack.md); what is and is not mocked in that recording is in [docs/demo/](docs/demo/).
+
 ## Where it sits
 
 | | GraphARC | Claude Code | OpenClaw | raw LangGraph |
@@ -179,5 +208,6 @@ The edges are documented, not denied — the full list with mechanisms is in the
 - The HTTP API does not yet use the durable session layer.
 - On the Claude CLI backend an agent node is *delegated*, not governed: by default it runs under an allowlist mapped from the node's own tools, but enforcement there is Claude Code's, and the `bypass` tier — explicit opt-in — has no checks at all.
 - Policy documents govern planning; the tool plane still reads CLI flags.
+- The MCP gate binds the MCP surface, not the host: an agent with its own file tools in the run directory could forge the approval decision. The trust boundary is the working directory, as it is for the Slack workspace.
 
 Version `0.1.5` · [changelog](CHANGELOG.md) · [roadmap](ROADMAP.md) · [website](https://codegraphcontext.github.io/GraphARC/) · MIT

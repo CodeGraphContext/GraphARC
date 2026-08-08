@@ -233,7 +233,19 @@ def _agent_factory(model: Any, harness_for: Any, kind: str) -> Any:
             # The stop reason is carried with the text, so a phase that gave up
             # is not indistinguishable from one that finished.
             reason = result.termination_reason.value
-            line = result.output if reason == "target_met" else f"[{reason}] {result.output}"
+            if reason == "target_met":
+                line = result.output
+            else:
+                # `AgentResult.output` is empty by contract for every reason but
+                # TARGET_MET — the mid-work text lives in `partial_output`.
+                # Reading `output` here formatted "[budget_exhausted] " with
+                # nothing after it: the work the phase did manage was dropped on
+                # the floor, and a downstream goal check could read the empty
+                # note as a phase that had nothing to report rather than one
+                # that was cut off. `note` is the last resort — it carries the
+                # budget line or the error repr when there is no prose at all.
+                text = result.partial_output or result.note or "(no output)"
+                line = curtailed_note(reason, text)
             # The reducer appends; returning the accumulated list would double it.
             return {field: [line]}
 
@@ -277,8 +289,8 @@ def default_harness(
     )
     from grapharc.tools import core_tools
 
-    registry = ToolRegistry()
     root = Path(workspace or Path.cwd())
+    registry = ToolRegistry()
     for spec in core_tools(root, include=tools):
         registry.register(spec)
     # `literal`, not a bare pattern: these names come from a registry, not from
@@ -289,8 +301,17 @@ def default_harness(
         default=Decision.DENY,
     )
     pre_hooks = () if leases is None else (leases.hook(lease_holder, root),)
+    # `workspace` is named even though `LocalExecutor` confines nothing: it is
+    # the directory a *delegated* phase is given as its cwd. Without it, this
+    # registry driven by the Claude CLI — the combination the module docstring
+    # describes, where the whole loop goes to Claude Code — failed at every
+    # agent node with "does not expose one".
     return Harness(
-        registry=registry, policy=policy, executor=LocalExecutor(), pre_hooks=pre_hooks
+        registry=registry,
+        policy=policy,
+        executor=LocalExecutor(),
+        pre_hooks=pre_hooks,
+        workspace=str(root),
     )
 
 
@@ -390,15 +411,54 @@ _PLANNER_INSTRUCTIONS = (
 )
 
 
+def curtailed_note(reason: str, text: str) -> str:
+    """How a phase that did not finish cleanly writes itself into state.
+
+    One function so that `goal_met` can recognise the shape it produces
+    rather than pattern-matching a format written down somewhere else.
+    """
+    return f"[{reason}] {text}"
+
+
+def _curtailed_reasons() -> frozenset[str]:
+    """Every `StopReason` except the one that means the phase finished.
+
+    Read off the enum rather than hardcoded: a new stop reason must not
+    silently start reading as a successful outcome. Imported lazily to keep
+    this module importable without the harness, as the rest of it is.
+    """
+    from grapharc.harness.agent import StopReason
+
+    return frozenset(
+        reason.value for reason in StopReason if reason is not StopReason.TARGET_MET
+    )
+
+
+def is_curtailed(line: str) -> bool:
+    """True when `line` is a phase reporting that it stopped short."""
+    if not line.startswith("["):
+        return False
+    marker, separator, _rest = line[1:].partition("]")
+    return bool(separator) and marker in _curtailed_reasons()
+
+
 def goal_met(state: Any) -> bool:
-    """Done when a report landed in `notes`.
+    """Done when a *report* landed in `notes` — not merely a line.
 
     `apply_change` and `summarize` are the kinds that write `notes`, so this
     reads as "the run produced its human-facing outcome". Deterministic code,
     never a model — and defensive about the schema, so a custom state supplied
     through `--registry` cannot turn "am I done" into an AttributeError.
+
+    A curtailed phase writes a note too, and counting it stopped runs with
+    `goal_met` whose entire output was `['[error] ']` (issue #96): the agent
+    node had failed, the failure was folded into state as prose, and the length
+    check could not tell a report from an apology. A run whose only notes say
+    they did not finish has not met its goal — it has run out of ways to say
+    so, which the loop reports as its own reason.
     """
-    return len(getattr(state, "notes", ()) or ()) >= 1
+    notes = getattr(state, "notes", ()) or ()
+    return any(not is_curtailed(str(note)) for note in notes)
 
 
 def _observe(state: Any) -> str:
@@ -537,8 +597,10 @@ __all__ = [
     "build_loop",
     "build_registry",
     "catalog_for_prompt",
+    "curtailed_note",
     "default_edge_policy",
     "default_harness",
     "goal_met",
+    "is_curtailed",
     "scripted_planner_replies",
 ]

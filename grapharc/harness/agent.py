@@ -647,6 +647,12 @@ class AgentNode:
         from grapharc.cli.delegate import DelegationError, delegate_task
 
         remaining = ctx.meter.remaining_seconds() if ctx.meter else None
+        if remaining is not None and remaining <= 0:
+            # `remaining_seconds()` is `max_seconds - elapsed` and goes negative
+            # once the budget is spent. Delegating with that would spawn Claude
+            # Code only to kill it, so refuse here — before the trace claims a
+            # delegated phase started — and let the caller see a budget failure.
+            remaining = 0.0
         step = 1
         bypass = self.delegated_mode == "bypass"
         allowed = None if bypass else self._delegated_allowlist()
@@ -667,12 +673,19 @@ class AgentNode:
                              "governed_by": "Claude Code, not this graph's policy"},
             )
         try:
-            workspace = getattr(self.harness.executor, "workspace", None)
+            # The harness first, its executor second. Only the sandboxing
+            # executors carry a workspace of their own, so asking the executor
+            # alone made every `LocalExecutor` harness undelegatable — which is
+            # the whole `stdlib` registry driven by the Claude CLI, the one
+            # combination whose documented behaviour *is* delegation.
+            workspace = getattr(self.harness, "workspace", None) or getattr(
+                self.harness.executor, "workspace", None
+            )
             if workspace is None:
                 raise DelegationError(
-                    "the delegated executor needs a workspace directory, and this "
-                    f"harness's executor ({type(self.harness.executor).__name__}) "
-                    "does not expose one",
+                    "a delegated run needs a workspace directory to run in, and "
+                    f"this harness (executor: {type(self.harness.executor).__name__}) "
+                    "does not name one; pass `workspace=` when building it",
                     reason="no_workspace",
                 )
             run = delegate_task(

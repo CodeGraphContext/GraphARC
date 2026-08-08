@@ -371,6 +371,10 @@ def _cmd_plan(args: argparse.Namespace) -> int:
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
+    if getattr(args, "claude_code", False):
+        from grapharc.cli.adopt import adopt_claude_code
+
+        return adopt_claude_code(as_json=args.json)
     from grapharc.cli.init_cmd import init
 
     return init(as_json=args.json)
@@ -399,6 +403,8 @@ def _cmd_go(args: argparse.Namespace) -> int:
             run_id=args.run_id,
             max_tokens=args.max_tokens,
             config_path=args.config,
+            approve=args.approve,
+            approval_timeout=args.approval_timeout,
             as_json=args.json,
         )
     candidate = Path(target)
@@ -415,6 +421,8 @@ def _cmd_go(args: argparse.Namespace) -> int:
             run_id=args.run_id,
             max_tokens=args.max_tokens,
             config_path=args.config,
+            approve=args.approve,
+            approval_timeout=args.approval_timeout,
             as_json=args.json,
         )
     return plan(
@@ -443,7 +451,13 @@ def _cmd_go(args: argparse.Namespace) -> int:
 def _cmd_approve(args: argparse.Namespace) -> int:
     from grapharc.cli.approve import approve
 
-    return approve(args.path, deny=args.deny, as_json=args.json)
+    return approve(
+        args.path,
+        deny=args.deny,
+        show=args.show,
+        fingerprint=args.fingerprint,
+        as_json=args.json,
+    )
 
 
 def _cmd_models(args: argparse.Namespace) -> int:
@@ -549,6 +563,23 @@ def _cmd_agent(args: argparse.Namespace) -> int:
         run_id=args.run_id,
         as_json=args.json,
     )
+
+
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    from grapharc.cli import optional
+
+    try:
+        module = optional.load(
+            "grapharc.mcp",
+            needed_for="grapharc mcp",
+            hint="pip install 'grapharc[mcp]'",
+        )
+    except optional.Unavailable as exc:
+        return fail(str(exc), as_json=args.json, command="mcp")
+    root = Path(args.root).resolve() if args.root else None
+    if root is not None and not root.is_dir():
+        return fail(f"--root: not a directory: {root}", as_json=args.json, command="mcp")
+    return int(module.serve_stdio(root))
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -969,6 +1000,15 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="scaffold a registry, a config and a runs directory in this directory",
     )
+    ini.add_argument(
+        "--claude-code",
+        action="store_true",
+        help=(
+            "instead of the scaffold, write .mcp.json and the Claude Code "
+            "skill that route this project's multi-step work through "
+            "grapharc mcp supervision"
+        ),
+    )
     ini.set_defaults(handler=_cmd_init)
 
     st = sub.add_parser(
@@ -985,6 +1025,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("path", type=Path, help="the paused run's trace file (or its directory)")
     ap.add_argument("--deny", action="store_true", help="refuse the plan instead of approving it")
+    ap.add_argument(
+        "--show",
+        action="store_true",
+        help="print the parked plan and exit without deciding anything",
+    )
+    ap.add_argument(
+        "--fingerprint",
+        default=None,
+        metavar="FP",
+        help=(
+            "only decide if the parked plan is this one — the fingerprint "
+            "`--show` printed; refuses with exit 2 if it has been replaced"
+        ),
+    )
     ap.set_defaults(handler=_cmd_approve)
 
     agent = sub.add_parser(
@@ -1064,6 +1118,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent.add_argument("--system-prompt", default=None)
     agent.set_defaults(handler=_cmd_agent)
+
+    mcp = sub.add_parser(
+        "mcp",
+        parents=[common],
+        help=(
+            "run the MCP supervision server on stdio (plan / show_graph / "
+            "execute; approval stays out of band)"
+        ),
+    )
+    mcp.add_argument(
+        "--root",
+        default=None,
+        metavar="PATH",
+        help=(
+            "directory whose grapharc.toml and registry govern every plan, and "
+            "which confines every run_dir a client names (default: the working "
+            "directory)"
+        ),
+    )
+    mcp.set_defaults(handler=_cmd_mcp)
 
     serve = sub.add_parser("serve", parents=[common], help="run the HTTP API")
     serve.add_argument("--host", default="127.0.0.1")

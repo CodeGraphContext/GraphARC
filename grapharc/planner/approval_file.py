@@ -60,6 +60,36 @@ def read_request(directory: Path) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
+def describe_request(request: dict[str, Any], directory: Path) -> str:
+    """The parked question as something a human can act on without prior knowledge.
+
+    A run that parks and then says nothing but "waiting" depends on the reader
+    already knowing that `grapharc approve` exists, that `--deny` is the other
+    half, and that the wait expires. That is tribal knowledge, and the failure
+    mode is a run timing out unapproved while its operator watches a cursor —
+    which then reads as a planner failure rather than an unanswered question
+    (issue #52). So the block names the plan, its fingerprint, the deadline,
+    and both commands that end the wait.
+
+    Deliberately plain text: this module is the headless half of the handshake
+    and must stay importable without the CLI's styling. The caller decorates.
+    """
+    nodes = [str(node) for node in request.get("nodes", ())]
+    shape = f"{len(nodes)} node{'s' if len(nodes) != 1 else ''}"
+    if nodes:
+        shape += ": " + ", ".join(nodes)
+    lines = [
+        f"awaiting approval — {shape}",
+        f"  fingerprint : {request.get('fingerprint', '?')}",
+        f"  waiting     : up to {float(request.get('timeout_seconds') or 0):.0f}s,"
+        " then the round counts as unapproved",
+        f"  approve     : grapharc approve {directory}",
+        f"  refuse      : grapharc approve {directory} --deny",
+        f"  look first  : grapharc approve {directory} --show",
+    ]
+    return "\n".join(lines)
+
+
 def write_decision(directory: Path, *, fingerprint: str, decision: str) -> Path:
     path = directory / DECISION_FILENAME
     _write_atomically(path, {"fingerprint": fingerprint, "decision": decision})
@@ -106,10 +136,7 @@ def file_approval(
             write_request(directory, request)
             if announce is not None:
                 try:
-                    announce(
-                        f"waiting for approval (up to {timeout_seconds:.0f}s) — "
-                        f"answer with: grapharc approve {directory}"
-                    )
+                    announce(describe_request(request, directory))
                 except Exception:  # noqa: BLE001 — narration must not decide
                     pass
             while time.monotonic() < deadline:
@@ -157,6 +184,7 @@ __all__ = [
     "DECISION_FILENAME",
     "DEFAULT_TIMEOUT_SECONDS",
     "REQUEST_FILENAME",
+    "describe_request",
     "file_approval",
     "read_request",
     "write_decision",

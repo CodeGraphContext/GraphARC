@@ -339,13 +339,22 @@ def compose_snapshot(
     mermaid = to_mermaid(recorder, chosen)
     run = replay(recorder, chosen)
     graph = layout_graph(build_graph_view(run))
-    # Finished means: something wrote a termination reason, OR a driver wrote
+    # Finished means: something wrote a termination reason, OR a *driver* wrote
     # its terminal `stop` event — the planner writes the latter and never the
-    # former, and keying on `termination_reason` alone held the SSE stream
-    # open forever for every planner run.
-    done = any(
-        e.phase == "stop" or "termination_reason" in (e.state_delta or {})
-        for e in run_events
+    # former, and keying on `termination_reason` alone held the SSE stream open
+    # forever for every planner run.
+    #
+    # "Driver" is the load-bearing word, and `orphan_sub_events` is how it is
+    # read. Every `AgentNode` phase writes its own `stop` when its agent loop
+    # ends, so on a multi-phase graph — investigate, then apply_change, then
+    # verify — any `stop` in `run_events` meant the whole run was declared
+    # finished the moment the *first* phase ended, and the SSE stream closed on
+    # a page with two nodes still to run. A phase's stop falls inside its node
+    # span and is attributed there; the driver's own is an orphan, and a run
+    # with no graph at all (`grapharc agent`) has only orphans, so its stop
+    # still ends the stream exactly as before.
+    done = any("termination_reason" in (e.state_delta or {}) for e in run_events) or any(
+        e.phase == "stop" for e in run.orphan_sub_events
     )
     # A node that started and never ended means someone is inside it right now
     # — a delegated executor writes nothing between its start and its finish,

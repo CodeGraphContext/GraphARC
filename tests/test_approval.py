@@ -340,3 +340,143 @@ def test_plan_approve_in_text_mode_still_announces_how_to_answer(tmp_path, capsy
     ])
 
     assert "grapharc approve" in capsys.readouterr().out
+
+
+# -- the gate reaches `plan` without `--go`, and `go` itself (PR B1) ------------
+
+
+def _answer(trace_dir: Path, argv_extra: list[str] | None = None) -> threading.Thread:
+    """Answer the file handshake from a background thread, via the real CLI.
+
+    `--json` so the answer shares captured stdout with the parked command's
+    own document as two clean JSON values rather than interleaved prose.
+    """
+
+    def worker():
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if (trace_dir / REQUEST_FILENAME).exists():
+                assert main(["approve", str(trace_dir), "--json", *(argv_extra or [])]) == 0
+                return
+            time.sleep(0.02)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    return thread
+
+
+def _last_document(text: str) -> dict:
+    """The final JSON document in a stream that may carry several."""
+    decoder = json.JSONDecoder()
+    documents, index = [], 0
+    while index < len(text):
+        if text[index] != "{":
+            index += 1
+            continue
+        try:
+            document, index = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            index += 1
+            continue
+        documents.append(document)
+    assert documents, f"no JSON document in: {text[:200]!r}"
+    return documents[-1]
+
+
+def test_plan_approve_without_go_parks_and_a_denial_leaves_no_plan_file(tmp_path, capsys):
+    """`plan --approve` used to return PLANNED before the gate could fire — an
+    inert flag. Now the parked plan is a real question, and a denial is
+    fail-closed: nothing is saved for a later `go` to pick up."""
+    trace = tmp_path / "run" / "trace.jsonl"
+    thread = _answer(trace.parent, ["--deny"])
+    code = main(
+        ["plan", "investigate", "--scripted", "--approve", "--approval-timeout", "8",
+         "--trace", str(trace), "--json"]
+    )
+    thread.join()
+
+    assert code == 1
+    payload = _last_document(capsys.readouterr().out)
+    assert payload["stop"] == "approval_denied"
+    assert not (trace.parent / "plan.json").exists()
+
+
+def test_plan_approve_approved_still_stops_planned_and_saves_the_plan(tmp_path, capsys):
+    trace = tmp_path / "run" / "trace.jsonl"
+    thread = _answer(trace.parent)
+    code = main(
+        ["plan", "investigate", "--scripted", "--approve", "--approval-timeout", "8",
+         "--trace", str(trace), "--json"]
+    )
+    thread.join()
+
+    assert code == 0
+    payload = _last_document(capsys.readouterr().out)
+    assert payload["stop"] == "planned"
+    assert (trace.parent / "plan.json").exists()
+
+
+def _saved_plan(tmp_path, capsys) -> Path:
+    trace = tmp_path / "run" / "trace.jsonl"
+    assert main(["plan", "investigate", "--scripted", "--trace", str(trace), "--json"]) == 0
+    capsys.readouterr()  # drop the plan document; the tests below have their own
+    return trace.parent
+
+
+def test_go_approve_denied_executes_nothing(tmp_path, capsys):
+    """`go <dir> --approve` was accepted and silently ignored — the flag now
+    parks the replayed plan, and a denial leaves it unexecuted."""
+    run_dir = _saved_plan(tmp_path, capsys)
+    thread = _answer(run_dir, ["--deny"])
+    code = main(["go", str(run_dir), "--approve", "--approval-timeout", "8", "--json"])
+    thread.join()
+
+    assert code == 1
+    payload = _last_document(capsys.readouterr().out)
+    assert payload["stop"] == "approval_denied"
+    assert payload["executed"] is False
+    record = json.loads((run_dir / "plan.json").read_text())
+    assert "executed_run_id" not in record
+
+
+def test_go_approve_unanswered_times_out_with_the_plan_unexecuted(tmp_path, capsys):
+    run_dir = _saved_plan(tmp_path, capsys)
+    code = main(["go", str(run_dir), "--approve", "--approval-timeout", "0.6", "--json"])
+
+    assert code == 1
+    payload = _last_document(capsys.readouterr().out)
+    assert payload["stop"] == "approval_timeout"
+    record = json.loads((run_dir / "plan.json").read_text())
+    assert "executed_run_id" not in record
+
+
+def test_go_approve_approved_executes_and_stamps_the_plan(tmp_path, capsys):
+    run_dir = _saved_plan(tmp_path, capsys)
+    thread = _answer(run_dir)
+    code = main(["go", str(run_dir), "--approve", "--approval-timeout", "8", "--json"])
+    thread.join()
+
+    assert code == 0
+    payload = _last_document(capsys.readouterr().out)
+    assert payload["executed"] is True
+    record = json.loads((run_dir / "plan.json").read_text())
+    assert record["executed_run_id"]
+
+
+def test_the_plan_payload_carries_the_admitted_shape(tmp_path, capsys):
+    """An external driver must not have to re-read plan.json to learn what was
+    admitted, under what fingerprint, and whether it can change anything."""
+    trace = tmp_path / "run" / "trace.jsonl"
+    assert main(["plan", "investigate", "--scripted", "--trace", str(trace), "--json"]) == 0
+
+    payload = _last_document(capsys.readouterr().out)
+    assert payload["run_dir"] == str(trace.parent)
+    assert payload["fingerprint"]
+    names = {node["name"] for node in payload["proposal"]["nodes"]}
+    assert names  # the admitted round, as data
+    # The incident registry declares deploy as its mutating kind, and the
+    # admitted replan does not contain it.
+    assert payload["mutating"] is False
+    record = json.loads((trace.parent / "plan.json").read_text())
+    assert payload["fingerprint"] == record["fingerprint"]
+    assert names == {node["name"] for node in record["proposal"]["nodes"]}

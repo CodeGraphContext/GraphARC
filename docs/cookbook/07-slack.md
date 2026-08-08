@@ -22,7 +22,8 @@ an afterthought. The defaults:
 
 | Reachable from Slack | Refused from Slack |
 |---|---|
-| `demo`, `run`, `plan`, `models`, `replay`, `diff`, `trace`, `metrics`, `viz` | `serve` |
+| `demo`, `run`, `plan`, `models`, `replay`, `diff`, `trace`, `metrics`, `viz`, `approve` | `serve` |
+| `plan --go`, which executes what it planned — **always after a human approves** | `plan --go` without a gate: `--go` forces `--approve`, and the flag cannot be dropped from Slack |
 | Paths that resolve inside the bot's working directory | Any path that escapes it (`trace ../../.env` is refused before a process spawns) |
 | The budget, policy and trace flags each command already has | `--registry` (imports an arbitrary module), `--config`, `--json`, `--no-color` |
 | `plan --registry`, for exactly the two registries the package ships | any other `--registry` value |
@@ -106,7 +107,8 @@ Configuration is environment-only, read once at startup:
 |---|---|---|
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | — (required) | the two tokens from the app page |
 | `GRAPHARC_SLACK_WORKDIR` | the bot's cwd | the directory every path must resolve inside |
-| `GRAPHARC_SLACK_TIMEOUT` | `120` | seconds one command may run before it is killed |
+| `GRAPHARC_SLACK_TIMEOUT` | `120` | seconds a *reader* command may run before it is killed |
+| `GRAPHARC_SLACK_WORK_TIMEOUT` | `1800` | seconds a command that **executes** (`agent`, `plan --go`) may run. Two minutes is a sensible limit for `metrics` and a SIGKILL through the middle of an approved run; raised below the reader timeout, the larger of the two wins |
 | `GRAPHARC_SLACK_ALLOW_MODEL` | off | `1` admits `--model`/`--reviewer-model` |
 | `GRAPHARC_SLACK_ALLOW_AGENT` | off | `1` admits `agent` — only together with `ALLOW_MODEL` |
 | `GRAPHARC_SLACK_COMMAND` | `/grapharc` | the slash command to answer to |
@@ -210,6 +212,80 @@ model output — and the `propose` note says plainly that authoring needs a
 real model rather than pretending. `--registry` from Slack accepts exactly
 these two shipped modules and nothing else — the flag's general form imports
 arbitrary code, which stays refused.
+
+## Supervised work: the graph before the work
+
+![One Slack message drives Claude Code: the bot answers with the proposed graph — nodes, kinds, edges, worst-case cost — and two buttons; nothing runs until Approve is clicked, and the closing frame reads the trace back to show approval_request, then approval_response, then the first node's start.](../media/grapharc-slack-supervised.gif)
+
+*A real run: a real planner, a real approval handshake, a real delegated Claude
+Code phase. The Slack transport is the one mocked part — see
+[docs/demo/](../demo/) for exactly what is and is not real, and for the two
+scripts that regenerate this. ([mp4](../media/grapharc-slack-supervised.mp4))*
+
+The whole point of the bot is this one exchange. You are away from your
+machine, something needs doing, and you would like to see *what* is going to
+be done before it is:
+
+```
+/grapharc plan "explain what flaky.py does and why it is not reproducible" --go \
+    --model claude-cli --registry grapharc.stdlib:build_registry
+```
+
+`--go` means plan **and** execute. From Slack it never means that on its own:
+the gate appends `--approve` to any `plan --go` it admits, whichever registry
+was chosen, so the run parks before its first node. That rule is not a
+convenience — anyone in the workspace can type into this bot, and without it
+one message would take a model's proposal straight to execution on the host
+with the graph visible only afterwards.
+
+What comes back is the proposal itself, in the message:
+
+```
+`grapharc plan '…' --go --model claude-cli …` — ⏸ waiting for approval (10s) · explain what flaky.py does…
+    why: Explore the workspace to locate flaky.py, investigate its behaviour and
+         source of non-determinism, then summarize the findings.
+    3 nodes:
+      · collect_context
+      · investigate_flaky (investigate)
+      · summarize
+    4 edges:
+      __start__ → collect_context
+      collect_context → investigate_flaky
+      investigate_flaky → summarize
+      summarize → __end__
+    worst case: 5500 tok
+4 events · 1860 tok
+nothing above has run yet — it runs only if you approve.
+[ Approve ]  [ Deny ]
+```
+
+Three things about that message are load-bearing:
+
+- **The graph is in it.** Not behind a link. The person deciding is on a
+  phone, and "the graph is over there" asks them to approve something they
+  have not seen.
+- **Kinds, not just names.** `investigate_flaky` is a name the planner chose;
+  `investigate` is what the gate actually governs. A node whose kind can
+  change files is marked `✎`, read from the registry's own `MUTATING_KINDS`.
+  A registry that declares nothing gets every node marked and says so — nobody
+  said it was safe, so it is not treated as safe.
+- **Nothing has run.** The trace proves it afterwards: `approval_request`,
+  then `approval_response`, then the first node's `start`, in that order.
+
+The buttons need `interactivity` enabled in the app manifest (the one above
+has it). A click writes the decision file the parked run is polling for,
+quoting the request's fingerprint — so a button on a message you scrolled back
+to, drawn for a plan the run has since replaced, is refused rather than
+honoured. The typed form stays in the message for a workspace without
+interactivity: `/grapharc approve <trace>`, or `--deny`.
+
+Who clicked is posted into the thread. It is not in the trace: the trace has
+no actor field (see the architecture review), and the bot will not imply an
+audit trail it does not have.
+
+Time is split rather than shared. A parked `plan --go` gives the human a third
+of the work budget (capped at 15 minutes) and leaves the rest for the run they
+authorise; a plan-only park may have half, since nothing follows it.
 
 ## The `agent` opt-in
 

@@ -158,7 +158,7 @@ def resolve_or_generate_policy(
     workdir: Path | None = None,
     write: bool = True,
     catalog: dict[str, str] | None = None,
-    mutating: tuple[str, ...] = (),
+    mutating: tuple[str, ...] | None = (),
     fallback: Any = None,
     fallback_label: str = "",
     registry_target: str = "",
@@ -232,12 +232,22 @@ def resolve_or_generate_policy(
         return _settled()
 
     try:
-        toml_text = build_policy_toml(
-            model,
-            goal,
-            catalog if catalog is not None else stdlib.catalog_for_prompt(model),
-            mutating or stdlib.MUTATING_KINDS,
-        )
+        kinds = catalog if catalog is not None else stdlib.catalog_for_prompt(model)
+        # `mutating` has three states and they must not be collapsed. A tuple —
+        # empty included — is the registry declaring which of its kinds change
+        # things, and is used verbatim: `()` means it says none do.
+        #
+        # `None` means the registry declared *nothing*, which is not evidence of
+        # safety. Substituting stdlib's `MUTATING_KINDS` (what `mutating or …`
+        # did) told the model that the one dangerous kind is `apply_change` — a
+        # name that need not exist in this registry at all — while a custom
+        # registry's real `deploy`/`publish` kind went unnamed and the generated
+        # policy allowed edges into it. That policy is then cached and governs
+        # every later run. Undeclared therefore means every kind is dangerous:
+        # the same reading `plan` takes when it writes `mutating: true` into a
+        # plan file it cannot vouch for.
+        dangerous = tuple(sorted(kinds)) if mutating is None else mutating
+        toml_text = build_policy_toml(model, goal, kinds, dangerous)
         from grapharc.policy import PolicyEngine
 
         engine = PolicyEngine.from_toml(toml_text)

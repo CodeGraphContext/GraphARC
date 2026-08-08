@@ -28,9 +28,16 @@ class SlackBotConfig:
     app_token: str
     # Every path a Slack user names must resolve inside this directory.
     workdir: Path = field(default_factory=Path.cwd)
-    # One command's wall clock. Slack acks immediately, so this bounds how
-    # long a runaway command can hold one of the bot's worker threads.
+    # One reader command's wall clock. Slack acks immediately, so this bounds
+    # how long a runaway command can hold one of the bot's worker threads.
     timeout_seconds: float = 120.0
+    # The wall clock for a command that plans and then *executes* (`agent`,
+    # `plan --go`). Much larger on purpose: a delegated Claude Code phase reads
+    # and edits files, and two minutes is not a safety limit for that, it is a
+    # SIGKILL through the middle of a run a human just approved. The gate keeps
+    # the CLI's own graceful ceilings under this, so the run reports rather than
+    # dies. See `command.effective_timeout` for which budget applies to what.
+    work_timeout_seconds: float = 1800.0
     # Opt-in: allow `--model` / `--reviewer-model`, which reach paid backends.
     allow_model: bool = False
     # Second opt-in: allow `agent`, which executes tools on the host. Only
@@ -82,6 +89,21 @@ class SlackBotConfig:
         if timeout <= 0:
             raise SlackConfigError("GRAPHARC_SLACK_TIMEOUT must be positive")
 
+        raw_work_timeout = env.get("GRAPHARC_SLACK_WORK_TIMEOUT", "1800")
+        try:
+            work_timeout = float(raw_work_timeout)
+        except ValueError:
+            raise SlackConfigError(
+                "GRAPHARC_SLACK_WORK_TIMEOUT must be a number of seconds, "
+                f"got {raw_work_timeout!r}"
+            ) from None
+        if work_timeout <= 0:
+            raise SlackConfigError("GRAPHARC_SLACK_WORK_TIMEOUT must be positive")
+        # A work budget under the reader budget is almost certainly a typo, and
+        # the failure it produces is confusing: `plan --go` would be killed
+        # sooner than `metrics`. Take the larger rather than obeying literally.
+        work_timeout = max(work_timeout, timeout)
+
         raw_interval = env.get("GRAPHARC_SLACK_LIVE_INTERVAL", "2.5")
         try:
             live_interval = float(raw_interval)
@@ -105,6 +127,7 @@ class SlackBotConfig:
             app_token=app_token,
             workdir=workdir,
             timeout_seconds=timeout,
+            work_timeout_seconds=work_timeout,
             allow_model=env.get("GRAPHARC_SLACK_ALLOW_MODEL", "") == "1",
             allow_agent=env.get("GRAPHARC_SLACK_ALLOW_AGENT", "") == "1",
             slash_command=env.get("GRAPHARC_SLACK_COMMAND", "/grapharc"),
