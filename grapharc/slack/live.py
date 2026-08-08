@@ -24,7 +24,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from grapharc.observe.metrics import to_mermaid
 from grapharc.observe.replay import NodeExecution, ReplayedRun, replay
@@ -45,11 +45,18 @@ class LiveSink(Protocol):
     returns None (the caller falls back to the plain blocking reply), `update`
     returns False (the tailer goes quiet). A sink can be handed an unreliable
     network and the run must not care.
+
+    `update` takes optional Block Kit `blocks` because a parked run's message
+    carries Approve/Deny buttons. `None` means "this message is text" — and,
+    for a sink editing in place, means *drop* any blocks it had: the edit that
+    says a plan was approved must also take its Approve button away.
     """
 
     def post(self, text: str) -> object | None: ...
 
-    def update(self, handle: object, text: str) -> bool: ...
+    def update(
+        self, handle: object, text: str, blocks: list[dict[str, Any]] | None = None
+    ) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -79,15 +86,19 @@ class LiveTail:
         self,
         trace_path: Path,
         argv: list[str],
-        update: Callable[[str], bool],
+        update: Callable[..., bool],
         settings: LiveSettings | None = None,
         *,
         view_url: str | None = None,
+        workdir: Path | None = None,
+        mutating_kinds: frozenset[str] | None = frozenset(),
     ) -> None:
         self._path = trace_path
         self._argv = list(argv)
         self._update = update
         self._view_url = view_url
+        self._workdir = workdir or Path.cwd()
+        self._mutating_kinds = mutating_kinds
         self._settings = settings or LiveSettings()
         try:
             self._offset = trace_path.stat().st_size
@@ -122,14 +133,15 @@ class LiveTail:
                     continue
                 if time.monotonic() - last_update < self._settings.update_interval:
                     continue
-                text = self._render(run_id)
-                if text is None:
+                rendered = self._render(run_id)
+                if rendered is None:
                     continue
+                text, prompt = rendered
                 dirty = False
                 last_update = time.monotonic()
                 if text == last_text:
                     continue
-                if not self._update(text):
+                if not self._update(text, prompt):
                     return  # the sink is dead; go quiet, never raise
                 last_text = text
             except Exception:
@@ -137,7 +149,7 @@ class LiveTail:
                 # do not depend on it.
                 return
 
-    def _render(self, run_id: str) -> str | None:
+    def _render(self, run_id: str) -> tuple[str, ApprovalPrompt | None] | None:
         # TailRecorder, not TraceRecorder: a read can land mid-write, and the
         # plain reader raises on the torn line where this one skips it.
         recorder = TailRecorder(self._path)
@@ -146,13 +158,15 @@ class LiveTail:
             diagram = to_mermaid(recorder, run_id)
         except Exception:
             return None  # e.g. no complete events yet; retry next tick
-        return render_progress(
+        text = render_progress(
             run,
             argv=self._argv,
             elapsed_s=time.monotonic() - self._started_at,
             diagram=diagram,
             view_url=self._view_url,
+            mutating_kinds=self._mutating_kinds,
         )
+        return text, pending_approval_prompt(run, self._argv, self._workdir)
 
     def _read_new_run_id(self) -> str | None:
         """Fold newly appended complete lines; return the latest run_id seen.
@@ -260,6 +274,70 @@ def _pending_approval(run: ReplayedRun) -> TraceEvent | None:
     return pending
 
 
+def plan_lines(
+    approval: TraceEvent, *, mutating_kinds: frozenset[str] | None = frozenset()
+) -> list[str]:
+    """The proposed graph as text: what a human is being asked to approve.
+
+    Read from the `approval_request` event alone, which carries every field
+    this needs (`loop._request_approval`). A link is not an answer here — the
+    person deciding is on a phone, and "the graph is over there" asks them to
+    approve something they have not seen. So the shape goes in the message.
+
+    Kinds, not just names: `fix_it` is a name a planner chose and `apply_change`
+    is the thing the gate actually governs. A node whose kind can change files
+    is marked ✎, because "will this touch my repo" is the question being asked.
+
+    `mutating_kinds=None` means the registry declared nothing about which of
+    its kinds mutate. Every node is then marked, matching the reading `plan`
+    already takes for its own plan file: undeclared is not evidence of safety.
+    """
+    delta = approval.state_delta or {}
+    names = [str(n) for n in delta.get("nodes", [])]
+    kinds = [str(k) for k in delta.get("kinds", [])]
+    lines: list[str] = []
+    if mutating_kinds is None and names:
+        lines.append("⚠ this registry does not say which kinds change things — assume all do")
+
+    rationale = str(delta.get("rationale") or "").strip()
+    if rationale:
+        lines.append(f"why: {' '.join(rationale.split())[:240]}")
+
+    if names:
+        lines.append(f"{len(names)} node{'s' if len(names) != 1 else ''}:")
+        for index, name in enumerate(names):
+            kind = kinds[index] if index < len(kinds) else ""
+            # A kind equal to the name adds nothing — `ProposedNode` defaults
+            # `kind` to `name`, and printing "verify (verify)" is noise.
+            label = f"{name} ({kind})" if kind and kind != name else name
+            mark = "✎" if mutating_kinds is None or kind in mutating_kinds else "·"
+            lines.append(f"  {mark} {label}")
+
+    edges = delta.get("edges", [])
+    if edges:
+        lines.append(f"{len(edges)} edge{'s' if len(edges) != 1 else ''}:")
+        for edge in edges:
+            try:
+                source, target = edge[0], edge[1]
+            except (TypeError, IndexError, KeyError):
+                continue
+            lines.append(f"  {source} → {target}")
+
+    tokens = delta.get("worst_case_tokens")
+    if tokens:
+        estimate = f"worst case: {tokens} tok"
+        if not delta.get("worst_case_complete", True):
+            # The flag exists so nobody reads an incomplete number as complete.
+            estimate += " (lower bound — an unregistered kind has no price)"
+        lines.append(estimate)
+
+    if not lines:
+        # An empty proposal is legal and means "no further work". Saying so is
+        # better than an empty box that reads as a rendering failure.
+        lines.append("(an empty plan — the planner proposes no further work)")
+    return lines
+
+
 def _planned_lines(run: ReplayedRun) -> list[str] | None:
     """One line per *declared* node, marked by status — or None without topology.
 
@@ -318,13 +396,15 @@ def render_progress(
     elapsed_s: float,
     diagram: str | None = None,
     view_url: str | None = None,
+    mutating_kinds: frozenset[str] | None = frozenset(),
 ) -> str:
     """One Slack message describing the run so far.
 
-    Declared-graph node marks when the trace carries topology; node executions
-    when the run has them; otherwise the tail of the flat event feed — an
-    agent with no enclosing graph is all flat feed, and an empty box saying
-    nothing was the alternative.
+    A parked run shows the *plan* — the graph it is asking permission for.
+    Otherwise: declared-graph node marks when the trace carries topology; node
+    executions when the run has them; otherwise the tail of the flat event feed
+    — an agent with no enclosing graph is all flat feed, and an empty box
+    saying nothing was the alternative.
     """
     approval = _pending_approval(run)
     if approval is not None:
@@ -339,7 +419,12 @@ def render_progress(
         header += f" · {goal[:80]}"
 
     planned = _planned_lines(run)
-    if planned is not None:
+    if approval is not None:
+        # The proposed graph, not the node marks: every node of a parked plan
+        # is pending by definition, so a column of ⬜ says nothing about what
+        # is being authorised. The shape and the kinds are the question.
+        lines = plan_lines(approval, mutating_kinds=mutating_kinds)
+    elif planned is not None:
         lines = planned
     elif run.executions:
         lines = [_execution_line(e) for e in run.executions]
@@ -372,12 +457,15 @@ def render_progress(
     parts.append(" · ".join(footer))
 
     if approval is not None:
+        parts.append("*nothing above has run yet* — it runs only if you approve.")
         trace_arg = _trace_argument(argv)
         if trace_arg:
-            where = "live view" if view_url else "diagram"
+            # The typed form stays documented in the message even when the
+            # buttons render: a workspace without interactivity enabled, a
+            # client that will not draw blocks, and a stale message whose
+            # buttons the fingerprint check will refuse all end up here.
             parts.append(
-                f"planned graph is in the {where} link — approve with "
-                f"`/grapharc approve {trace_arg}`, refuse with "
+                f"buttons below, or: `/grapharc approve {trace_arg}` · "
                 f"`/grapharc approve {trace_arg} --deny`"
             )
     # The operator's own live view is the primary link; the mermaid.live
@@ -387,6 +475,58 @@ def render_progress(
     elif diagram:
         parts.append(f"<{mermaid_live_url(diagram)}|current diagram>")
     return "\n".join(parts)
+
+
+@dataclass(frozen=True)
+class ApprovalPrompt:
+    """What a pending approval needs from the person deciding.
+
+    `directory` is where the file handshake lives — relative to the bot's
+    working directory, because that is the only form safe to send to Slack and
+    back: an absolute path in a button's value is a path the round trip could
+    rewrite into somewhere else. `bot.py` re-confines it on the way in
+    regardless; this just keeps the value uninteresting to tamper with.
+
+    `fingerprint` is what makes the button honest. It names the exact proposal
+    that was displayed, and `approve` refuses a decision quoting any other — so
+    a button on a scrolled-back message cannot approve the plan that replaced
+    the one it was drawn for.
+    """
+
+    directory: str
+    fingerprint: str
+    round_number: int = 0
+
+
+def pending_approval_prompt(
+    run: ReplayedRun, argv: list[str], workdir: Path
+) -> ApprovalPrompt | None:
+    """The prompt for `run`'s unanswered approval request, or None."""
+    approval = _pending_approval(run)
+    if approval is None:
+        return None
+    trace_arg = _trace_argument(argv)
+    if not trace_arg:
+        return None
+    delta = approval.state_delta or {}
+    fingerprint = str(delta.get("fingerprint") or "")
+    if not fingerprint:
+        # Without a fingerprint there is nothing to bind a decision to, and an
+        # unbound approve button is exactly the thing this design refuses to
+        # ship. Fall back to the typed command, which reads the request file.
+        return None
+    directory = Path(trace_arg).parent
+    try:
+        relative = directory.as_posix() if not directory.is_absolute() else str(
+            directory.relative_to(workdir)
+        )
+    except ValueError:
+        return None
+    return ApprovalPrompt(
+        directory=relative,
+        fingerprint=fingerprint,
+        round_number=int(delta.get("round") or 0),
+    )
 
 
 def _trace_argument(argv: list[str]) -> str | None:

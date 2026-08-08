@@ -451,7 +451,13 @@ def _cmd_go(args: argparse.Namespace) -> int:
 def _cmd_approve(args: argparse.Namespace) -> int:
     from grapharc.cli.approve import approve
 
-    return approve(args.path, deny=args.deny, as_json=args.json)
+    return approve(
+        args.path,
+        deny=args.deny,
+        show=args.show,
+        fingerprint=args.fingerprint,
+        as_json=args.json,
+    )
 
 
 def _cmd_models(args: argparse.Namespace) -> int:
@@ -1019,6 +1025,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("path", type=Path, help="the paused run's trace file (or its directory)")
     ap.add_argument("--deny", action="store_true", help="refuse the plan instead of approving it")
+    ap.add_argument(
+        "--show",
+        action="store_true",
+        help="print the parked plan and exit without deciding anything",
+    )
+    ap.add_argument(
+        "--fingerprint",
+        default=None,
+        metavar="FP",
+        help=(
+            "only decide if the parked plan is this one — the fingerprint "
+            "`--show` printed; refuses with exit 2 if it has been replaced"
+        ),
+    )
     ap.set_defaults(handler=_cmd_approve)
 
     agent = sub.add_parser(

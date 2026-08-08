@@ -352,7 +352,19 @@ def _price_run(run: ReplayedRun, rates: RateCard | None) -> RunCost:
     for sub in run.orphan_sub_events:
         orphan_tokens += sub.tokens or 0
         orphan_ms += sub.duration_ms or 0.0
+        # Cost is attributed from any orphan that carries one; only a `model`
+        # event becomes a `ModelCallCost`, because only that is a model call.
+        # Skipping the rest wholesale billed a delegated run at zero: an
+        # `--executor claude-cli` phase reports its spend on the `stop` event
+        # (`AgentNode._run_delegated`), which is not phase `model`, and with no
+        # enclosing graph every event it writes is an orphan. The bill came out
+        # $0.00 with no `unpriced_tokens` to say it was incomplete — while
+        # `ReplayedRun.recorded_cost_usd`, which counts orphans by cost rather
+        # than by phase, reported the real figure. Two readers, one trace, two
+        # answers. This is the rule that reconciles them.
         if sub.phase != "model":
+            if sub.cost_usd is not None:
+                recorded_total.append(sub.cost_usd)
             continue
         sub_estimate = (
             None if sub.cost_usd is not None else card.price(sub.tokens or 0, sub.model)

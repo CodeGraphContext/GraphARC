@@ -162,6 +162,10 @@ grapharc diff   trace.jsonl <run-a> <run-b>   # what changed between two runs
 grapharc metrics trace.jsonl <run-id>         # tokens, retries, termination reason
 ```
 
+![A terminal: two runs of the same goal written to one trace file — the second under a tighter token ceiling, priced and refused during admission so nothing ran — then trace, replay and diff reading both back out of that single file.](media/grapharc-cli-audit.gif)
+
+*Two runs, one file. The second was given a smaller `--max-tokens`, so admission priced the proposal, refused it, and no node started; `diff` reports that as `path 3 -> 0 nodes`. Free and deterministic — see [docs/demo/](demo/).*
+
 **Replay is a reconstruction, not a re-execution.** It rebuilds the node sequence, the folded state, the timing and the failures from the JSONL and calls no model, no tool and no node. Two limits come from the recording side rather than this one, and both are in the signature rather than a comment: strings past 2,000 characters were truncated when they were written, so they replay truncated; and the trace does not record which state fields have reducers, so a field LangGraph appended to replays last-write-wins unless you pass the reducer.
 
 **Spans are optional by construction.** One root span per run, one child per node execution, with `AgentNode` sub-steps parented by inference — and a sub-step whose parent cannot be identified is parented to the run span rather than to a guess. The OpenTelemetry dependency is confined behind a Protocol, so importing the module needs no OTel installed. This was carried as unverified against the real SDK for a while; it has now been run against `opentelemetry-sdk` 1.44.0 with spans arriving at a real exporter.

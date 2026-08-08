@@ -36,6 +36,17 @@ class Harness:
         self.registry = registry
         self.policy = policy
         self.executor = executor or SandboxedExecutor(workspace)
+        # The directory this harness works in, kept on the harness itself.
+        #
+        # It used to exist only to build the default `SandboxedExecutor`, so
+        # `Harness(..., executor=LocalExecutor(), workspace=str(ws))` — which
+        # three call sites in this repo write — silently discarded `ws`. That
+        # was invisible until something asked where the harness was working:
+        # a delegated `AgentNode` reads the workspace to give Claude Code a
+        # cwd, found only `SandboxedExecutor` had one, and refused to run at
+        # all under `LocalExecutor`. Recording it here makes the argument mean
+        # what it reads as, whichever executor is in play.
+        self.workspace = workspace or getattr(self.executor, "workspace", None)
         self.pre_hooks = pre_hooks
         self.post_hooks = post_hooks
         self.approval = approval

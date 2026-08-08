@@ -54,7 +54,7 @@ def test_only_events_after_the_start_offset_render(tmp_path):
     _write_run(TraceRecorder(path), "old-run")
 
     seen: list[str] = []
-    with LiveTail(path, ["agent", "task"], lambda t: seen.append(t) or True, FAST):
+    with LiveTail(path, ["agent", "task"], lambda t, p=None: seen.append(t) or True, FAST):
         _write_run(TraceRecorder(path), "new-run")
         assert _wait_for(lambda: seen)
     assert all("old-run" not in t for t in seen), "the old run leaked into live progress"
@@ -65,7 +65,7 @@ def test_no_update_without_new_bytes(tmp_path):
     TraceRecorder(path)  # creates the parent; file itself absent
 
     seen: list[str] = []
-    with LiveTail(path, ["run", "g.toml"], lambda t: seen.append(t) or True, FAST):
+    with LiveTail(path, ["run", "g.toml"], lambda t, p=None: seen.append(t) or True, FAST):
         time.sleep(0.2)
     assert seen == []
 
@@ -73,7 +73,7 @@ def test_no_update_without_new_bytes(tmp_path):
 def test_identical_renders_are_not_reposted(tmp_path):
     path = tmp_path / "trace.jsonl"
     seen: list[str] = []
-    with LiveTail(path, ["run", "g.toml"], lambda t: seen.append(t) or True, FAST):
+    with LiveTail(path, ["run", "g.toml"], lambda t, p=None: seen.append(t) or True, FAST):
         _write_run(TraceRecorder(path), "r1")
         assert _wait_for(lambda: seen)
         count = len(seen)
@@ -85,7 +85,7 @@ def test_a_dead_sink_silences_the_tail_without_raising(tmp_path):
     path = tmp_path / "trace.jsonl"
     calls: list[str] = []
 
-    def dead(text: str) -> bool:
+    def dead(text: str, prompt=None) -> bool:
         calls.append(text)
         return False
 
@@ -101,7 +101,7 @@ def test_a_dead_sink_silences_the_tail_without_raising(tmp_path):
 def test_an_update_that_raises_never_escapes_the_thread(tmp_path):
     path = tmp_path / "trace.jsonl"
 
-    def explode(text: str) -> bool:
+    def explode(text: str, prompt=None) -> bool:
         raise RuntimeError("sink blew up")
 
     with LiveTail(path, ["run", "g.toml"], explode, FAST):
@@ -113,7 +113,7 @@ def test_an_update_that_raises_never_escapes_the_thread(tmp_path):
 def test_a_torn_final_line_is_left_for_the_next_tick(tmp_path):
     path = tmp_path / "trace.jsonl"
     seen: list[str] = []
-    with LiveTail(path, ["run", "g.toml"], lambda t: seen.append(t) or True, FAST):
+    with LiveTail(path, ["run", "g.toml"], lambda t, p=None: seen.append(t) or True, FAST):
         _write_run(TraceRecorder(path), "r1")
         with path.open("a", encoding="utf-8") as f:
             f.write('{"ts": "2026-01-01T00:00:00.000+00:00", "run_id": "r1"')  # no newline
@@ -225,7 +225,7 @@ class RecordingSink:
         self.posted.append(text)
         return ("C1", "171.1")
 
-    def update(self, handle, text: str) -> bool:
+    def update(self, handle, text: str, blocks=None) -> bool:
         if not self.updates_ok:
             return False
         assert handle == ("C1", "171.1")
@@ -371,7 +371,7 @@ def test_a_replaced_trace_file_does_not_silence_the_tailer(tmp_path):
     _write_run(TraceRecorder(path), "big-old-run", nodes=6)  # a large file
 
     seen: list[str] = []
-    with LiveTail(path, ["run", "g.toml"], lambda t: seen.append(t) or True, FAST):
+    with LiveTail(path, ["run", "g.toml"], lambda t, p=None: seen.append(t) or True, FAST):
         path.unlink()
         _write_run(TraceRecorder(path), "fresh-run", nodes=1)  # smaller file
         assert _wait_for(lambda: any("fresh-run" not in t or True for t in seen) and seen)

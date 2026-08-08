@@ -120,9 +120,16 @@ def graph_status(run_dir: Path) -> dict[str, Any]:
     the approval-request file for whether a human is being asked right now.
     Rendered summaries only — the raw `state_delta` a node wrote is served by
     nothing here, the same posture as the live view.
+
+    `TailRecorder`, not `TraceRecorder`, for the same reason the live view and
+    the Slack tailer use it: this reads a file something else is still writing.
+    An agent polls `show_graph` precisely *while* its run is in progress, so a
+    read that lands mid-append is the normal case, not the edge case — and the
+    strict reader raises `TraceReadError` on the half-written last line, which
+    came out of the MCP server as a crash instead of an answer.
     """
     from grapharc.observe.metrics import summarize, to_mermaid
-    from grapharc.observe.trace import TraceRecorder
+    from grapharc.observe.trace import TailRecorder
     from grapharc.planner.approval_file import read_request
 
     record = read_plan_record(run_dir)
@@ -150,7 +157,7 @@ def graph_status(run_dir: Path) -> dict[str, Any]:
     if request is not None:
         view["status"] = "awaiting_approval"
     if record.get("executed_run_id") and trace_path.is_file():
-        recorder = TraceRecorder(trace_path)
+        recorder = TailRecorder(trace_path)
         run_id = str(record["executed_run_id"])
         metrics = summarize(recorder, run_id)
         if metrics is not None:

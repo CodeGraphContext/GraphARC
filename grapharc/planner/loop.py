@@ -806,6 +806,14 @@ class GovernedLoop:
         so a reader showing "approve this?" needs nothing but the trace. The
         callback may block indefinitely from the loop's point of view — bounding
         the wait is the callback's job, reported as a "timeout" decision.
+
+        `kinds` rides alongside `nodes` because only the kind is governed
+        (`ProposedNode`: the name is an instance label a planner chooses freely).
+        A request that names `fix_it` and omits `apply_change` asks a human to
+        approve a mutating plan while showing them a harmless word — the reader
+        cannot recover the kind from the name, so the event has to carry it.
+        `worst_case` is on the same event for the same reason: what this may
+        cost is part of the question, not something to look up elsewhere.
         """
         self._emit(
             ctx,
@@ -816,7 +824,12 @@ class GovernedLoop:
                 "proposal_id": proposal.proposal_id,
                 "fingerprint": proposal.fingerprint(),
                 "nodes": [n.name for n in proposal.nodes],
+                "kinds": [n.kind for n in proposal.nodes],
                 "edges": [[e.source, e.target] for e in proposal.edges],
+                "rationale": proposal.rationale,
+                "worst_case_tokens": verdict.worst_case.tokens,
+                "worst_case_seconds": verdict.worst_case.seconds,
+                "worst_case_complete": verdict.worst_case_complete,
                 "goal": goal,
             },
         )

@@ -329,11 +329,11 @@ def test_a_nul_byte_is_a_refusal_not_an_exception(tmp_path):
     reply = handle_text("trace a\x00b", config)
     assert "NUL byte" in reply
 
-    # `_confined` keeps the guarantee for any other caller of its own.
-    from grapharc.slack.command import _confined
+    # `confine_path` keeps the guarantee for any other caller of its own.
+    from grapharc.slack.command import confine_path
 
     with pytest.raises(SlackCommandError, match="NUL byte"):
-        _confined("a\x00b", tmp_path)
+        confine_path("a\x00b", tmp_path)
 
 
 def test_a_single_dash_token_is_refused_as_a_flag_not_taken_as_a_path(tmp_path):
