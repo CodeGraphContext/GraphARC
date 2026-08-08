@@ -203,10 +203,10 @@ Different jobs, not competitors — GraphARC's default backend drives the Claude
 
 The edges are documented, not denied — the full list with mechanisms is in the [deep dive](docs/deep-dive.md#limits).
 
-- Admission authorises a node's *kind*, never its arguments.
+- Admission authorises a node's *kind*; its arguments only where the kind declares an `args_schema`, and a schema bounds their shape, not what a factory lets them reach.
 - The in-process sandbox is defense in depth; `ContainerExecutor` is the real boundary. `run_command` children are unconfined.
 - The HTTP API does not yet use the durable session layer.
-- On the Claude CLI backend an agent node is *delegated*, not governed.
+- On the Claude CLI backend an agent node is *delegated*, not governed: by default it runs under an allowlist mapped from the node's own tools, but enforcement there is Claude Code's, and the `bypass` tier — explicit opt-in — has no checks at all.
 - Policy documents govern planning; the tool plane still reads CLI flags.
 - The MCP gate binds the MCP surface, not the host: an agent with its own file tools in the run directory could forge the approval decision. The trust boundary is the working directory, as it is for the Slack workspace.
 

@@ -127,7 +127,7 @@ def run_agent(
     deny: list[str] | None = None,
     ask: list[str] | None = None,
     max_turns: int = DEFAULT_MAX_TURNS,
-    max_tokens: int | None = DEFAULT_MAX_TOKENS,
+    max_tokens: int | None = None,
     max_seconds: float | None = DEFAULT_MAX_SECONDS,
     executor: str = "sandbox",
     system_prompt: str | None = None,
@@ -139,6 +139,10 @@ def run_agent(
     Only `target_met` exits 0. Every other termination — the turn cap, a stall,
     an exhausted budget, an error — exits 1, because a script that ran an agent
     needs to know the task was not finished without parsing the reason first.
+
+    `max_tokens=None` means the default ceiling on the governed path — and is
+    the only value the delegated path accepts, because a ceiling it cannot
+    enforce must be refused rather than silently unapplied.
     """
     if executor == "claude-cli":
         # The whole loop is Claude Code's; nothing below (registry, harness,
@@ -147,6 +151,18 @@ def run_agent(
         # claude-cli/<name> is forwarded.
         from grapharc.cli.delegate import run_delegated
 
+        if max_tokens is not None:
+            # Claude Code reports tokens after the fact; there is no inline
+            # meter to stop the call that crosses a ceiling. Accepting the
+            # flag and not applying it would be a limit that exists only in
+            # the invocation.
+            return fail(
+                "--max-tokens cannot be enforced under --executor claude-cli: "
+                "the delegated loop reports its tokens after the fact. Drop "
+                "the flag, or use a tool-calling backend for a metered run",
+                as_json=as_json,
+                command="agent",
+            )
         return run_delegated(
             task,
             model_spec=None if model_spec == DEFAULT_MODEL else model_spec,
@@ -209,7 +225,14 @@ def run_agent(
     # The loop's own turn cap bounds iterations, so the meter is left to bound
     # the two things it alone can see: spend and wall clock. Setting both would
     # make an ordinary turn-limited stop report as `budget_exhausted`.
-    meter = BudgetMeter(Budget(max_tokens=max_tokens, max_seconds=max_seconds))
+    # None means "the default ceiling", resolved here so the delegated branch
+    # above could tell an explicit flag from an untouched one.
+    meter = BudgetMeter(
+        Budget(
+            max_tokens=DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens,
+            max_seconds=max_seconds,
+        )
+    )
     ctx = RunContext(run_id=run_id, graph="cli-agent", meter=meter)
     node = AgentNode(
         model=model,

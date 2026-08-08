@@ -49,7 +49,7 @@ def test_show_prints_the_plan_and_decides_nothing(parked, capsys):
     assert "apply_change" in out
     assert "collect_context -> investigate" in out
     assert "read the failing test" in out
-    assert not (parked / DECISION_FILENAME).exists(), "--show wrote a decision"
+    assert not (parked / DECISION_FILENAME).exists()
 
 
 def test_show_names_the_command_that_would_decide(parked, capsys):
@@ -61,10 +61,7 @@ def test_show_names_the_command_that_would_decide(parked, capsys):
 
 def test_a_decision_bound_to_a_stale_fingerprint_is_refused(parked, capsys):
     """Between the `--show` and the `approve`, the run may have re-proposed."""
-    code = approve(parked, fingerprint="the-one-i-read")
-    out = capsys.readouterr().out + capsys.readouterr().err
-
-    assert code == 2
+    assert approve(parked, fingerprint="the-one-i-read") == 2
     assert not (parked / DECISION_FILENAME).exists()
 
 

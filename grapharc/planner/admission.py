@@ -6,12 +6,13 @@ either authorises it or names, per failed check, exactly why not. That
 asymmetry is the whole design: the planner may be as inventive as you like
 because nothing it invents runs until code that cannot be argued with says yes.
 
-Five checks, all of which run on every proposal so a planner gets the complete
+Six checks, all of which run on every proposal so a planner gets the complete
 list rather than the first complaint:
 
 | Check | Question | Authority |
 |---|---|---|
 | REGISTRY | is every node's `kind` allowed, and does every edge endpoint exist? | `NodeRegistry` |
+| ARGS | do the args satisfy the kind's schema, if it declares one? | `NodeSpec.args_schema` |
 | POLICY | may each node's `kind` run, and each edge be taken? | `NodePolicy`, `EdgePolicy` |
 | BUDGET | does the worst case fit what is *left*? | `RemainingBudget` |
 | DEPTH | is the nesting within the limit? | `AdmissionLimits.max_depth` |
@@ -64,9 +65,16 @@ the rule is a courtesy that saves rounds; the gate is what decides.
 What this module does *not* do. It does not build a runnable graph — admission
 authorises a shape, and turning one into work is `grapharc.planner.materialize`,
 which takes the `AdmissionResult` this returns and refuses to build anything
-else. It does not inspect `ProposedNode.args`: no rule here can constrain them,
-so `Materializer(forward_args=True)`, which hands them to a factory unchecked,
-has to gate them itself — admission authorises the *kind*, not its arguments. It
+else. It inspects `ProposedNode.args` only where the kind's `NodeSpec` declares
+an `args_schema`: those args must validate against the operator's model or the
+proposal is rejected with the failing field named, and `Materializer` forwards
+the *validated* dump to that kind's factory. For every other kind the old
+contract holds — no rule here can constrain args, so
+`Materializer(forward_args=True)`, which hands the raw dict to a factory
+unchecked, has to gate them itself. Either way admission authorises the *kind*;
+a schema constrains the shape of a kind's arguments, and what an admitted
+argument may *reach* is still the factory's decision — the shipped registries
+feed it to a prompt, never to a tool call. It
 does not govern `name` either, in either direction: a name is not matched
 against any rule, and is refused only for being unusable (the sentinels, the
 orchestrator's `__`-prefixed namespace, a duplicate, or the charset). It does
@@ -87,7 +95,7 @@ from enum import StrEnum
 from fnmatch import fnmatch
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from grapharc.harness.permissions import Decision
 from grapharc.observe.trace import TraceRecorder
@@ -102,6 +110,11 @@ class Check(StrEnum):
     """The named gates. A rejection always carries one of these."""
 
     REGISTRY = "registry"
+    # Arguments, only where the kind's spec declared a schema for them. An
+    # operator's `NodeSpec.args_schema` is the one rule that can reach
+    # `ProposedNode.args`; a kind without one keeps its args uninspected here
+    # and dropped by the materialiser.
+    ARGS = "args"
     POLICY = "policy"
     BUDGET = "budget"
     DEPTH = "depth"
@@ -223,6 +236,13 @@ class NodeSpec(BaseModel):
     description: str = ""
     worst_case: CostEstimate = CostEstimate(iterations=1)
     factory: Callable[..., Any] | None = None
+    #: When set, `ProposedNode.args` for this kind must validate against this
+    #: model at admission, and `Materializer` forwards the *validated* dump to
+    #: the factory. `None` keeps the old contract: args are never inspected
+    #: and never forwarded unless the operator opted into `forward_args=True`.
+    #: The schema is registry code — what it admits is an operator's
+    #: declaration, and a planner cannot widen it.
+    args_schema: type[BaseModel] | None = None
 
 
 class NodeRegistry:
@@ -569,13 +589,14 @@ class AdmissionChecker:
 
         rejections: list[Rejection] = []
         rejections.extend(self._check_registry(proposal))
+        rejections.extend(self._check_args(proposal))
         rejections.extend(self._check_node_policy(proposal))
         rejections.extend(self._check_policy(proposal))
         worst_case, complete = self._worst_case(proposal)
         rejections.extend(self._check_budget(worst_case, complete, remaining))
         depth = parent_depth + proposal.nesting_depth()
         rejections.extend(self._check_depth(depth, parent_depth, proposal))
-        checks_run = [Check.REGISTRY, Check.POLICY, Check.BUDGET, Check.DEPTH]
+        checks_run = [Check.REGISTRY, Check.ARGS, Check.POLICY, Check.BUDGET, Check.DEPTH]
         if self.limits.require_entry:
             rejections.extend(self._check_reachability(proposal))
             checks_run.append(Check.REACHABILITY)
@@ -667,6 +688,45 @@ class AdmissionChecker:
                     remedy=f"propose {endpoint!r} as a node, or point the edge elsewhere",
                 )
             )
+        return out
+
+    def _check_args(self, proposal: Subgraph) -> list[Rejection]:
+        """Validate args for kinds whose spec declares a schema. Nothing runs.
+
+        One rejection per failing field, so the planner replans against the
+        complete list rather than the first complaint — the same posture as
+        every other check. A kind without a schema keeps the old contract:
+        args uninspected here, dropped by the materialiser. An unregistered
+        kind is `_check_registry`'s complaint, not a second one from here.
+        """
+        out: list[Rejection] = []
+        for path, _depth, sub in proposal.scopes():
+            for node in sub.nodes:
+                spec = self.registry.get(node.kind)
+                schema = None if spec is None else spec.args_schema
+                if schema is None:
+                    continue
+                try:
+                    schema.model_validate(node.args)
+                except ValidationError as exc:
+                    fields = ", ".join(schema.model_fields) or "(no fields)"
+                    for error in exc.errors():
+                        loc = ".".join(str(part) for part in error["loc"]) or "args"
+                        out.append(
+                            Rejection(
+                                check=Check.ARGS,
+                                code="args_schema_violation",
+                                subject=_scoped(path, node.name),
+                                detail=(
+                                    f"args for kind {node.kind!r} do not satisfy "
+                                    f"{schema.__name__}: {loc}: {error['msg']}"
+                                ),
+                                remedy=(
+                                    f'supply "args" matching {schema.__name__} '
+                                    f"(fields: {fields})"
+                                ),
+                            )
+                        )
         return out
 
     def _check_node_policy(self, proposal: Subgraph) -> list[Rejection]:
