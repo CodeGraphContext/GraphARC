@@ -12,7 +12,7 @@ list rather than the first complaint:
 | Check | Question | Authority |
 |---|---|---|
 | REGISTRY | is every node's `kind` allowed, and does every edge endpoint exist? | `NodeRegistry` |
-| ARGS | do a proposal's args satisfy the kind's declared schema, where one exists? | `NodeSpec.args_schema` |
+| ARGS | do the args satisfy the kind's schema, if it declares one? | `NodeSpec.args_schema` |
 | POLICY | may each node's `kind` run, and each edge be taken? | `NodePolicy`, `EdgePolicy` |
 | BUDGET | does the worst case fit what is *left*? | `RemainingBudget` |
 | DEPTH | is the nesting within the limit? | `AdmissionLimits.max_depth` |

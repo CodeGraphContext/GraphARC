@@ -18,7 +18,6 @@ import warnings
 from pathlib import Path
 
 import pytest
-from pydantic import PrivateAttr
 
 from grapharc.cli import delegate
 from grapharc.cli.delegate import CLAUDE_TOOL_FOR, claude_allowlist_for

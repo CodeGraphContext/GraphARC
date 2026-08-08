@@ -157,9 +157,10 @@ def test_parallel_fixers_merge_instead_of_colliding():
     assert len(result.state.fixes) == 2
     # Each fixer took exactly its admission-checked assignment, so the third
     # issue is the one still outstanding.
-    assert {f"fixed: {fix_issues._SCRIPTED_ISSUES[0]}", f"fixed: {fix_issues._SCRIPTED_ISSUES[1]}"} == set(
-        result.state.fixes
-    )
+    assert set(result.state.fixes) == {
+        f"fixed: {fix_issues._SCRIPTED_ISSUES[0]}",
+        f"fixed: {fix_issues._SCRIPTED_ISSUES[1]}",
+    }
     assert unfixed(result.state) == [fix_issues._SCRIPTED_ISSUES[2]]
     assert len(result.state.notes) == 1
 
