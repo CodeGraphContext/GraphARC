@@ -136,7 +136,7 @@ examples:
   openrouter/anthropic/claude-haiku-4.5   many providers, one key
   openrouter/openai/gpt-4o-mini:floor     cheapest provider for that model
   openai/gpt-4o-mini                      the OpenAI API directly, your key
-  novita/moonshotai/kimi-k3             Novita's own endpoint, your key
+  novita/moonshotai/kimi-k3               Novita's own endpoint, your key
   ollama/llama3.1                         a local server, no key and no bill
 
 grapharc models --check  probes which of these this machine can use
