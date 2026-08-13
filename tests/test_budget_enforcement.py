@@ -10,6 +10,23 @@ interrupt that keeps coming back until the node lets go. And the meter tells a
 re-report of a metered call from a real charge by identity — matching token
 counts swallowed charges that were real, which is the direction that costs
 money.
+
+**On the wall-clock assertions in here.** Each timing test bounds how long an
+interrupted node took, and every such bound is placed *between* the deadline
+and the uninterrupted body rather than close to either. That placement is the
+whole fix for a flake that only ever appeared on a loaded machine: three suites
+running at once turned `< 2.0` on a 0.2s deadline red, while the same tests
+passed 16/16 on the same box while it was idle. The deadline machinery was
+never the thing failing — the assertion on how promptly the interrupt landed
+was, because a hand-picked constant sitting 1.8s above the deadline has no room
+left when scheduling delays run 2-3x.
+
+So the question each bound must answer is "was this interrupted, or did it run
+to completion", and it answers it with seconds of slack on both sides. Where
+the gap was too narrow to widen the bound into, the *body* was lengthened
+instead — an uninterrupted body only ever runs that long when the test is
+failing, so a longer one costs nothing on the green path and makes the red path
+unambiguous.
 """
 
 import asyncio
@@ -383,7 +400,8 @@ def test_max_seconds_interrupts_a_node_blocked_in_a_syscall():
     started = time.perf_counter()
     with pytest.raises(NodeDeadlineExceeded, match="max_seconds"):
         compiled.invoke({})
-    assert time.perf_counter() - started < 2.0
+    # Between the 0.2s deadline and the 5.0s body, near neither.
+    assert time.perf_counter() - started < 3.0
 
 
 def test_the_error_names_the_node_that_ran_long():
@@ -434,7 +452,12 @@ def test_max_seconds_interrupts_a_fanout_worker_on_a_pool_thread():
         return None
 
     def work(payload: Shard):
-        deadline = time.perf_counter() + 5.0
+        # 15s, not 5s: with a 1.5s ceiling there was no room to put a bound
+        # between the two — `< 3.0` sat 1.5s above the deadline and 2s below the
+        # body, and three workers spinning on a contended box closed that gap
+        # from both ends. Lengthening the body is free on the green path,
+        # because a worker only ever spins this long when the interrupt failed.
+        deadline = time.perf_counter() + 15.0
         while time.perf_counter() < deadline:
             pass
         return {"done": [payload.index]}
@@ -445,7 +468,7 @@ def test_max_seconds_interrupts_a_fanout_worker_on_a_pool_thread():
     # the deadline had already passed, so its entry check raised a plain
     # `BudgetExceeded` and that propagated first — `NodeDeadlineExceeded` is a
     # subclass, so the assertion below correctly rejected it. The ceiling only
-    # has to outlast task scheduling; the workers spin for 5s either way.
+    # has to outlast task scheduling; the workers spin for 15s either way.
     g = GraphARC(FanState, name="fan", budget=Budget(max_seconds=1.5))
     g.add_node("plan", plan, writes=set())
     g.add_node("work", work, writes={"done"}, input_schema=Shard)
@@ -456,7 +479,8 @@ def test_max_seconds_interrupts_a_fanout_worker_on_a_pool_thread():
     started = time.perf_counter()
     with pytest.raises(NodeDeadlineExceeded):
         g.compile().invoke({"done": []})
-    assert time.perf_counter() - started < 3.0
+    # Between the 1.5s ceiling and the 15s body, near neither.
+    assert time.perf_counter() - started < 6.0
 
 
 def _swallow_interrupts_for(
@@ -643,20 +667,32 @@ def test_an_unreachable_max_seconds_does_not_disable_the_next_run(unreachable):
     and the process-wide slot is taken, and both were left that way — so every
     later guard found the slot held and silently fell back to the async-exception
     mechanism, which cannot unwind a blocking syscall. The 0.2s deadline below
-    then took the full 2s sleep to be noticed.
+    then took the full sleep to be noticed.
     """
 
+    # Two bodies, because the two runs below want opposite things from one. The
+    # first must run to completion, so its body is the cost of this test on the
+    # green path and wants to be short. The second must be cut off, so its body
+    # is what the elapsed bound is measured against and wants to be long — one
+    # 2.0s body served both badly, leaving `< 1.0` with 0.8s of room above the
+    # deadline and 1.0s below the body, which is the gap contention closed.
+    def quick(state):
+        time.sleep(0.05)
+        return {"ok": True}
+
     def slow(state):
-        time.sleep(2.0)
+        time.sleep(10.0)
         return {"ok": True}
 
     # An unreachable ceiling must not fire, and must not leave a trap behind.
-    _single_node_graph(slow, writes={"ok"}, budget=Budget(max_seconds=unreachable)).invoke({})
+    _single_node_graph(quick, writes={"ok"}, budget=Budget(max_seconds=unreachable)).invoke({})
 
     started = time.monotonic()
     with pytest.raises(NodeDeadlineExceeded, match="max_seconds"):
         _single_node_graph(slow, writes={"ok"}, budget=Budget(max_seconds=0.2)).invoke({})
-    assert time.monotonic() - started < 1.0, "SIGALRM was still poisoned"
+    # Poisoned, the fallback cannot unwind a blocking syscall and this takes the
+    # full 10s. Between the 0.2s deadline and that, near neither.
+    assert time.monotonic() - started < 4.0, "SIGALRM was still poisoned"
 
     if hasattr(signal, "SIGALRM"):
         assert signal.getsignal(signal.SIGALRM) in (signal.SIG_DFL, signal.SIG_IGN)

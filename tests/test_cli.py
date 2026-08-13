@@ -745,7 +745,10 @@ def test_agent_wall_clock_ceiling_cuts_off_a_call_in_flight(
     elapsed = time.monotonic() - started
     assert code == 1
     assert "max_seconds" in payload["error"]
-    assert elapsed < 10, "the sleeping call was waited out rather than interrupted"
+    # Between the 0.5s ceiling and the 30s call, near neither: this asks whether
+    # the call was interrupted or waited out, and a bound close to either end
+    # answers a question about machine load instead.
+    assert elapsed < 15, "the sleeping call was waited out rather than interrupted"
 
 
 def test_agent_reports_an_unusable_model_spec(tmp_path, capsys, stub_tools):
