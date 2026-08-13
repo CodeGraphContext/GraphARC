@@ -210,4 +210,4 @@ The edges are documented, not denied — the full list with mechanisms is in the
 - Policy documents govern planning; the tool plane still reads CLI flags.
 - The MCP gate binds the MCP surface, not the host: an agent with its own file tools in the run directory could forge the approval decision. The trust boundary is the working directory, as it is for the Slack workspace.
 
-Version `0.1.6` · [changelog](CHANGELOG.md) · [roadmap](ROADMAP.md) · [website](https://codegraphcontext.github.io/GraphARC/) · MIT
+Version `0.1.7` · [changelog](CHANGELOG.md) · [roadmap](ROADMAP.md) · [website](https://codegraphcontext.github.io/GraphARC/) · MIT
