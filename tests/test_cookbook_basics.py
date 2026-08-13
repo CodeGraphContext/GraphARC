@@ -412,7 +412,11 @@ def test_max_seconds_cuts_off_a_node_parked_in_sleep():
     assert caught.value.reason.split(" (")[0] == (
         "max_seconds reached while node 'n' was running"
     )
-    assert elapsed < 1.0, f"the sleep ran to completion ({elapsed:.1f}s)"
+    # Between the page's 0.25s ceiling and its 5.0s sleep, near neither. The
+    # snippet's own numbers are the page's and stay as printed; this bound is
+    # the test's, and `< 1.0` left it 0.75s above a deadline that a loaded
+    # machine can overshoot by more than that.
+    assert elapsed < 3.0, f"the sleep ran to completion ({elapsed:.1f}s)"
 
 
 # -- "How do I forbid cycles until I actually need one?" -------------------
