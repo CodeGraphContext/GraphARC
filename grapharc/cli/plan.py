@@ -218,6 +218,21 @@ def _write_plan_file(
     )
 
 
+def _executed_run_ids(record: dict[str, Any]) -> list[str]:
+    """Every run that has executed this plan, oldest first.
+
+    Reads the list when there is one and falls back to the scalar, so a
+    `plan.json` written before the list existed reports its single run rather
+    than reporting none. A malformed list is treated the same way — this is a
+    record for a human to read, not a place to raise.
+    """
+    history = record.get("executed_run_ids")
+    if isinstance(history, list):
+        return [str(item) for item in history]
+    scalar = record.get("executed_run_id")
+    return [str(scalar)] if scalar else []
+
+
 def find_unexecuted_plan(runs_root: Path | None = None) -> Path | None:
     """The newest saved plan `go` has not executed yet, or None."""
     import json
@@ -293,6 +308,7 @@ def execute_plan(
     config_path: Path | None = None,
     approve: bool = False,
     approval_timeout: float | None = None,
+    again: bool = False,
     as_json: bool = False,
 ) -> int:
     """`grapharc go [<run-dir>]` — execute a plan `grapharc plan` saved.
@@ -305,8 +321,22 @@ def execute_plan(
     only an answered yes — the gate an external driver relies on when the
     plan can change things. These flags used to be accepted here and
     silently dropped, which was worse than refusing them.
+
+    **An executed plan is not re-executed by accident.** Bare `go` has always
+    skipped executed plans — `find_unexecuted_plan` passes over them — but the
+    explicitly-named-directory form did not make the same check, so a second
+    `go <dir>` ran the whole graph again and silently overwrote the record of
+    the first. That matters twice over: the plan record disagreed with the
+    trace, which is the audit trail and was right; and because an approval
+    binds to a proposal fingerprint that does not change between runs, one
+    human yes could be spent on N executions of a `mutating` plan. So a plan
+    that already carries an `executed_run_id` is refused here unless `again`
+    asks for the re-run in as many words, and the record accumulates
+    `executed_run_ids` rather than clobbering a scalar — the scalar stays as
+    the newest, which is what `find_unexecuted_plan` and the MCP driver read.
     """
     import json
+    from datetime import UTC, datetime
 
     from grapharc.planner import LoopLimits
     from grapharc.runtime.budget import Budget
@@ -342,6 +372,25 @@ def execute_plan(
         registry_target = str(record["registry"])
     except (OSError, ValueError, KeyError) as exc:
         return fail(f"unreadable plan file {plan_file}: {exc}", as_json=as_json, command="go")
+
+    previous_run_id = record.get("executed_run_id")
+    if previous_run_id and not again:
+        # Exit 2 rather than EXIT_FAILED: nothing went wrong at run time, the
+        # command was refused before anything executed — the same shape every
+        # other "this is not what you meant" refusal in the CLI takes.
+        when = record.get("executed_at")
+        return fail(
+            f"{plan_file} has already been executed as run {previous_run_id}"
+            + (f" at {when}" if when else "")
+            + " — pass --again to run it a second time. An approval binds to "
+            "the plan's fingerprint, which does not change between runs, so a "
+            "re-run of a mutating plan spends an earlier yes.",
+            as_json=as_json,
+            command="go",
+            plan=str(plan_file),
+            executed_run_id=str(previous_run_id),
+            executed_run_ids=[str(r) for r in _executed_run_ids(record)],
+        )
 
     run_dir = plan_file.parent
     trace_path = run_dir / "trace.jsonl"
@@ -418,7 +467,14 @@ def execute_plan(
 
     executed = any(r.executed for r in result.rounds)
     if executed:
+        # The scalar stays the newest run — `find_unexecuted_plan` and the MCP
+        # driver read it, and an older reader must keep working. The list is
+        # what stops the record from forgetting: three executions used to leave
+        # a plan.json naming one, while the trace correctly held all three.
+        history = [*_executed_run_ids(record), result.run_id]
         record["executed_run_id"] = result.run_id
+        record["executed_run_ids"] = history
+        record["executed_at"] = datetime.now(UTC).isoformat()
         plan_file.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
     url = watch_url(trace_path, run_id=result.run_id)

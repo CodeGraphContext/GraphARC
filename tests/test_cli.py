@@ -2249,7 +2249,10 @@ def test_go_and_plan_share_every_planning_flag():
     # `--scripted` and `--go` are plan-only by design: go means do (no
     # scripted doing), and go needs no flag to do what its name says.
     assert plan_actions - go_actions == {"--scripted", "--go"}
-    assert go_actions - plan_actions == set()
+    # `--again` is go-only for the same kind of reason, in the other
+    # direction: it governs re-executing a plan that has already run, and
+    # `plan` never executes a saved one. It is not a planning flag.
+    assert go_actions - plan_actions == {"--again"}
 
 
 # -- init: the scaffold -------------------------------------------------------

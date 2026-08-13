@@ -405,6 +405,7 @@ def _cmd_go(args: argparse.Namespace) -> int:
             config_path=args.config,
             approve=args.approve,
             approval_timeout=args.approval_timeout,
+            again=args.again,
             as_json=args.json,
         )
     candidate = Path(target)
@@ -423,6 +424,7 @@ def _cmd_go(args: argparse.Namespace) -> int:
             config_path=args.config,
             approve=args.approve,
             approval_timeout=args.approval_timeout,
+            again=args.again,
             as_json=args.json,
         )
     return plan(
@@ -995,6 +997,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="MODULE:ATTR",
         help="the node kinds a planner may propose (default: grapharc.stdlib:build_registry)",
+    )
+    go.add_argument(
+        "--again",
+        action="store_true",
+        help=(
+            "execute a saved plan that has already run; without this, a second "
+            "`go <run-dir>` is refused rather than silently re-running the graph"
+        ),
     )
     _add_planning_flags(go)
     go.set_defaults(handler=_cmd_go)
