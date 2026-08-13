@@ -161,6 +161,75 @@ def test_an_edge_to_a_node_that_does_not_exist_is_rejected():
     assert "target" in reason.detail
 
 
+def test_end_cannot_be_an_edge_source_and_start_cannot_be_a_target():
+    """The sentinels are directional, and the gate has to say so.
+
+    `START` is the graph's entry and `END` its exit. Both used to be accepted
+    in either role, so a proposal carrying `END -> x` or `x -> START` was
+    admitted and then failed in `Materializer` with `StateGraph`'s own
+    "END cannot be a start node" — a shape defect surfacing as a
+    `MaterializationError` rather than a rejection. That is charged to the
+    execution-failure allowance rather than the rejection allowance, and it
+    reaches the planner as prose instead of a code and a remedy.
+    """
+    backwards_end = Subgraph(
+        nodes=(ProposedNode(name="fetch"),),
+        edges=(
+            ProposedEdge(source=START, target="fetch"),
+            ProposedEdge(source=END, target="fetch"),
+        ),
+    )
+    result = checker(registry("fetch")).check(backwards_end)
+
+    assert not result.admitted
+    (reason,) = result.reasons(Check.REGISTRY)
+    assert reason.code == "sentinel_wrong_direction"
+    assert "source" in reason.detail
+    assert reason.remedy
+
+    backwards_start = Subgraph(
+        nodes=(ProposedNode(name="fetch"),),
+        edges=(
+            ProposedEdge(source=START, target="fetch"),
+            ProposedEdge(source="fetch", target=START),
+        ),
+    )
+    result = checker(registry("fetch")).check(backwards_start)
+
+    assert not result.admitted
+    (reason,) = result.reasons(Check.REGISTRY)
+    assert reason.code == "sentinel_wrong_direction"
+    assert "target" in reason.detail
+
+
+def test_the_sentinels_still_work_the_way_round_they_are_meant_to():
+    """A guard on the guard: the fix must not refuse the normal shape."""
+    result = checker(
+        registry("fetch"), limits=AdmissionLimits(require_entry=True)
+    ).check(linear("fetch"))
+
+    assert result.admitted, result.rejections
+
+
+def test_a_refused_sentinel_edge_never_reaches_materialisation():
+    """The point of catching it here: `Materializer` raises on these, and the
+    loop counts that against a different, smaller allowance."""
+    proposal = Subgraph(
+        nodes=(ProposedNode(name="fetch"),),
+        edges=(
+            ProposedEdge(source=START, target="fetch"),
+            ProposedEdge(source=END, target="fetch"),
+        ),
+    )
+    gate = checker(registry("fetch"))
+    result = gate.check(proposal)
+
+    assert not result.admitted
+    # `_explode` is every registered kind's factory, so anything that built the
+    # graph anyway would raise AssertionError rather than fail this quietly.
+    assert result.failed_checks() == (Check.REGISTRY,)
+
+
 def test_an_edge_may_reference_a_node_already_in_the_graph():
     proposal = Subgraph(
         nodes=(ProposedNode(name="fetch"),),
