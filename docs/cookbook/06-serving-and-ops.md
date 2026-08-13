@@ -1062,7 +1062,7 @@ with TestClient(app) as client:
 ```
 
 ```
-health : {'status': 'ok', 'version': '0.1.6', 'graphs': ['qa']}
+health : {'status': 'ok', 'version': '0.1.7', 'graphs': ['qa']}
 created: 201 queued
 status : succeeded
 answer : Budgets cap iterations, tokens and time.
@@ -1259,7 +1259,7 @@ graphs   : qa
 ctrl-c to stop
 
 $ curl -s localhost:8124/healthz
-{"status":"ok","version":"0.1.6","graphs":["qa"]}
+{"status":"ok","version":"0.1.7","graphs":["qa"]}
 
 $ curl -s -X POST localhost:8124/sessions -H 'content-type: application/json' \
       -d '{"graph":"qa","input":{"question":"how do budgets work?"}}'

@@ -1,6 +1,6 @@
 [project]
 name = "grapharc"
-version = "0.1.6"
+version = "0.1.7"
 description = "A graph engineering toolkit on LangGraph: typed state contracts, per-node write permissions, enforced budgets, and JSONL traces that double as replay points."
 readme = "README.md"
 license = "MIT"
