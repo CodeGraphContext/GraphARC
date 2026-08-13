@@ -653,7 +653,32 @@ class SandboxedExecutor:
             raise SandboxViolation(
                 f"tool {spec.name!r} exceeded its {spec.timeout_seconds}s timeout"
             )
-        kind, payload = parent_conn.recv()
+        try:
+            kind, payload = parent_conn.recv()
+        except EOFError:
+            # `poll()` is true at EOF as well as on a readable message, so a
+            # child that died without sending — `os._exit`, a segfault, an
+            # OOM-kill, a guard that killed the process rather than raising —
+            # lands here. It used to escape as a bare `EOFError('')`, which
+            # names nothing: not the tool, not the cause. The agent loop
+            # catches it under its blanket `except Exception` and reports
+            # `TOOL_ERROR: ` with nothing after the colon, so a model is told
+            # its call failed and given no way to tell why or self-correct.
+            #
+            # Reported as a tool failure rather than a violation: the child
+            # dying is not evidence it tried to escape confinement, and a
+            # `SandboxViolation` is a specific accusation. The exit code is
+            # what distinguishes the cases, so it is in the message; a
+            # negative one is the signal that killed it.
+            proc.join(5)
+            code = proc.exitcode
+            signal_note = (
+                f" (killed by signal {-code})" if code is not None and code < 0 else ""
+            )
+            raise RuntimeError(
+                f"tool {spec.name!r} failed: the sandboxed child exited without "
+                f"sending a result, exit code {code}{signal_note}"
+            ) from None
         proc.join(5)
         if kind == "violation":
             raise SandboxViolation(payload)
