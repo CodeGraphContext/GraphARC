@@ -24,6 +24,7 @@ for spec in (
     "claude-cli/claude-sonnet-5",
     "openrouter/anthropic/claude-haiku-4.5",
     "openai/gpt-4o-mini",
+    "novita/moonshotai/kimi-k3",
     "ollama/llama3.1",
     "mock/anything",
 ):
@@ -38,18 +39,20 @@ print(model.invoke("say hi").content)
 {'spec': 'claude-cli/claude-sonnet-5', 'backend': 'claude-cli', 'model': 'claude-sonnet-5'}
 {'spec': 'openrouter/anthropic/claude-haiku-4.5', 'backend': 'openrouter', 'model': 'anthropic/claude-haiku-4.5'}
 {'spec': 'openai/gpt-4o-mini', 'backend': 'openai', 'model': 'gpt-4o-mini'}
+{'spec': 'novita/moonshotai/kimi-k3', 'backend': 'novita', 'model': 'moonshotai/kimi-k3'}
 {'spec': 'ollama/llama3.1', 'backend': 'ollama', 'model': 'llama3.1'}
 {'spec': 'mock/anything', 'backend': 'mock', 'model': 'anything'}
 hello from a scripted model
 ```
 
-There are five backends:
+There are six backends:
 
 | backend | credential | what it is for |
 | --- | --- | --- |
 | `claude-cli` | a Claude subscription, no API key | text completion on quota you already pay for |
 | `openrouter` | `OPENROUTER_API_KEY` | one key, most vendors, per-call cost in the response |
 | `openai` | `OPENAI_API_KEY` | the OpenAI API directly, or any endpoint via `OPENAI_BASE_URL` |
+| `novita` | `NOVITA_API_KEY` | Novita's own endpoint, token counts but no per-call cost |
 | `ollama` | none — a local server | models on your own machine, free and offline |
 | `mock` | none | a scripted test double |
 
@@ -63,8 +66,8 @@ needs it. Asking for `claude-cli` therefore does not require `langchain-openai`,
 for `openrouter` does not require the Claude CLI to be installed. A missing optional
 dependency fails for the backend that wanted it and nothing else.
 
-`openrouter`, `openai` and `ollama` all speak the OpenAI wire format and share one base
-class, so they behave identically on everything except money and routing: same
+`openrouter`, `openai`, `novita` and `ollama` all speak the OpenAI wire format and share one
+base class, so they behave identically on everything except money and routing: same
 `bind_tools`, same `with_structured_output`, same streaming and async, same retry policy,
 same usage envelope.
 
@@ -93,7 +96,7 @@ except UnknownBackendError as exc:
 ('openrouter', 'openai/gpt-4o-mini:floor')
 ('claude-cli', 'anthropic/claude-haiku-4.5')
 ('openai', 'gpt-4o-mini')
-UnknownBackendError: unknown backend 'opnerouter' in spec 'opnerouter/openai/gpt-4o-mini'; expected one of: claude-cli, openrouter, openai, ollama, mock — or a bare model name for the claude-cli default
+UnknownBackendError: unknown backend 'opnerouter' in spec 'opnerouter/openai/gpt-4o-mini'; expected one of: claude-cli, openrouter, openai, novita, ollama, mock — or a bare model name for the claude-cli default
 ```
 
 Only the first segment is a backend, because OpenRouter model ids are themselves
@@ -122,9 +125,10 @@ model through the broker is still `openrouter/openai/gpt-4o-mini`.
 <!-- verified: cli -->
 ```console
 $ grapharc models
-backends: claude-cli, openrouter, openai, ollama, mock
+backends: claude-cli, openrouter, openai, novita, ollama, mock
 openrouter key: <unset>
 openai key: <unset>
+novita key: <unset>
 ollama url: http://localhost:11434/v1
 
 examples:
@@ -132,6 +136,7 @@ examples:
   openrouter/anthropic/claude-haiku-4.5   many providers, one key
   openrouter/openai/gpt-4o-mini:floor     cheapest provider for that model
   openai/gpt-4o-mini                      the OpenAI API directly, your key
+  novita/moonshotai/kimi-k3               Novita's own endpoint, your key
   ollama/llama3.1                         a local server, no key and no bill
 
 grapharc models --check  probes which of these this machine can use
@@ -164,6 +169,8 @@ claude-cli   usable    'claude' on PATH at ~/.local/bin/claude
 openrouter   unusable  no API key (set OPENROUTER_API_KEY, or add one to .env)
                        credential: <unset>
 openai       unusable  no API key (set OPENAI_API_KEY, or add one to .env)
+                       credential: <unset>
+novita       unusable  no API key (set NOVITA_API_KEY, or add one to .env)
                        credential: <unset>
 ollama       usable    local server at http://localhost:11434/v1
                        credential: none needed (local server)
