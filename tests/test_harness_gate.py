@@ -14,6 +14,7 @@
 import ctypes  # noqa: F401
 import os
 import shutil
+import signal
 import sqlite3  # noqa: F401
 import sys
 import sysconfig
@@ -38,6 +39,15 @@ from grapharc.harness import (
 
 def _echo(**kwargs):
     return kwargs
+
+
+def _exits_without_sending(**kwargs):
+    """A child that dies mid-tool, standing in for a crash or an OOM-kill."""
+    os._exit(3)
+
+
+def _killed_by_signal(**kwargs):
+    os.kill(os.getpid(), signal.SIGKILL)
 
 
 def _policy(rules):
@@ -204,6 +214,63 @@ def test_gate_tool_cannot_read_outside_workspace(tmp_path):
 
     with pytest.raises(SandboxViolation, match="outside its workspace"):
         harness.call("read_secret", {"path": str(secret)})
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, "addaudithook") or sys.platform == "win32",
+    reason="requires POSIX fork + audit hooks",
+)
+@pytest.mark.parametrize(
+    ("label", "body"),
+    [
+        pytest.param("exit", _exits_without_sending, id="clean-exit"),
+        pytest.param("kill", _killed_by_signal, id="sigkill"),
+    ],
+)
+def test_a_sandboxed_child_that_dies_without_sending_names_the_tool(
+    tmp_path, label, body
+):
+    """`poll()` is true at EOF as well as on a readable message.
+
+    So a child that died without sending — `os._exit`, a segfault, an OOM-kill
+    — reached `recv()` and raised a bare `EOFError('')`. That names nothing:
+    not the tool, not the cause. The agent loop catches it under its blanket
+    `except Exception` and reports `TOOL_ERROR: ` with *nothing after the
+    colon*, so a model is told its call failed and given no way to tell why.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    reg = ToolRegistry()
+    reg.register(ToolSpec(name="dies", description="", fn=body))
+    policy = _policy([{"action": "allow", "pattern": "dies"}])
+    harness = Harness(reg, policy, workspace=str(workspace))
+
+    with pytest.raises(RuntimeError) as caught:
+        harness.call("dies", {})
+
+    message = str(caught.value)
+    assert "dies" in message, message
+    assert "exited without sending a result" in message, message
+    # Reported as a tool failure, not an accusation: a child dying is not
+    # evidence it tried to escape confinement.
+    assert not isinstance(caught.value, SandboxViolation)
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, "addaudithook") or sys.platform == "win32",
+    reason="requires POSIX fork + audit hooks",
+)
+def test_a_signal_death_is_distinguishable_from_a_clean_exit(tmp_path):
+    """The exit code is what tells the two apart, so it has to be in the text."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    reg = ToolRegistry()
+    reg.register(ToolSpec(name="killed", description="", fn=_killed_by_signal))
+    policy = _policy([{"action": "allow", "pattern": "killed"}])
+    harness = Harness(reg, policy, workspace=str(workspace))
+
+    with pytest.raises(RuntimeError, match="killed by signal 9"):
+        harness.call("killed", {})
 
 
 @pytest.mark.skipif(
