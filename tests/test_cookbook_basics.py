@@ -15,10 +15,12 @@ asserts that same projection.
 import asyncio
 import operator
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Annotated, Literal
 
 import pytest
@@ -55,7 +57,27 @@ from grapharc.testing import ScriptedChatModel
 
 
 def test_version_matches_the_page():
-    assert __version__ == "0.1.5"
+    """Read off the page rather than pinned here.
+
+    This used to be `assert __version__ == "0.1.5"` — a *third* place the
+    version was written down, after `pyproject.toml` and `grapharc/__init__.py`,
+    and the only one of the three that CI's version check does not compare. Its
+    effect was that a release bump reddened this test for saying nothing about
+    the page it is named after. What the page actually claims is that it was
+    verified against a version and that `grapharc --version` prints it; both are
+    now held against the package, so a bump moves the page or fails.
+    """
+    page = (
+        Path(__file__).resolve().parents[1] / "docs" / "cookbook" / "01-basics.md"
+    ).read_text(encoding="utf-8")
+
+    claimed = re.findall(r"grapharc (\d+\.\d+\.\d+)", page)
+
+    assert claimed, "the page no longer states the version it was verified against"
+    assert set(claimed) == {__version__}, (
+        f"docs/cookbook/01-basics.md says {sorted(set(claimed))}, "
+        f"this package is {__version__}"
+    )
 
 
 # -- "How do I build and run my first graph?" ------------------------------
