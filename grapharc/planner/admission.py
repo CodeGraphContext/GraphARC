@@ -672,8 +672,50 @@ class AdmissionChecker:
     def _check_endpoints(
         self, path: str, edge: ProposedEdge, names: frozenset[str]
     ) -> list[Rejection]:
+        """Both endpoints must name something, and the sentinels must face the
+        right way.
+
+        The sentinels are directional and the kernel enforces it: `START` is the
+        graph's entry, so it can only be a source, and `END` is its exit, so it
+        can only be a target. Accepting them in either role let a proposal
+        carrying `END -> x` or `x -> START` through admission and into
+        materialisation, where `StateGraph` raises "END cannot be a start node"
+        / "START cannot be an end node" — a shape defect surfacing as a
+        `MaterializationError`.
+
+        That is the wrong failure in two ways. It is charged to
+        `max_consecutive_execution_failures` (2) rather than
+        `max_consecutive_rejections` (3), so a planner gets fewer tries at a
+        mistake admission is supposed to catch. And the planner is handed prose
+        — "The subgraph you proposed did not run: could not be built: ..." —
+        instead of a `Rejection` with a code and a remedy, which is the whole
+        contract of `feedback()`: a rejection is data the next round can act on.
+        """
         out: list[Rejection] = []
         for role, endpoint in (("source", edge.source), ("target", edge.target)):
+            wrong_way = (endpoint == END and role == "source") or (
+                endpoint == START and role == "target"
+            )
+            if wrong_way:
+                other = END if endpoint == START else START
+                out.append(
+                    Rejection(
+                        check=Check.REGISTRY,
+                        code="sentinel_wrong_direction",
+                        subject=_scoped(path, edge.render()),
+                        detail=(
+                            f"{endpoint!r} is the graph's "
+                            f"{'entry' if endpoint == START else 'exit'}, so it cannot "
+                            f"be an edge's {role}"
+                        ),
+                        remedy=(
+                            f"use {endpoint!r} as the edge's "
+                            f"{'source' if endpoint == START else 'target'}, "
+                            f"or {other!r} here"
+                        ),
+                    )
+                )
+                continue
             if endpoint in _SENTINELS or endpoint in names or endpoint in self.known_nodes:
                 continue
             out.append(
