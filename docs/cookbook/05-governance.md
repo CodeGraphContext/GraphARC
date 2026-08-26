@@ -1371,6 +1371,33 @@ carrying the fingerprint of the exact proposal), and why it stopped (one
 `phase="stop"` event). They share a `run_id`; each round executes on its own
 trace thread `<run_id>/r<n>` so per-thread step numbers stay unique.
 
+### How do I inspect a parallel planner topology?
+
+`grapharc.examples.plan_research` is a deterministic registry for that shape:
+
+```text
+START ─┬─ pull_logs ─────┐
+       ├─ pull_metrics ──┤
+       ├─ pull_deploys ──┼─ correlate ─┬─ test_hypothesis ─┐
+       └─ pull_tickets ──┘             └─ estimate_impact ─┴─ write_report ─ END
+```
+
+Run it without a model or API key:
+
+```bash
+grapharc plan "explain elevated checkout latency" --scripted --go \
+  --registry grapharc.examples.plan_research:build_registry \
+  --trace .grapharc/research.jsonl
+```
+
+The first scripted round proposes the registered `page_oncall` kind and is
+refused by the registry's default edge policy. The second round creates the
+parallel graph above and reaches `goal_met` when `ResearchState.report` is
+non-empty. Its `topology` trace event contains the exact edges admitted before
+execution. Each of the nine kinds has a one-field `WRITES` grant, so the four
+collectors and the two analysis nodes can update state in parallel without
+sharing a reducer or being able to overwrite one another's evidence.
+
 ---
 
 ## How do I write the policy down instead of coding it?
