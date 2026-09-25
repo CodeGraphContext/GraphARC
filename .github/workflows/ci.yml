@@ -27,10 +27,20 @@ jobs:
         run: uv sync --all-extras --group dev
       - name: Lint
         run: uv run ruff check .
-      - name: Version is declared twice; the two must agree
+      - name: Version is declared three times; all three must agree
         # `grapharc.__version__` is a separate literal from the packaged
         # version. If they drift, `pip show` and `import` disagree about what
         # is installed. Parsed rather than imported, so this needs no deps.
+        #
+        # `uv.lock` carries a third copy, in its own entry for this project.
+        # This step checked only the first two, and the third drifted: 0.1.6
+        # and 0.1.7 both shipped with a lockfile saying 0.1.5, because nothing
+        # re-locked after the bump and nothing looked. `uv lock` fixes it in
+        # one line; what this catches is the next one. A stale copy there is
+        # milder than the other two -- it misreports the project to anyone
+        # reading the lockfile, and to `uv sync --locked`, rather than to an
+        # installed import -- but it is the same class of bug, and this step
+        # exists because a version declared in N places drifts in N-1 of them.
         run: |
           python3 - <<'PY'
           import ast
@@ -55,7 +65,20 @@ jobs:
               sys.exit("grapharc/__init__.py no longer declares __version__")
           if declared != packaged:
               sys.exit(f"grapharc.__version__ is {declared!r} but pyproject says {packaged!r}")
-          print(f"ok: version {packaged} declared in both places")
+
+          with open("uv.lock", "rb") as fh:
+              lock = tomllib.load(fh)
+
+          entries = [p for p in lock.get("package", []) if p.get("name") == "grapharc"]
+          if len(entries) != 1:
+              sys.exit(f"uv.lock has {len(entries)} entries for grapharc; expected exactly 1")
+          locked = entries[0].get("version")
+          if locked != packaged:
+              sys.exit(
+                  f"uv.lock says grapharc is {locked!r} but pyproject says "
+                  f"{packaged!r} -- run `uv lock` and commit the result"
+              )
+          print(f"ok: version {packaged} declared in all three places")
           PY
 
   live-marker-guard:
