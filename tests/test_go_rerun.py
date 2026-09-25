@@ -18,6 +18,7 @@ The planner is scripted throughout — no model backend, no network.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from grapharc.cli.main import main
@@ -389,25 +390,68 @@ def test_bare_go_does_not_re_run_an_unfinished_plan(tmp_path, capsys, monkeypatc
 
 
 def test_the_phase_vocabulary_has_exactly_one_owner():
-    """`observe.metrics` and `cli.plan` both need to know which phases are
-    bookkeeping. They had a copy each, and a phase classified one way in one
-    file and the other way in the other is a bug in whichever is wrong, with
-    nothing to say which. Identity, not equality — two frozensets that happen
-    to match today is the state this assertion exists to rule out.
+    """Four modules needed to know which phases are bookkeeping, and each had
+    its own copy — `observe.metrics`, `observe.viewmodel` (whose comment said
+    "mirrors `metrics`", which was true and was the problem), `slack.live`, and
+    the one `cli.plan` added. A phase classified one way in one file and the
+    other way in another is a bug in whichever is wrong, with nothing in the
+    tree to say which.
+
+    Identity, not equality: four frozensets that happen to agree today is
+    exactly the state this assertion exists to rule out.
     """
     from grapharc.cli import plan as cli_plan
-    from grapharc.observe import metrics, trace
+    from grapharc.observe import metrics, trace, viewmodel
+    from grapharc.slack import live
 
     assert metrics._LOOP_PHASES is trace.LOOP_PHASES
     assert metrics._SHAPE_PHASES is trace.SHAPE_PHASES
+    assert viewmodel._LOOP_PHASES is trace.LOOP_PHASES
+    assert viewmodel._SHAPE_PHASES is trace.SHAPE_PHASES
+    assert live._SHAPE_PHASES is trace.SHAPE_PHASES
     assert not hasattr(cli_plan, "_NON_EXECUTION_PHASES"), (
         "cli.plan grew its own copy of the phase vocabulary again"
     )
 
-    # And the predicate is the one thing that decides, in the safe direction:
-    # an unclassified phase reads as an execution, so a new bookkeeping phase
-    # makes `go` refuse a plan it could have run rather than re-run one it
-    # should have refused.
+
+def test_no_module_redefines_the_phase_vocabulary():
+    """The identity check above only covers names it knows to look at, so it
+    cannot notice a *fifth* copy appearing under a new name. This reads the
+    source instead: `observe.trace` defines the sets, and nothing else does.
+    """
+    package = Path(__file__).resolve().parents[1] / "grapharc"
+    pattern = re.compile(r"^_?(?:LOOP|SHAPE|DRIVER|NON_EXECUTION)_PHASES\s*=\s*frozenset")
+    # Files, not file:line — a line number would make this fail on any edit to
+    # trace.py, which is noise rather than a finding.
+    owners = sorted(
+        {
+            str(path.relative_to(package))
+            for path in package.rglob("*.py")
+            if "__pycache__" not in path.parts
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if pattern.match(line)
+        }
+    )
+
+    assert owners == ["observe/trace.py"], (
+        f"the phase vocabulary is defined outside observe/trace.py: {owners}"
+    )
+
+
+def test_an_unclassified_phase_reads_as_an_execution():
+    """The direction the predicate errs in, asserted rather than assumed.
+
+    A bookkeeping phase nobody classified makes `go` refuse a plan it could
+    have run, which `--again` recovers from. The opposite would re-run a
+    half-finished mutating plan and spend a human approval given once.
+    """
+    from grapharc.observe import trace
+
     assert trace.began_execution("a-phase-nobody-has-written-yet") is True
     for phase in trace.NON_EXECUTION_PHASES:
         assert trace.began_execution(phase) is False, phase
+
+    # The three groups partition the bookkeeping set, with nothing dropped.
+    assert (
+        trace.LOOP_PHASES | trace.SHAPE_PHASES | trace.DRIVER_PHASES
+    ) == trace.NON_EXECUTION_PHASES
