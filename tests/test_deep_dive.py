@@ -15,10 +15,21 @@ The figures are therefore quoted as what one command re-derives — how many
 tests `pytest` selects, and how many it holds back as `live` — rather than as
 a pass count, which cannot be re-derived without running the suite from inside
 itself. A green suite is asserted by the suite being green.
+
+**Keeping the figure honest must not be a newcomer's problem.** Any PR that
+adds or removes a test moves these counts, so this file failed *every* such
+branch until someone hand-edited a number in a docs file they had no reason to
+know existed. That is what happened to PR #115: an outside contributor's first
+change sat red for a month over "2,151 selected", and nothing in the failure
+pointed at a fix they could run. The check is unchanged and still strict --
+`GRAPHARC_UPDATE_FIGURES=1 pytest tests/test_deep_dive.py` now re-derives the
+line and writes it back, and the failure message says so. CI never sets that
+variable, so a stale figure still fails there, which is the whole point.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -31,6 +42,54 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 DEEP_DIVE = ROOT / "docs" / "deep-dive.md"
 MARKER = "**Verified this pass:**"
+
+#: Opt in to rewriting the line instead of failing on it. Deliberately an
+#: environment variable and not a pytest flag: `--strict-config` means an
+#: unknown flag is an error, and a contributor reading a failure message can
+#: paste an env var in front of the command they already ran.
+UPDATE_ENV = "GRAPHARC_UPDATE_FIGURES"
+
+
+def _updating() -> bool:
+    """Whether this run may rewrite the paragraph.
+
+    Off for unset, empty, "0" and "false", so a leftover `=0` in a shell
+    profile cannot quietly turn the guard into a no-op. CI sets nothing, which
+    is what keeps a stale figure red there.
+    """
+    return os.environ.get(UPDATE_ENV, "").strip().lower() not in ("", "0", "false", "no")
+
+
+def _with_figure(line: str, pattern: str, value: int) -> str:
+    """`line` with the one figure `pattern` captures replaced by `value`.
+
+    Pure, so the rewrite is tested without touching the real document: only
+    group 1's span changes, which keeps the surrounding prose and the comma
+    grouping the page uses byte-identical everywhere else.
+    """
+    match = re.search(pattern, line)
+    assert match, f"cannot rewrite {pattern!r}: it does not match:\n{line}"
+    start, end = match.span(1)
+    return line[:start] + f"{value:,}" + line[end:]
+
+
+def _rewrite(pattern: str, value: int) -> None:
+    """Write `value` into the marker line in place."""
+    lines = DEEP_DIVE.read_text(encoding="utf-8").splitlines(keepends=True)
+    for index, raw in enumerate(lines):
+        if raw.startswith(MARKER):
+            lines[index] = _with_figure(raw, pattern, value)
+            DEEP_DIVE.write_text("".join(lines), encoding="utf-8")
+            return
+    raise AssertionError(f"{DEEP_DIVE.name} has no line starting with {MARKER!r}")
+
+
+def _remedy(pattern: str, value: int) -> str:
+    """The failure message's second half: what to run, or what to edit."""
+    return (
+        f"\n\nRe-derive it: {UPDATE_ENV}=1 pytest tests/test_deep_dive.py\n"
+        f"or edit the line by hand — the figure should read {value:,}."
+    )
 
 # The recount runs pytest in a subprocess rather than calling `pytest.main`
 # in-process: this module is itself collected by the session doing the asking,
@@ -101,21 +160,33 @@ def _quoted(pattern: str) -> str:
 
 def test_the_quoted_selection_is_what_pytest_selects(recount):
     selected, _ = recount
-    quoted = int(_quoted(r"([\d,]+) selected").replace(",", ""))
+    pattern = r"([\d,]+) selected"
+    quoted = int(_quoted(pattern).replace(",", ""))
+
+    if quoted != selected and _updating():
+        _rewrite(pattern, selected)
+        pytest.skip(f"refreshed: {quoted:,} -> {selected:,} selected. Re-run to verify.")
 
     assert quoted == selected, (
         f"update the **Verified this pass** paragraph in {DEEP_DIVE.name}: it "
         f"says {quoted:,} selected, this tree has {selected:,}"
+        + _remedy(pattern, selected)
     )
 
 
 def test_the_quoted_deselection_is_what_pytest_holds_back(recount):
     _, live = recount
-    quoted = int(_quoted(r"([\d,]+) deselected").replace(",", ""))
+    pattern = r"([\d,]+) deselected"
+    quoted = int(_quoted(pattern).replace(",", ""))
+
+    if quoted != live and _updating():
+        _rewrite(pattern, live)
+        pytest.skip(f"refreshed: {quoted:,} -> {live:,} deselected. Re-run to verify.")
 
     assert quoted == live, (
         f"update the **Verified this pass** paragraph in {DEEP_DIVE.name}: it "
         f"says {quoted:,} deselected, this tree marks {live:,} `live`"
+        + _remedy(pattern, live)
     )
 
 
@@ -129,7 +200,10 @@ def test_the_quoted_published_version_is_the_packaged_one():
 
     assert quoted == packaged, (
         f"update the **Verified this pass** paragraph in {DEEP_DIVE.name}: it "
-        f"says {quoted} is on PyPI, pyproject says {packaged}"
+        f"says {quoted} is on PyPI, pyproject says {packaged}. Deliberately "
+        f"not rewritten by {UPDATE_ENV}: whether a version is *published* is "
+        f"not something this tree can re-derive, and a release note that "
+        f"claims it should be written by whoever released it."
     )
 
 
@@ -170,3 +244,73 @@ def test_the_paragraph_quotes_no_figure_that_nothing_re_derives():
         f"nothing: {stray}. Either add a check for them here or take them off "
         f"the line — that is the rot this file exists to stop."
     )
+
+
+# -- the update mode --------------------------------------------------------
+#
+# The guard's value is that it is strict; its cost was that a contributor could
+# not tell what to do about it. These cover both halves: the rewrite is correct,
+# and it cannot happen unless someone asked for it.
+
+_SAMPLE = (
+    "**Verified this pass:** `pytest` -> green, 2,151 selected and 13 deselected "
+    "(the live ones); `ruff check .` clean; `0.1.7` on PyPI is that wheel.\n"
+)
+
+
+def test_the_rewrite_changes_the_figure_and_nothing_else():
+    """Comma grouping and every surrounding word survive, because the span of
+    one capture group is all that is replaced."""
+    updated = _with_figure(_SAMPLE, r"([\d,]+) selected", 2171)
+
+    assert "2,171 selected" in updated
+    assert "2,151" not in updated
+    # Untouched: the other figure, the prose, the trailing newline.
+    assert "13 deselected" in updated
+    assert "`ruff check .` clean" in updated
+    assert updated.endswith("\n")
+    assert updated.replace("2,171", "2,151") == _SAMPLE
+
+
+def test_the_rewrite_groups_thousands_like_the_page_does():
+    """A bare "2171" beside "2,151" would read as a typo, and the next reader
+    would 'fix' it back."""
+    assert "10,000 selected" in _with_figure(_SAMPLE, r"([\d,]+) selected", 10_000)
+    # Under a thousand takes no separator.
+    assert "999 selected" in _with_figure(_SAMPLE, r"([\d,]+) selected", 999)
+
+
+def test_the_rewrite_refuses_a_line_it_cannot_find_the_figure_in():
+    """Silently writing nothing would leave a stale figure looking refreshed."""
+    with pytest.raises(AssertionError):
+        _with_figure("no figures here\n", r"([\d,]+) selected", 5)
+
+
+def test_the_rewrite_reaches_the_real_document(tmp_path, monkeypatch):
+    """`_rewrite` finds the marker line among others and leaves them alone."""
+    document = tmp_path / "deep-dive.md"
+    document.write_text("# Title\n\nsome prose\n\n" + _SAMPLE + "\nafter\n", encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "DEEP_DIVE", document)
+
+    _rewrite(r"([\d,]+) selected", 2171)
+
+    written = document.read_text(encoding="utf-8")
+    assert "2,171 selected" in written
+    assert written.startswith("# Title\n\nsome prose\n")
+    assert written.endswith("\nafter\n")
+
+
+def test_nothing_is_rewritten_unless_it_was_asked_for(monkeypatch):
+    """The load-bearing half. CI sets nothing, so the guard must be strict on an
+    unset variable — a self-healing check in CI would assert nothing at all."""
+    monkeypatch.delenv(UPDATE_ENV, raising=False)
+    assert _updating() is False
+
+    # A leftover `=0` or `=false` in a shell profile must not disarm it either.
+    for off in ("", "0", "false", "FALSE", "no", "  "):
+        monkeypatch.setenv(UPDATE_ENV, off)
+        assert _updating() is False, off
+
+    for on in ("1", "true", "yes", "please"):
+        monkeypatch.setenv(UPDATE_ENV, on)
+        assert _updating() is True, on

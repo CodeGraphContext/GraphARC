@@ -37,6 +37,26 @@ uv run ruff check . --fix
 Both are what CI runs (`.github/workflows/ci.yml`), across Python 3.12, 3.13
 and 3.14.
 
+### If you added or removed a test
+
+`docs/deep-dive.md` quotes how many tests the suite selects, and
+`tests/test_deep_dive.py` holds that figure against reality — the page's
+verified claims are only worth reading if its numbers are real. So a branch
+that changes the test count fails that one check until the figure is updated.
+
+Nothing is wrong with your change. Refresh the line and commit it:
+
+```bash
+GRAPHARC_UPDATE_FIGURES=1 uv run pytest tests/test_deep_dive.py
+```
+
+That rewrites the figure, skips the check that wrote it, and tells you to
+re-run. A plain `pytest` never rewrites anything, and CI never sets that
+variable, so a stale figure still fails there.
+
+The version the paragraph says is on PyPI is deliberately *not* refreshed this
+way: whether a release is published is not something the tree can re-derive.
+
 ### The live-marker rule
 
 **A test marked `live` calls a real model backend and spends real money.** Never
