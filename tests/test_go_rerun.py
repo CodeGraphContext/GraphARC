@@ -352,3 +352,62 @@ def test_a_damaged_trace_does_not_wedge_every_plan_beside_it(tmp_path):
 
     assert _unfinished_execution(torn, {}) is None
     assert _unfinished_execution(tmp_path / "absent.jsonl", {}) is None
+
+
+# -- the same guard on the documented flow ----------------------------------
+
+
+def test_bare_go_does_not_re_run_an_unfinished_plan(tmp_path, capsys, monkeypatch):
+    """`grapharc plan … && grapharc go` is the flow the README teaches, and
+    bare `go` selects its plan by a different route: `find_unexecuted_plan`
+    passes over any record carrying an `executed_run_id`, and a killed run
+    never wrote one. So the half-finished plan looks *unexecuted* to the
+    selector — the newest candidate, chosen first.
+
+    The refusal happens after the selection either way, which is what makes
+    this safe, and it is exactly the kind of thing a later refactor of the
+    selector could quietly undo. Pinned here for that reason.
+    """
+    monkeypatch.chdir(tmp_path)
+    trace = tmp_path / ".grapharc" / "runs" / "r1" / "trace.jsonl"
+    assert main(["plan", "investigate", "--scripted", "--trace", str(trace), "--json"]) == 0
+    capsys.readouterr()
+    run_dir = trace.parent
+
+    assert main(["go", "--json"]) == 0
+    killed = _forget_the_stamp(run_dir)
+    before = _runs_in_trace(run_dir)
+    capsys.readouterr()
+
+    code = main(["go", "--json"])
+
+    assert code == 2
+    payload = _last_document(capsys.readouterr().out)
+    assert payload["unfinished_run_id"] == killed
+    # The load-bearing assertion: nothing ran a second time.
+    assert _runs_in_trace(run_dir) == before
+
+
+def test_the_phase_vocabulary_has_exactly_one_owner():
+    """`observe.metrics` and `cli.plan` both need to know which phases are
+    bookkeeping. They had a copy each, and a phase classified one way in one
+    file and the other way in the other is a bug in whichever is wrong, with
+    nothing to say which. Identity, not equality — two frozensets that happen
+    to match today is the state this assertion exists to rule out.
+    """
+    from grapharc.cli import plan as cli_plan
+    from grapharc.observe import metrics, trace
+
+    assert metrics._LOOP_PHASES is trace.LOOP_PHASES
+    assert metrics._SHAPE_PHASES is trace.SHAPE_PHASES
+    assert not hasattr(cli_plan, "_NON_EXECUTION_PHASES"), (
+        "cli.plan grew its own copy of the phase vocabulary again"
+    )
+
+    # And the predicate is the one thing that decides, in the safe direction:
+    # an unclassified phase reads as an execution, so a new bookkeeping phase
+    # makes `go` refuse a plan it could have run rather than re-run one it
+    # should have refused.
+    assert trace.began_execution("a-phase-nobody-has-written-yet") is True
+    for phase in trace.NON_EXECUTION_PHASES:
+        assert trace.began_execution(phase) is False, phase

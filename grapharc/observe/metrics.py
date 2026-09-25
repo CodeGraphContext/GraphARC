@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from grapharc.observe.replay import replay
 from grapharc.observe.status import node_states
-from grapharc.observe.trace import TraceRecorder
+from grapharc.observe.trace import LOOP_PHASES, SHAPE_PHASES, TraceRecorder
 
 
 class RunMetrics(BaseModel):
@@ -112,13 +112,16 @@ def _label(text: str, limit: int = 120) -> str:
 
 #: Phases that describe the run rather than doing work; the executed-path
 #: fallback must never chain them as if they were steps.
-_SHAPE_PHASES = frozenset({"topology", "approval_request", "approval_response"})
+#: Re-exported from `observe.trace`, which owns the vocabulary — `cli.plan`
+#: needs the same split and the two must not drift. The local names stay so
+#: the drawing logic below reads as it did.
+_SHAPE_PHASES = SHAPE_PHASES
 
 #: The governed loop's own bookkeeping. A planning round is not a node
 #: execution — chaining these drew `plan -> admission -> round1 -> plan ...`
 #: as though the planner's paperwork were the orchestration, which is exactly
 #: the picture a run whose planning failed used to end on.
-_LOOP_PHASES = frozenset({"plan", "admission", "round"})
+_LOOP_PHASES = LOOP_PHASES
 
 #: What to draw when a run has no graph to show. Honest about *why* there is
 #: nothing: a run that never got a graph admitted and built has no topology,

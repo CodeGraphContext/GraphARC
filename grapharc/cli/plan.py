@@ -234,26 +234,6 @@ def _executed_run_ids(record: dict[str, Any]) -> list[str]:
 
 
 
-#: Phases that are *not* a node doing work. The loop's own bookkeeping
-#: (`plan`, `admission`, `round`), the shape events a viewer draws from
-#: (`topology`, `approval_request`, `approval_response`), and a bare `stop`,
-#: which is a driver saying why it finished rather than a path it took --
-#: the same three-way split `observe.metrics` makes to decide what counts as
-#: an execution. Anything else (`start`, `model`, `end`, `error`) is a node
-#: that ran, which is the only thing this file needs to know.
-_NON_EXECUTION_PHASES = frozenset(
-    {
-        "plan",
-        "admission",
-        "round",
-        "topology",
-        "approval_request",
-        "approval_response",
-        "stop",
-    }
-)
-
-
 def _unfinished_execution(trace_path: Path, record: dict[str, Any]) -> str | None:
     """A run whose nodes ran but which `plan.json` never recorded finishing.
 
@@ -269,7 +249,7 @@ def _unfinished_execution(trace_path: Path, record: dict[str, Any]) -> str | Non
     """
     if not trace_path.is_file():
         return None
-    from grapharc.observe.trace import TraceReadError, TraceRecorder
+    from grapharc.observe.trace import TraceReadError, TraceRecorder, began_execution
 
     known = {str(r) for r in _executed_run_ids(record)}
     try:
@@ -280,7 +260,7 @@ def _unfinished_execution(trace_path: Path, record: dict[str, Any]) -> str | Non
         # `grapharc trace` is what reports a trace that cannot be read.
         return None
     for event in events:
-        if event.run_id not in known and event.phase not in _NON_EXECUTION_PHASES:
+        if event.run_id not in known and began_execution(event.phase):
             return event.run_id
     return None
 
