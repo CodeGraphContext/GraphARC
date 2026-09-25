@@ -233,6 +233,58 @@ def _executed_run_ids(record: dict[str, Any]) -> list[str]:
     return [str(scalar)] if scalar else []
 
 
+
+#: Phases that are *not* a node doing work. The loop's own bookkeeping
+#: (`plan`, `admission`, `round`), the shape events a viewer draws from
+#: (`topology`, `approval_request`, `approval_response`), and a bare `stop`,
+#: which is a driver saying why it finished rather than a path it took --
+#: the same three-way split `observe.metrics` makes to decide what counts as
+#: an execution. Anything else (`start`, `model`, `end`, `error`) is a node
+#: that ran, which is the only thing this file needs to know.
+_NON_EXECUTION_PHASES = frozenset(
+    {
+        "plan",
+        "admission",
+        "round",
+        "topology",
+        "approval_request",
+        "approval_response",
+        "stop",
+    }
+)
+
+
+def _unfinished_execution(trace_path: Path, record: dict[str, Any]) -> str | None:
+    """A run whose nodes ran but which `plan.json` never recorded finishing.
+
+    `executed_run_id` is stamped *after* `loop.run()` returns, so a run that
+    is killed partway through never reaches the stamp: the MCP `execute`
+    work budget expiring, a SIGKILL, an OOM-kill. The record then says the
+    plan was never executed while the tree may already have been changed,
+    and the #100 reissue guard waves a second run through on the strength of
+    one human approval -- which is the property #100 was closed to protect.
+
+    The trace is written *as the run proceeds*, so it is the only place that
+    evidence survives a kill. Returns the offending run id, or None.
+    """
+    if not trace_path.is_file():
+        return None
+    from grapharc.observe.trace import TraceReadError, TraceRecorder
+
+    known = {str(r) for r in _executed_run_ids(record)}
+    try:
+        events = TraceRecorder(trace_path).read_events()
+    except (OSError, TraceReadError):
+        # A torn or unreadable trace is not evidence of a half-run, and
+        # refusing here would wedge every plan sitting beside a damaged file.
+        # `grapharc trace` is what reports a trace that cannot be read.
+        return None
+    for event in events:
+        if event.run_id not in known and event.phase not in _NON_EXECUTION_PHASES:
+            return event.run_id
+    return None
+
+
 def find_unexecuted_plan(runs_root: Path | None = None) -> Path | None:
     """The newest saved plan `go` has not executed yet, or None."""
     import json
@@ -394,6 +446,25 @@ def execute_plan(
 
     run_dir = plan_file.parent
     trace_path = run_dir / "trace.jsonl"
+
+    # A previous attempt that began and never recorded finishing. Checked
+    # after the `executed_run_id` guard above and separately from it, because
+    # the two are different facts: that one is "this ran, cleanly, once", this
+    # one is "something ran and we do not know how far it got".
+    unfinished = _unfinished_execution(trace_path, record)
+    if unfinished and not again:
+        return fail(
+            f"{plan_file} has an attempt, run {unfinished}, that began executing "
+            "and never recorded finishing — it may have changed the tree partway "
+            f"through. What it did reach is in the trace: `grapharc trace {trace_path}`. "
+            "Pass --again to run the plan a second time anyway; an approval binds "
+            "to the plan's fingerprint, which does not change between runs, so a "
+            "re-run of a mutating plan spends an earlier yes.",
+            as_json=as_json,
+            command="go",
+            plan=str(plan_file),
+            unfinished_run_id=str(unfinished),
+        )
 
     try:
         settings = load_settings(config_path)

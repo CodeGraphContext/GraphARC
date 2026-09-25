@@ -202,3 +202,153 @@ def test_bare_go_still_skips_an_executed_plan(tmp_path, capsys, monkeypatch):
     assert main(["go", "--json"]) == 1
     payload = _last_document(capsys.readouterr().out)
     assert "no unexecuted plan" in payload["error"]
+
+
+# -- an attempt that began and never recorded finishing (#113) --------------
+#
+# `executed_run_id` is stamped after `loop.run()` returns, so a run killed
+# partway through — the MCP `execute` work budget expiring, a SIGKILL, an
+# OOM-kill — never reaches the stamp. The record then says the plan was never
+# executed while the tree may already have been changed, and the guard above
+# waves a second run through on the strength of one human approval. The trace
+# is written as the run proceeds, so it is the only place that evidence lives.
+
+
+def _forget_the_stamp(run_dir: Path) -> str:
+    """A record as a killed run would leave it: trace written, stamp missing.
+
+    Simulated by removing the stamp rather than by killing a real subprocess,
+    because the two leave the same artefacts and only one of them is a test
+    that races.
+    """
+    record = _record(run_dir)
+    ran = record.pop("executed_run_id")
+    record.pop("executed_run_ids", None)
+    record.pop("executed_at", None)
+    (run_dir / "plan.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    return ran
+
+
+def test_an_attempt_that_began_and_never_finished_is_refused(tmp_path, capsys):
+    """The bug: the record says "never executed", so this used to exit 0 and
+    run the plan a second time over a tree the first run had half-changed."""
+    run_dir = _saved_plan(tmp_path, capsys)
+    assert main(["go", str(run_dir), "--json"]) == 0
+    killed = _forget_the_stamp(run_dir)
+    before = _runs_in_trace(run_dir)
+    capsys.readouterr()
+
+    code = main(["go", str(run_dir), "--json"])
+
+    assert code == 2
+    payload = _last_document(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["unfinished_run_id"] == killed
+    assert "never recorded finishing" in payload["error"]
+    assert "--again" in payload["error"]
+    # Refused before anything ran.
+    assert _runs_in_trace(run_dir) == before
+
+
+def test_the_refusal_points_at_the_trace_that_holds_what_it_did(tmp_path, capsys):
+    """The tree may have been changed. A refusal that does not say where to
+    look leaves the reader with no way to find out how far it got."""
+    run_dir = _saved_plan(tmp_path, capsys)
+    assert main(["go", str(run_dir), "--json"]) == 0
+    _forget_the_stamp(run_dir)
+    capsys.readouterr()
+
+    assert main(["go", str(run_dir)]) == 2
+
+    message = capsys.readouterr().err
+    assert str(run_dir / "trace.jsonl") in message
+    assert "may have changed the tree" in message
+
+
+def test_again_still_runs_an_unfinished_plan(tmp_path, capsys):
+    """The escape hatch is the same one the executed-plan guard offers."""
+    run_dir = _saved_plan(tmp_path, capsys)
+    assert main(["go", str(run_dir), "--json"]) == 0
+    _forget_the_stamp(run_dir)
+    capsys.readouterr()
+
+    assert main(["go", str(run_dir), "--again", "--json"]) == 0
+    assert _last_document(capsys.readouterr().out)["executed"] is True
+
+
+def test_planning_paperwork_is_not_mistaken_for_a_half_run(tmp_path, capsys):
+    """The false positive this guard must not have. `plan` writes its own
+    events into the same trace — `plan`, `admission`, `round`, `topology` — and
+    a first `go` would be refused forever if those counted as an execution."""
+    run_dir = _saved_plan(tmp_path, capsys)
+    assert (run_dir / "trace.jsonl").is_file()  # paperwork is already there
+    capsys.readouterr()
+
+    assert main(["go", str(run_dir), "--json"]) == 0
+    assert _last_document(capsys.readouterr().out)["executed"] is True
+
+
+# -- the phase vocabulary the guard depends on ------------------------------
+
+
+def _trace_with(tmp_path: Path, phases: list[str], run_id: str = "killed-run") -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "ts": "2026-01-01T00:00:00+00:00",
+                    "run_id": run_id,
+                    "graph": "g",
+                    "node": "n",
+                    "phase": phase,
+                    "step": 1,
+                }
+            )
+            + "\n"
+            for phase in phases
+        ),
+        encoding="utf-8",
+    )
+    return trace
+
+
+def test_only_a_node_doing_work_counts_as_having_begun(tmp_path):
+    """Pinned deliberately. The loop's bookkeeping, the viewer's shape events
+    and a bare `stop` all share the trace with node events; treating any of
+    them as an execution would refuse a plan that had never run a node — a
+    parked plan a human *denied* being the case that matters most."""
+    from grapharc.cli.plan import _unfinished_execution
+
+    paperwork = ["plan", "admission", "round", "topology", "stop"]
+    assert _unfinished_execution(_trace_with(tmp_path / "a", paperwork), {}) is None
+
+    denied = ["plan", "admission", "round", "approval_request", "approval_response", "stop"]
+    assert _unfinished_execution(_trace_with(tmp_path / "b", denied), {}) is None
+
+    for phase in ("start", "model", "end", "error"):
+        trace = _trace_with(tmp_path / phase, ["plan", "admission", phase])
+        assert _unfinished_execution(trace, {}) == "killed-run", phase
+
+
+def test_a_run_the_record_already_names_is_not_unfinished(tmp_path):
+    from grapharc.cli.plan import _unfinished_execution
+
+    trace = _trace_with(tmp_path / "known", ["end"], run_id="r1")
+    assert _unfinished_execution(trace, {"executed_run_id": "r1"}) is None
+    assert _unfinished_execution(trace, {"executed_run_ids": ["r1"]}) is None
+    assert _unfinished_execution(trace, {"executed_run_id": "other"}) == "r1"
+
+
+def test_a_damaged_trace_does_not_wedge_every_plan_beside_it(tmp_path):
+    """A torn line is not evidence of a half-run, and refusing on one would
+    make an unreadable file block work it says nothing about."""
+    from grapharc.cli.plan import _unfinished_execution
+
+    torn = tmp_path / "trace.jsonl"
+    torn.parent.mkdir(parents=True, exist_ok=True)
+    torn.write_text('{"run_id": "r1", "phase": "en', encoding="utf-8")
+
+    assert _unfinished_execution(torn, {}) is None
+    assert _unfinished_execution(tmp_path / "absent.jsonl", {}) is None
