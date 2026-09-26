@@ -8,10 +8,10 @@ adjacency is the database's job and a traversal is a query rather than a scan.
 LadybugDB is an embedded property-graph database with Cypher — a fork of Kuzu,
 revived in 2025 after Apple acquired and closed it. Embedded means the same
 deal SQLite offers: a path on disk, no server, no daemon to run. What it adds
-over the SQLite backend is that `superseded_by` is an *edge* rather than a
-foreign key in a column, and the subject and object of every claim are `Entity`
-nodes, so "what did run #12 believe that run #37 corrected" is a path, and you
-can ask it in Cypher without going through Python at all::
+over the SQLite backend is that `superseded_by` is an *edge* as well as a
+column, and the subject and object of every claim are `Entity` nodes, so "what
+did run #12 believe that run #37 corrected" is a path, and you can ask it in
+Cypher without going through Python at all::
 
     store = LadybugMemoryStore("memory.lbdb")
     store.cypher(
@@ -72,6 +72,7 @@ _SCHEMA = (
         run_id         STRING,
         confidence     DOUBLE,
         superseded_at  STRING,
+        superseded_by  STRING,
         subject_norm   STRING,
         predicate_norm STRING,
         seq            INT64
@@ -96,14 +97,26 @@ _SCHEMA = (
     "CREATE REL TABLE IF NOT EXISTS SUPERSEDED_BY(FROM Claim TO Claim)",
 )
 
-# `superseded_by` is not a column — it is reconstructed from the edge, so every
-# read pairs its MATCH with this OPTIONAL MATCH and this projection.
+# `superseded_by` is stored as a column *and* walkable as an edge, and the
+# column is the one reads project. It was edge-only, reconstructed by an
+# OPTIONAL MATCH on every read, which reads well and loses data: `add()` cannot
+# create an edge to a claim the store does not have yet, and in the natural
+# import order it does not have it — `all_claims()` returns oldest-first, so a
+# superseded claim arrives before the claim that superseded it. The edge was
+# silently skipped while `superseded_at` was written, so the row said "retracted"
+# and `superseded_by IS NULL` said "current", and `current()` returned both
+# sides of a correction (issue #110).
+#
+# The edge is still what you walk in Cypher — it is the provenance chain this
+# backend exists for, and `_write` reconciles it in both directions so it is
+# complete once both ends have arrived, whatever order they arrived in. What
+# changed is which of the two survives an import that has only seen one end.
 _OPTIONAL_SUPERSEDER = "OPTIONAL MATCH (c)-[:SUPERSEDED_BY]->(n:Claim)"
 _PROJECTION = """
     c.id AS id, c.subject AS subject, c.predicate AS predicate, c.object AS object,
     c.source AS source, c.observed_at AS observed_at, c.run_id AS run_id,
     c.confidence AS confidence, c.superseded_at AS superseded_at,
-    n.id AS superseded_by
+    c.superseded_by AS superseded_by
 """
 
 _UPSERT = """
@@ -112,11 +125,13 @@ ON CREATE SET
     c.subject=$subject, c.predicate=$predicate, c.object=$object,
     c.source=$source, c.observed_at=$observed_at, c.run_id=$run_id,
     c.confidence=$confidence, c.superseded_at=$superseded_at,
+    c.superseded_by=$superseded_by,
     c.subject_norm=$subject_norm, c.predicate_norm=$predicate_norm, c.seq=$seq
 ON MATCH SET
     c.subject=$subject, c.predicate=$predicate, c.object=$object,
     c.source=$source, c.observed_at=$observed_at, c.run_id=$run_id,
     c.confidence=$confidence, c.superseded_at=$superseded_at,
+    c.superseded_by=$superseded_by,
     c.subject_norm=$subject_norm, c.predicate_norm=$predicate_norm
 """
 
@@ -164,6 +179,7 @@ def _params(claim: Claim, seq: int) -> dict[str, Any]:
         "run_id": claim.run_id,
         "confidence": float(claim.confidence),
         "superseded_at": claim.superseded_at,
+        "superseded_by": claim.superseded_by,
         "subject_norm": _normalize(claim.subject),
         "predicate_norm": _normalize(claim.predicate),
         "seq": seq,
@@ -200,7 +216,46 @@ class LadybugMemoryStore:
         if not read_only:
             for statement in _SCHEMA:
                 self._conn.execute(statement)
+            self._migrate_superseded_by()
         self._seq = self._next_seq()
+
+    def _migrate_superseded_by(self) -> None:
+        """Add the `superseded_by` column to a database that predates it.
+
+        `CREATE NODE TABLE IF NOT EXISTS` does not alter an existing table, so a
+        database written before #110 has every other column and not this one.
+        Adding it leaves the column NULL on every row, which would read as "no
+        claim was ever superseded" — so the existing edges are the thing to
+        trust here, and the backfill copies them into the column. Those edges
+        were written by `supersede()`, which always created them; it is the
+        `add()` path that never did, and that path left nothing to recover.
+
+        `ALTER TABLE` raises on a database that already has the column, which is
+        every database created since. That is the expected outcome, not an
+        error, so it is swallowed — narrowly, by re-reading the schema
+        afterwards rather than by assuming.
+        """
+        try:
+            self._conn.execute("ALTER TABLE Claim ADD superseded_by STRING")
+        except Exception:
+            # Either the column is already there (the common case) or the
+            # driver rejected the statement. The projection below decides which.
+            pass
+        try:
+            self._conn.execute("MATCH (c:Claim) RETURN c.superseded_by LIMIT 1").get_all()
+        except Exception as exc:  # pragma: no cover - a driver too old to alter
+            raise RuntimeError(
+                "this LadybugDB database has no `superseded_by` column and it "
+                "could not be added, so a superseded claim cannot be stored "
+                "correctly (see issue #110). Re-create the store from "
+                f"`all_claims()` of a copy, or use SQLiteMemoryStore. Cause: {exc}"
+            ) from exc
+        # Backfill from the edges, which are the only record an older database
+        # has. Idempotent: re-running sets the same ids.
+        self._conn.execute(
+            "MATCH (c:Claim)-[:SUPERSEDED_BY]->(n:Claim) "
+            "WHERE c.superseded_by IS NULL SET c.superseded_by = n.id"
+        )
 
     def _next_seq(self) -> int:
         """Resume the insertion counter where the last process left it."""
@@ -239,10 +294,7 @@ class LadybugMemoryStore:
             self._conn.execute("COMMIT")
 
     def _query(self, where: str, params: dict[str, Any], order: str = "c.seq") -> list[Claim]:
-        cypher = (
-            f"MATCH (c:Claim) {where} {_OPTIONAL_SUPERSEDER} "
-            f"RETURN {_PROJECTION} ORDER BY {order}"
-        )
+        cypher = f"MATCH (c:Claim) {where} RETURN {_PROJECTION} ORDER BY {order}"
         with self._lock:
             result = self._conn.execute(cypher, params)
             return [_to_claim(row) for row in result.rows_as_dict()]
@@ -275,6 +327,40 @@ class LadybugMemoryStore:
                 f"MERGE (c)-[:{rel}]->(e)",
                 {"id": claim.id, "name": name},
             )
+        self._reconcile_supersession(claim.id)
+
+    def _reconcile_supersession(self, claim_id: str) -> None:
+        """Make the SUPERSEDED_BY edges agree with the columns, both ways round.
+
+        Called for every write, because a claim can arrive at either end of a
+        correction first and the edge needs both ends to exist:
+
+        - *forward*: this claim names a superseder. If that claim is present the
+          edge is created; if it is not, the column still records it and this
+          runs again when the superseder arrives.
+        - *backward*: an already-stored claim names **this** one as its
+          superseder, and could not have an edge until now.
+
+        The stale edge is dropped first, because `add` is an upsert: re-adding
+        an id whose `superseded_by` changed must not leave the old edge behind,
+        for the same reason the entity edges above are rebuilt rather than
+        merged.
+        """
+        self._conn.execute(
+            "MATCH (c:Claim {id: $id})-[r:SUPERSEDED_BY]->(n:Claim) "
+            "WHERE n.id <> coalesce(c.superseded_by, '') DELETE r",
+            {"id": claim_id},
+        )
+        self._conn.execute(
+            "MATCH (c:Claim {id: $id}), (n:Claim) WHERE c.superseded_by = n.id "
+            "MERGE (c)-[:SUPERSEDED_BY]->(n)",
+            {"id": claim_id},
+        )
+        self._conn.execute(
+            "MATCH (c:Claim), (n:Claim {id: $id}) WHERE c.superseded_by = n.id "
+            "MERGE (c)-[:SUPERSEDED_BY]->(n)",
+            {"id": claim_id},
+        )
 
     def add(self, claim: Claim) -> Claim:
         with self._transaction():
@@ -301,8 +387,9 @@ class LadybugMemoryStore:
                 {"old": old_id, "new": new_claim.id},
             )
             self._conn.execute(
-                "MATCH (o:Claim {id: $old}) SET o.superseded_at = $at",
-                {"old": old_id, "at": _now()},
+                "MATCH (o:Claim {id: $old}) "
+                "SET o.superseded_at = $at, o.superseded_by = $new",
+                {"old": old_id, "at": _now(), "new": new_claim.id},
             )
         return new_claim
 
@@ -313,13 +400,12 @@ class LadybugMemoryStore:
         if predicate is not None:
             where += " AND c.predicate_norm = $predicate"
             params["predicate"] = _normalize(predicate)
-        # The superseded test is on the edge, so it has to follow the OPTIONAL
-        # MATCH rather than ride along in the WHERE above.
-        cypher = (
-            f"MATCH (c:Claim) {where} {_OPTIONAL_SUPERSEDER} "
-            f"WITH c, n WHERE n IS NULL "
-            f"RETURN {_PROJECTION} ORDER BY c.seq"
-        )
+        # The superseded test is on the column now, so it rides along in the
+        # WHERE above instead of needing a WITH after an OPTIONAL MATCH. That is
+        # not only tidier: filtering on the edge is what returned both sides of
+        # an imported correction, because the edge was the half that got lost.
+        where += " AND c.superseded_by IS NULL"
+        cypher = f"MATCH (c:Claim) {where} RETURN {_PROJECTION} ORDER BY c.seq"
         with self._lock:
             result = self._conn.execute(cypher, params)
             return [_to_claim(row) for row in result.rows_as_dict()]

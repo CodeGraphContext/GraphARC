@@ -29,7 +29,7 @@ from typing import Any, Protocol
 from grapharc.observe.metrics import to_mermaid
 from grapharc.observe.replay import NodeExecution, ReplayedRun, replay
 from grapharc.observe.status import NodeState, node_states
-from grapharc.observe.trace import TailRecorder, TraceEvent
+from grapharc.observe.trace import SHAPE_PHASES, TailRecorder, TraceEvent
 from grapharc.slack.format import fence, mermaid_live_url, truncate
 
 #: How many trailing sub-step events the flat feed shows for a run with no
@@ -249,7 +249,9 @@ def _sub_event_line(event: TraceEvent) -> str:
 
 
 #: Phases that describe the run rather than doing work; never shown as feed.
-_SHAPE_PHASES = frozenset({"topology", "approval_request", "approval_response"})
+#: Owned by `observe.trace` — a phase this file thinks is paperwork while
+#: another thinks it is work is a bug in one of them, with nothing to say which.
+_SHAPE_PHASES = SHAPE_PHASES
 
 
 def _goal(run: ReplayedRun) -> str | None:

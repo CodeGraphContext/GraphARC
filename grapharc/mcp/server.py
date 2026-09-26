@@ -116,20 +116,31 @@ def build_server(root: Path | None = None) -> FastMCP:
 
         A plan with a mutating kind parks until a human answers
         `grapharc approve <run_dir>` out of band; tell the user, do not
-        answer it yourself. A timeout leaves the plan unexecuted and this
-        call safe to reissue.
+        answer it yourself.
+
+        **Do not reissue this call after a timeout without reading the run
+        back first.** A park that expires unanswered leaves the plan
+        unexecuted, and that case alone is safe to retry. A timeout during
+        the *work* is a different thing: the run may have been stopped
+        partway through, and for a mutating plan that means partway through
+        changing the tree. `show_graph` on the same `run_dir` says which
+        happened, and `execute` refuses a plan whose trace shows an
+        unfinished attempt rather than spending one human approval twice.
         """
         resolved = driver.confine_run_dir(base, run_dir)
         record = driver.read_plan_record(resolved)
         mutating = driver.plan_is_mutating(record)
+        # The park and the work get separate budgets. One budget covering both
+        # meant a human approving near the end of the park left ~120s for the
+        # run, and the non-mutating branch was unbounded -- a wedged run held
+        # the call open forever. See DEFAULT_WORK_TIMEOUT for the reasoning.
+        work = driver.work_timeout()
         code, out, err = await driver.run_cli(
             driver.build_execute_argv(
                 resolved, mutating=mutating, approval_timeout=approval_timeout
             ),
             cwd=base,
-            # The subprocess bounds its own park via --approval-timeout; this
-            # outer bound only catches a wedged process, generously.
-            timeout=approval_timeout + 120.0 if mutating else None,
+            timeout=(approval_timeout + work) if mutating else work,
         )
         document = driver.parse_document(out, command="go")
         document["mutating"] = mutating

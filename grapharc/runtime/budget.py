@@ -333,6 +333,13 @@ _SIGNAL_SLOT = threading.Lock()
 # node alive; the cost while a node is being torn down is one timer per 50ms.
 _REARM_SECONDS = 0.05
 
+#: How many times a mechanism-2 teardown may be interrupted before it stops
+#: retrying and clears the flag outside the lock. Two is already generous --
+#: once `armed` is false `fire` returns without re-arming, so no further
+#: exception is queued -- and the loop exists for the interrupt that lands
+#: *inside* the teardown, not for a steady stream of them.
+_DISARM_ATTEMPTS = 8
+
 # The longest delay both mechanisms can actually be armed with. `setitimer`
 # raises `OverflowError` past the platform's `time_t` (~2**31 seconds), and
 # `threading.Timer` accepts a larger value but crashes its own thread once the
@@ -487,11 +494,39 @@ def deadline_guard(meter: BudgetMeter, *, what: str) -> Iterator[None]:
             rearm(armable)
 
         def disarm() -> None:
-            with lock:
-                state["armed"] = False
-                state["timer"].cancel()
-                if state["fired"]:
-                    _async_raise(thread_id, None)
+            # An interrupt can land *inside* this teardown, and used to leave a
+            # timer running for the life of the thread. `fire` queues the async
+            # exception while holding `lock`, so a guard already blocked on
+            # `lock` here is handed it the moment it acquires the lock -- at the
+            # next bytecode, which is before `armed` is cleared and before the
+            # re-armed timer is cancelled. Letting that propagate left a live
+            # 50ms timer whose `fire` still read `armed` as true, so it raised
+            # `NodeDeadlineExceeded` into this thread every 50ms, indefinitely,
+            # long after the run that armed it had finished. On a pooled thread
+            # that is an unattributable crash in whatever ran next -- the exact
+            # failure `test_no_interrupt_survives_the_node_that_earned_it`
+            # exists to rule out, arriving by a path it did not cover.
+            #
+            # So the teardown is retried rather than abandoned. Swallowing the
+            # interrupt costs nothing: the guard decides the outcome from
+            # `state["fired"]` once this returns, and raises on it.
+            for _ in range(_DISARM_ATTEMPTS):
+                try:
+                    with lock:
+                        state["armed"] = False
+                        state["timer"].cancel()
+                        if state["fired"]:
+                            _async_raise(thread_id, None)
+                    return
+                except NodeDeadlineExceeded:
+                    # An interrupt landing here *is* the deadline firing.
+                    state["fired"] = True
+            # Last resort. Clearing `armed` is the single store that stops
+            # `fire` re-arming, so it is done outside the lock rather than
+            # risking another interrupt on the way to it.
+            state["armed"] = False
+            state["timer"].cancel()
+            _async_raise(thread_id, None)
 
     try:
         try:

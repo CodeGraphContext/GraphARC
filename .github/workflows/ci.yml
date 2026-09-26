@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Mondays, 06:00 UTC. Every other trigger here is caused by someone pushing,
+  # so without this the suite is only ever run against the dependency versions
+  # `uv.lock` pins -- see the `upstream-drift` job for what that hides. Note
+  # GitHub disables a scheduled workflow after 60 days with no repository
+  # activity, so a long quiet spell stops these runs rather than failing them.
+  schedule:
+    - cron: "0 6 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -27,10 +34,20 @@ jobs:
         run: uv sync --all-extras --group dev
       - name: Lint
         run: uv run ruff check .
-      - name: Version is declared twice; the two must agree
+      - name: Version is declared three times; all three must agree
         # `grapharc.__version__` is a separate literal from the packaged
         # version. If they drift, `pip show` and `import` disagree about what
         # is installed. Parsed rather than imported, so this needs no deps.
+        #
+        # `uv.lock` carries a third copy, in its own entry for this project.
+        # This step checked only the first two, and the third drifted: 0.1.6
+        # and 0.1.7 both shipped with a lockfile saying 0.1.5, because nothing
+        # re-locked after the bump and nothing looked. `uv lock` fixes it in
+        # one line; what this catches is the next one. A stale copy there is
+        # milder than the other two -- it misreports the project to anyone
+        # reading the lockfile, and to `uv sync --locked`, rather than to an
+        # installed import -- but it is the same class of bug, and this step
+        # exists because a version declared in N places drifts in N-1 of them.
         run: |
           python3 - <<'PY'
           import ast
@@ -55,7 +72,20 @@ jobs:
               sys.exit("grapharc/__init__.py no longer declares __version__")
           if declared != packaged:
               sys.exit(f"grapharc.__version__ is {declared!r} but pyproject says {packaged!r}")
-          print(f"ok: version {packaged} declared in both places")
+
+          with open("uv.lock", "rb") as fh:
+              lock = tomllib.load(fh)
+
+          entries = [p for p in lock.get("package", []) if p.get("name") == "grapharc"]
+          if len(entries) != 1:
+              sys.exit(f"uv.lock has {len(entries)} entries for grapharc; expected exactly 1")
+          locked = entries[0].get("version")
+          if locked != packaged:
+              sys.exit(
+                  f"uv.lock says grapharc is {locked!r} but pyproject says "
+                  f"{packaged!r} -- run `uv lock` and commit the result"
+              )
+          print(f"ok: version {packaged} declared in all three places")
           PY
 
   live-marker-guard:
@@ -166,6 +196,85 @@ jobs:
       - name: Tests
         # `addopts` in pyproject.toml supplies `-m 'not live'`.
         run: uv run pytest
+
+  upstream-drift:
+    # `uv.lock` is what every other job resolves against, so nothing in this
+    # workflow would notice a new `langgraph` minor breaking the runtime until a
+    # user on a fresh `pip install grapharc` hit it. Issue #103 is the standing
+    # form of that complaint: the extras are unbounded and the lockfile hides
+    # what the next major would do. This job re-resolves every range from
+    # scratch and runs the suite against the newest versions the constraints in
+    # pyproject.toml actually allow.
+    #
+    # Scheduled and manual only, deliberately. A pull request has to be judged
+    # against the lockfile it ships; if this ran on PRs, an upstream release on
+    # the morning of a review would turn someone else's branch red for a reason
+    # that branch did not cause.
+    name: upstream drift (unlocked deps)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # `issues: write` is for the reporting step below; a job's permissions
+    # replace the workflow's rather than adding to them, so `contents: read`
+    # is repeated here.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Re-resolve every dependency to the newest allowed version
+        run: uv lock --upgrade
+      - name: Report what moved
+        # Printed whether or not the suite then passes: a green run against
+        # moved dependencies is the useful half of this job, because it is the
+        # evidence that a range can be widened or a pin dropped.
+        run: git --no-pager diff --stat -- uv.lock
+      - name: Sync and test against the re-resolved versions
+        run: |
+          uv sync --all-extras --group dev
+          uv run pytest
+      - name: Say so where someone will see it
+        # A scheduled run reports to nobody. This repository has already paid
+        # for that: `pages.yml` failed on two consecutive pushes and the
+        # failures sat unnoticed for the better part of two months, while the
+        # published site served a version six releases behind. A weekly job in
+        # a repository that goes quiet for weeks at a time is the same shape,
+        # so the failure comes to the issue tracker instead of the Actions tab.
+        #
+        # One issue, reused: an unattended weekly job that opens a fresh issue
+        # every Monday is a second way of being ignored. Matched on title
+        # rather than a label, so this needs no label to exist first.
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "upstream drift: the suite fails against re-resolved dependencies"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body=$(cat <<EOF
+          The weekly \`upstream-drift\` job failed: the suite does not pass against the
+          newest dependency versions \`pyproject.toml\` allows.
+
+          Run: $RUN_URL
+
+          **This is not a failure of any branch.** Every other job resolves against
+          \`uv.lock\`; this one re-resolves from scratch. So either an upstream release
+          broke something, or a range in \`pyproject.toml\` needs narrowing — which is
+          what #103 asks for. The job prints the re-resolved lockfile diff, so the run
+          log says which dependencies moved.
+          EOF
+          )
+          existing=$(gh issue list --state open --search "$TITLE in:title" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "commenting on existing issue #$existing"
+            gh issue comment "$existing" --body "$body"
+          else
+            echo "opening a new issue"
+            gh issue create --title "$TITLE" --body "$body"
+          fi
 
   build:
     name: build and check the distribution

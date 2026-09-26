@@ -50,8 +50,12 @@ What this does *not* give you, stated plainly because "interruptible" and
   stops. The kernel grew `astream` while this was being written; an async turn
   is now buildable and is simply not built yet.
 - **One runner at a time is a claim, not a lease.** `SessionStore.transition`
-  stops a second runner from claiming a session, and nothing reclaims one whose
-  runner died holding it — see that method's docstring.
+  stops a second runner from claiming a session; it cannot notice one that died
+  holding it. A session wedged in `running` after a crash is released
+  deliberately with `SessionManager.reclaim`, which refuses unless the recorded
+  `runner_pid` is gone from this host and records the release as a transition.
+  Deliberate rather than automatic: pid liveness is host-local and pids are
+  recycled, so an automatic sweep is a way for two live runners to fight.
 - **A hold names a node, not one particular task.** When a `Send` fan-out puts
   the *same* gated node on the boundary several times over, each of those tasks
   is held separately and each needs its own decision — so the count is exact
@@ -815,6 +819,25 @@ class SessionManager:
         """
         record = self.store.require(session_id)
         return Session(record=record, manager=self, spec=self.registry.get(record.graph))
+
+    def reclaim(self, session_id: str, *, reason: str = "") -> SessionRecord:
+        """Release a session whose runner process died holding it.
+
+        A runner's claim is a compare-and-set rather than a lease, so a crash
+        mid-turn leaves the session `running` and every later `run()` raises
+        `SessionBusy`. This is the deliberate release: it refuses unless the
+        recorded `runner_pid` is gone from this host, moves the session to
+        `failed`, and records the reclaim as a transition naming the dead pid —
+        so the audit trail shows what happened instead of a hand-written UPDATE
+        hiding it.
+
+        Open approval holds are kept: a session waiting on a human is still
+        waiting afterwards. Nothing calls this automatically, because pid
+        liveness is host-local and pids are recycled — see
+        `SessionStore.release_dead_runner` for what it will and will not accept
+        as evidence that a runner is gone.
+        """
+        return self.store.release_dead_runner(session_id, reason=reason)
 
     def list(
         self, *, status: SessionStatus | Iterable[SessionStatus] | None = None

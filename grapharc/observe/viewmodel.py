@@ -37,15 +37,17 @@ from pydantic import BaseModel, Field
 from grapharc.observe.metrics import latest_topologies
 from grapharc.observe.replay import ReplayedRun
 from grapharc.observe.status import NodeStatus, node_states
-from grapharc.observe.trace import TraceEvent
+from grapharc.observe.trace import LOOP_PHASES, SHAPE_PHASES, TraceEvent
 
 #: Same truncation the Mermaid labels use: flatten whitespace, cap the length.
 #: An error message is the one free-text string this model carries.
 _ERROR_LIMIT = 120
 
-#: Phases that describe the run rather than doing work (mirrors `metrics`).
-_SHAPE_PHASES = frozenset({"topology", "approval_request", "approval_response"})
-_LOOP_PHASES = frozenset({"plan", "admission", "round"})
+#: Phases that describe the run rather than doing work. Owned by
+#: `observe.trace`; this comment used to say "mirrors `metrics`", which was
+#: true and was the problem.
+_SHAPE_PHASES = SHAPE_PHASES
+_LOOP_PHASES = LOOP_PHASES
 
 _NO_GRAPH_NOTE = "no graph ran: no proposal was admitted and built"
 

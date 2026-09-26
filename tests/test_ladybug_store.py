@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from grapharc.memory import Claim, LadybugMemoryStore, SQLiteMemoryStore
+from grapharc.memory import Claim, LadybugMemoryStore, MemoryStore, SQLiteMemoryStore
 from grapharc.memory.index import ClaimIndex
 from grapharc.memory.ladybug_store import _load_driver
 from grapharc.memory.retrieval import search
@@ -449,3 +449,173 @@ def _run_child(tmp_path: Path, name: str, body: str, db: Path, *args: str) -> st
         if line.startswith("RESULT "):
             return line[len("RESULT ") :]
     raise AssertionError(f"child emitted no result:\nstdout={proc.stdout}\n{proc.stderr}")
+
+
+# --------------------------------------------------------------------------
+# An already-superseded claim, arriving through add() (#110)
+# --------------------------------------------------------------------------
+#
+# `supersede()` creates the SUPERSEDED_BY edge itself, so every path that goes
+# through it agreed with the other backends and the comparison test above
+# passed. `add()` never created the edge, and `superseded_by` was read off it —
+# so a claim that arrived *already superseded* landed with `superseded_at` set
+# and `superseded_by` NULL, which `Claim.is_current` reads as current. The store
+# then contradicted itself, and `current()` returned both sides of a correction.
+#
+# That is every import, replay, backup restore, and copy between backends.
+
+
+def _corrected_pair() -> list[Claim]:
+    """A claim and its correction, as an export would carry them: oldest first,
+    the older one already naming its superseder."""
+    source = SQLiteMemoryStore(":memory:")
+    source.add(Claim(id="a", subject="svc", predicate="owner", object="alice", source="t"))
+    source.supersede(
+        "a", Claim(id="b", subject="svc", predicate="owner", object="bob", source="t")
+    )
+    return [source.get("a"), source.get("b")]
+
+
+def test_an_imported_retraction_does_not_come_back_as_current(store):
+    """The bug: `current('svc')` answered alice *and* bob."""
+    for claim in _corrected_pair():
+        store.add(claim)
+
+    retracted = store.get("a")
+    assert retracted.superseded_by == "b"
+    assert retracted.is_current is False
+    assert [c.id for c in store.current("svc")] == ["b"]
+
+
+def test_the_import_survives_the_reverse_order_too(store):
+    """`all_claims()` is oldest-first, so the superseded claim normally arrives
+    before its superseder — but nothing guarantees the order a caller replays
+    in, and an edge cannot be created towards a claim that is not there yet."""
+    for claim in reversed(_corrected_pair()):
+        store.add(claim)
+
+    assert store.get("a").superseded_by == "b"
+    assert [c.id for c in store.current("svc")] == ["b"]
+
+
+def test_no_claim_is_current_while_its_superseded_at_is_set(store):
+    """The self-contradiction, asserted as the property it is: these two columns
+    describe the same fact and cannot disagree."""
+    for claim in _corrected_pair():
+        store.add(claim)
+
+    for claim in store.all_claims():
+        if claim.superseded_at is not None:
+            assert claim.is_current is False, claim.id
+    for claim in store.current("svc"):
+        assert claim.superseded_at is None, claim.id
+
+
+def test_the_three_backends_agree_on_an_imported_correction(store, tmp_path):
+    """The equivalence that broke was the one nothing asked for. Asked now."""
+    exported = _corrected_pair()
+
+    sqlite_store = SQLiteMemoryStore(tmp_path / "compare.sqlite")
+    in_memory = MemoryStore()
+    for claim in exported:
+        store.add(claim)
+        sqlite_store.add(claim)
+        in_memory.add(claim)
+
+    assert _shape(store.all_claims()) == _shape(sqlite_store.all_claims())
+    assert _shape(store.all_claims()) == _shape(in_memory.all_claims())
+    assert (
+        [c.id for c in store.current("svc")]
+        == [c.id for c in sqlite_store.current("svc")]
+        == [c.id for c in in_memory.current("svc")]
+    )
+
+
+def test_the_edge_is_still_walkable_after_an_import(store):
+    """The column is what reads project; the edge is what this backend exists
+    for. `_write` reconciles it in both directions, so it must be there after an
+    import in either order — not just after `supersede()`."""
+    for claim in reversed(_corrected_pair()):
+        store.add(claim)
+
+    walked = store.cypher("MATCH (o:Claim)-[:SUPERSEDED_BY]->(n:Claim) RETURN o.id, n.id")
+    assert walked == [["a", "b"]]
+
+
+def test_an_upsert_that_clears_the_link_removes_the_stale_edge(store):
+    """`add` is an upsert, and the entity edges are rebuilt for this same
+    reason: re-adding an id whose `superseded_by` changed must not leave the
+    old edge pointing where it used to."""
+    for claim in _corrected_pair():
+        store.add(claim)
+    store.add(store.get("a").model_copy(update={"superseded_by": None}))
+
+    assert store.get("a").superseded_by is None
+    assert store.get("a").is_current is True
+    assert store.cypher("MATCH (:Claim)-[:SUPERSEDED_BY]->(:Claim) RETURN 1") == []
+
+
+def test_a_database_written_before_the_column_existed_is_migrated(driver, tmp_path):
+    """`CREATE NODE TABLE IF NOT EXISTS` does not alter an existing table, so a
+    database written before #110 has every column but `superseded_by`.
+
+    Adding it leaves it NULL on every row, which would read as "nothing was ever
+    superseded" — so the migration backfills from the SUPERSEDED_BY edges, which
+    are what an older database does have: `supersede()` always wrote them. (The
+    `add()` path never did, and that is the data #110 lost for good; this
+    recovers what was recoverable.)
+
+    The old schema is written here with the driver directly, rather than by
+    checking in a fixture database, so this tests the migration against the
+    shape the code actually used to create.
+    """
+    path = tmp_path / "pre-110.lbdb"
+    database = driver.Database(str(path))
+    connection = driver.Connection(database)
+    connection.execute(
+        """CREATE NODE TABLE Claim(
+            id STRING PRIMARY KEY, subject STRING, predicate STRING, object STRING,
+            source STRING, observed_at STRING, run_id STRING, confidence DOUBLE,
+            superseded_at STRING, subject_norm STRING, predicate_norm STRING, seq INT64)"""
+    )
+    connection.execute("CREATE NODE TABLE Entity(name STRING PRIMARY KEY, display STRING)")
+    for statement in (
+        "CREATE REL TABLE ABOUT(FROM Claim TO Entity)",
+        "CREATE REL TABLE MENTIONS(FROM Claim TO Entity)",
+        "CREATE REL TABLE SUPERSEDED_BY(FROM Claim TO Claim)",
+    ):
+        connection.execute(statement)
+    for claim_id, obj, superseded_at, seq in (
+        ("a", "alice", "2026-01-01T00:00:00+00:00", 0),
+        ("b", "bob", None, 1),
+    ):
+        connection.execute(
+            "CREATE (c:Claim {id: $id, subject: 'svc', predicate: 'owner', object: $obj, "
+            "source: 't', observed_at: '2026-01-01T00:00:00+00:00', run_id: NULL, "
+            "confidence: 1.0, superseded_at: $at, subject_norm: 'svc', "
+            "predicate_norm: 'owner', seq: $seq})",
+            {"id": claim_id, "obj": obj, "at": superseded_at, "seq": seq},
+        )
+    connection.execute(
+        "MATCH (o:Claim {id: 'a'}), (n:Claim {id: 'b'}) CREATE (o)-[:SUPERSEDED_BY]->(n)"
+    )
+    connection.close()
+    database.close()
+
+    store = LadybugMemoryStore(path)
+    try:
+        assert store.get("a").superseded_by == "b"
+        assert store.get("a").is_current is False
+        assert [c.id for c in store.current("svc")] == ["b"]
+        # The insertion counter must not restart and collide with existing rows.
+        assert store._seq == 2
+    finally:
+        store.close()
+
+    # Opening it again re-runs the migration, which must be a no-op rather than
+    # an error: `ALTER TABLE` on a column that now exists is the common case.
+    reopened = LadybugMemoryStore(path)
+    try:
+        assert reopened.get("a").superseded_by == "b"
+    finally:
+        reopened.close()

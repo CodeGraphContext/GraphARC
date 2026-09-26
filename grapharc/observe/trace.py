@@ -82,6 +82,35 @@ class TraceEvent(BaseModel):
     error: str | None = None
 
 
+#: Phases that are **not** a node doing work.
+#:
+#: Three kinds, all bookkeeping: the governed loop's own (`plan`, `admission`,
+#: `round`), the shape events a viewer draws a graph from (`topology`,
+#: `approval_request`, `approval_response`), and a bare `stop`, which is a
+#: driver saying why it finished rather than a path it took.
+#:
+#: Defined here, beside `TraceEvent`, because two callers need the same answer
+#: and had their own copies: `observe.metrics` splits these out to decide what
+#: to draw, and `cli.plan` asks whether a run got far enough to have changed
+#: the tree. A phase classified one way in one file and the other way in the
+#: other is a bug in whichever is wrong, and there is no way to tell which.
+#:
+#: **A phase that is not listed here reads as a node execution**, which is the
+#: safe direction: an unclassified new phase makes `go` refuse a plan it could
+#: have run, rather than re-run one it should have refused. Refusing is
+#: recoverable with `--again`; re-running a half-finished mutating plan spends
+#: a human approval that was given once.
+LOOP_PHASES = frozenset({"plan", "admission", "round"})
+SHAPE_PHASES = frozenset({"topology", "approval_request", "approval_response"})
+DRIVER_PHASES = frozenset({"stop"})
+NON_EXECUTION_PHASES = LOOP_PHASES | SHAPE_PHASES | DRIVER_PHASES
+
+
+def began_execution(phase: str) -> bool:
+    """Whether `phase` is a node doing work, rather than bookkeeping."""
+    return phase not in NON_EXECUTION_PHASES
+
+
 class TraceRecorder:
     """Append-only JSONL trace writer with a read-back helper for tests and the CLI."""
 
@@ -242,15 +271,32 @@ class TailRecorder(TraceRecorder):
         raise RuntimeError("TailRecorder is read-only")
 
     def read_events(self, run_id: str | None = None) -> list[TraceEvent]:
+        return self.read_tail(run_id)[0]
+
+    def read_tail(self, run_id: str | None = None) -> tuple[list[TraceEvent], int]:
+        """The events, and **how many bytes they came from**.
+
+        The byte count is not a detail a caller can re-derive with `stat()`
+        afterwards, which is why it is returned here. Two things make the
+        file's size at any later moment a different number: this read stops at
+        the last newline, so a half-written final line is excluded; and another
+        process may append between the read and the stat.
+
+        A caller that uses a later `st_size` as its "everything up to here is
+        rendered" cursor therefore claims to have consumed bytes it never saw,
+        and will skip them for as long as the file stays that size — forever,
+        if the run has finished. `server.live` is that caller.
+        """
         try:
             raw = self.path.read_bytes()
         except OSError:
-            return []
+            return [], 0
         cut = raw.rfind(b"\n")
         if cut < 0:
-            return []
+            return [], 0
+        consumed = cut + 1
         events = []
-        for line in raw[: cut + 1].splitlines():
+        for line in raw[:consumed].splitlines():
             if not line.strip():
                 continue
             try:
@@ -259,7 +305,7 @@ class TailRecorder(TraceRecorder):
                 continue
             if run_id is None or event.run_id == run_id:
                 events.append(event)
-        return events
+        return events, consumed
 
 
 def load_events(
