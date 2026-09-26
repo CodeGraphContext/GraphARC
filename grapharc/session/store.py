@@ -41,6 +41,7 @@ from grapharc.session.db import create_schema, open_database
 from grapharc.session.errors import (
     InvalidTransition,
     SessionBusy,
+    SessionError,
     SessionExistsError,
     SessionTerminated,
     ThreadInUseError,
@@ -111,6 +112,30 @@ _ALLOWED: dict[SessionStatus, frozenset[SessionStatus]] = {
 RESUMABLE: frozenset[SessionStatus] = frozenset(
     status for status, targets in _ALLOWED.items() if SessionStatus.RUNNING in targets
 )
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether `pid` names a live process *on this host*.
+
+    Signal 0 checks for existence without delivering anything. `PermissionError`
+    means the process exists and belongs to someone else, which counts as alive:
+    the conservative answer is the one that refuses a reclaim.
+
+    Host-local by construction, which is why the store does not try to be a
+    lease. A pid from another machine is meaningless here, and a recycled pid
+    reads as alive — a refusal, which is the direction to fail in.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        # An unusable pid (negative, 0, out of range) is not a live runner, and
+        # 0 would signal our own process group rather than asking about a pid.
+        return False
+    return True
 
 
 class _Keep:
@@ -417,8 +442,8 @@ class SessionStore:
         was found instead. That is the whole of the "one runner at a time"
         guard — it stops a second runner from *claiming* a session, and it does
         not detect a runner that died holding one. A session stuck in `running`
-        after a crash has to be released deliberately, which is a legal
-        `running -> idle` transition.
+        after a crash is released by `release_dead_runner`, which checks the
+        recorded pid is gone and then makes a legal `running -> failed` move.
         """
         with self._transaction() as conn:
             row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
@@ -458,6 +483,93 @@ class SessionStore:
                 "INSERT INTO session_transitions (session_id, from_status, to_status, "
                 "reason, at, pid) VALUES (?, ?, ?, ?, ?, ?)",
                 (session_id, current.value, to.value, reason, _now(), os.getpid()),
+            )
+        return self.require(session_id)
+
+    def release_dead_runner(self, session_id: str, *, reason: str = "") -> SessionRecord:
+        """Release a `running` session whose runner process no longer exists.
+
+        A runner's claim is a compare-and-set, not a lease: it stops a second
+        runner from claiming a session and cannot notice one that died holding
+        it. Without this, a crash mid-turn left the row `running` forever and
+        every later `Session.run()` raised `SessionBusy`, with the only remedy
+        being a hand-written UPDATE — which skips the lifecycle check and writes
+        no transition row, corrupting the audit trail this store exists to keep.
+
+        Lands on `failed`, not `interrupted`. `interrupted` says a turn stopped
+        somewhere it can be picked up from, and a runner that died left no such
+        point; `failed` says the turn did not settle, which is true and is
+        already resumable.
+
+        **Open holds survive.** `pending_approval` is not touched, so a session
+        waiting on a human is still waiting after the reclaim. Reclaiming a
+        wedged session must not be a way past an approval gate.
+
+        The liveness check runs *inside* the write transaction, not before it,
+        so two operators reclaiming at once serialise on it — a check outside the
+        lock is the same deferred-read race `_transaction` already describes.
+
+        Refused, deliberately, when:
+
+        - the session is not `running` — there is no claim to release;
+        - the recorded pid is alive, or belongs to another user (`PermissionError`,
+          treated as alive). A live pid does not prove the *runner* lives, but it
+          is enough to prove it might;
+        - the pid is this process — that is a caller bug, not a crash;
+        - a `running` row carries no `runner_pid` at all, which is inconsistent
+          in its own right and not something to paper over.
+
+        Pid reuse is not solved here and is not pretended to be: a recycled pid
+        makes a dead runner look alive, which produces a refusal — the safe
+        direction. That is why this is a deliberate operator action and why
+        nothing calls it automatically.
+        """
+        with self._transaction() as conn:
+            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                raise UnknownSessionError(f"no session {session_id!r} in {self.path}")
+            current = SessionStatus(row["status"])
+            if current is not SessionStatus.RUNNING:
+                raise SessionBusy(session_id, (SessionStatus.RUNNING.value,), current.value)
+
+            pid = row["runner_pid"]
+            if pid is None:
+                raise SessionError(
+                    f"session {session_id!r} is running but records no runner_pid, so "
+                    "there is no process to prove dead; this row is inconsistent and "
+                    "wants looking at rather than reclaiming"
+                )
+            pid = int(pid)
+            if pid == os.getpid():
+                raise SessionError(
+                    f"session {session_id!r} names this process ({pid}) as its runner; "
+                    "a runner does not reclaim its own session"
+                )
+            if _pid_alive(pid):
+                raise SessionError(
+                    f"session {session_id!r} is held by pid {pid}, which is still "
+                    "alive — refusing to reclaim a session that may be running. If "
+                    "that process is not a GraphARC runner, stop it first."
+                )
+
+            detail = f"runner pid {pid} no longer exists"
+            note = f"{reason} ({detail})" if reason else f"reclaimed: {detail}"
+            conn.execute(
+                "UPDATE sessions SET status = ?, updated_at = ?, runner_pid = NULL, "
+                "last_error = ? WHERE id = ?",
+                (SessionStatus.FAILED.value, _now(), detail, session_id),
+            )
+            conn.execute(
+                "INSERT INTO session_transitions (session_id, from_status, to_status, "
+                "reason, at, pid) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    current.value,
+                    SessionStatus.FAILED.value,
+                    note,
+                    _now(),
+                    os.getpid(),
+                ),
             )
         return self.require(session_id)
 
