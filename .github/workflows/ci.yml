@@ -236,6 +236,25 @@ jobs:
         run: |
           uv sync --all-extras --group dev
           uv run pytest
+      - name: The wheel still imports against the re-resolved versions
+        # The other half of #103. The suite above runs from the source tree, so a
+        # packaging break that only shows in an *installed* wheel -- a subpackage
+        # dropped, or an extra whose new major moves a module the package imports
+        # at import time -- would not surface there. #101 was exactly that shape:
+        # `mcp>=1.2` resolved to 2.0.0 for anyone installing fresh,
+        # `mcp.server.fastmcp` had gone, and `grapharc[mcp]` was broken on
+        # arrival while every locked job stayed green.
+        #
+        # Same script the build job runs, pointed at a clean environment built
+        # from `pyproject.toml`'s ranges rather than from `uv.lock`.
+        run: |
+          uv build
+          uv venv --python 3.12 /tmp/driftcheck
+          uv pip install --python /tmp/driftcheck/bin/python "$(echo dist/*.whl)[all]"
+          cd /tmp
+          /tmp/driftcheck/bin/python "$GITHUB_WORKSPACE/scripts/wheel_import_walk.py" \
+            --source-tree "$GITHUB_WORKSPACE" --expect-prefix /tmp/driftcheck/
+          /tmp/driftcheck/bin/grapharc --version
       - name: Say so where someone will see it
         # A scheduled run reports to nobody. This repository has already paid
         # for that: `pages.yml` failed on two consecutive pushes and the
@@ -291,48 +310,16 @@ jobs:
         run: uvx twine check --strict dist/*
       - name: Wheel installs and imports in a clean environment
         # Runs from /tmp so an `import grapharc` cannot fall back to the
-        # checked-out source tree and pass for the wrong reason.
+        # checked-out source tree and pass for the wrong reason. The check is
+        # `scripts/wheel_import_walk.py` rather than a heredoc because
+        # `upstream-drift` needs exactly the same one against re-resolved
+        # dependencies, and two copies of it would drift apart.
         run: |
           uv venv --python 3.12 /tmp/wheelcheck
           uv pip install --python /tmp/wheelcheck/bin/python "$(echo dist/*.whl)[all]"
           cd /tmp
-          SOURCE_TREE="$GITHUB_WORKSPACE" /tmp/wheelcheck/bin/python - <<'PY'
-          import importlib
-          import os
-          import pkgutil
-          import sys
-          from pathlib import Path
-
-          import grapharc
-
-          assert "/tmp/wheelcheck/" in grapharc.__file__, grapharc.__file__
-          from grapharc import Budget, GraphARC, GraphARCState  # noqa: F401
-          from grapharc.gateway import get_model  # noqa: F401
-          from grapharc.harness import Harness  # noqa: F401
-
-          # Compared against the checkout rather than a magic number. A `walked
-          # > N` check cannot notice a whole subpackage going missing, and one
-          # did go missing in testing: hatchling treats `.gitignore` as a build
-          # exclusion unless `ignore-vcs` is set, and the build still succeeds.
-          source = Path(os.environ["SOURCE_TREE"]) / "grapharc"
-          expected = {
-              ".".join(("grapharc", *path.relative_to(source).parts))[: -len(".py")].removesuffix(
-                  ".__init__"
-              )
-              for path in source.rglob("*.py")
-              if "__pycache__" not in path.parts
-          }
-          installed = {m.name for m in pkgutil.walk_packages(grapharc.__path__, "grapharc.")}
-          installed.add("grapharc")
-
-          missing = sorted(expected - installed)
-          if missing:
-              sys.exit(f"in the source tree but not in the wheel: {missing}")
-
-          for name in sorted(installed):
-              importlib.import_module(name)
-          print(f"ok: {len(installed)} modules imported from wheel {grapharc.__version__}")
-          PY
+          /tmp/wheelcheck/bin/python "$GITHUB_WORKSPACE/scripts/wheel_import_walk.py" \
+            --source-tree "$GITHUB_WORKSPACE" --expect-prefix /tmp/wheelcheck/
           /tmp/wheelcheck/bin/grapharc --version
       - name: Sdist installs and imports in a clean environment
         run: |
