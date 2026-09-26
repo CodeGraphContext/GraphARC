@@ -271,15 +271,32 @@ class TailRecorder(TraceRecorder):
         raise RuntimeError("TailRecorder is read-only")
 
     def read_events(self, run_id: str | None = None) -> list[TraceEvent]:
+        return self.read_tail(run_id)[0]
+
+    def read_tail(self, run_id: str | None = None) -> tuple[list[TraceEvent], int]:
+        """The events, and **how many bytes they came from**.
+
+        The byte count is not a detail a caller can re-derive with `stat()`
+        afterwards, which is why it is returned here. Two things make the
+        file's size at any later moment a different number: this read stops at
+        the last newline, so a half-written final line is excluded; and another
+        process may append between the read and the stat.
+
+        A caller that uses a later `st_size` as its "everything up to here is
+        rendered" cursor therefore claims to have consumed bytes it never saw,
+        and will skip them for as long as the file stays that size — forever,
+        if the run has finished. `server.live` is that caller.
+        """
         try:
             raw = self.path.read_bytes()
         except OSError:
-            return []
+            return [], 0
         cut = raw.rfind(b"\n")
         if cut < 0:
-            return []
+            return [], 0
+        consumed = cut + 1
         events = []
-        for line in raw[: cut + 1].splitlines():
+        for line in raw[:consumed].splitlines():
             if not line.strip():
                 continue
             try:
@@ -288,7 +305,7 @@ class TailRecorder(TraceRecorder):
                 continue
             if run_id is None or event.run_id == run_id:
                 events.append(event)
-        return events
+        return events, consumed
 
 
 def load_events(

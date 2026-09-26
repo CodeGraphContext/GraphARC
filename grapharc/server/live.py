@@ -294,14 +294,25 @@ def build_snapshot(root: Path, rel: str, run_id: str | None) -> LiveSnapshot:
     """
     path = resolve_trace(root, rel)
     recorder = TailRecorder(path)
-    events = recorder.read_events()
+    # `size` is the stream's "everything up to here is rendered" cursor, so it
+    # must describe *what was read*, not what the file is now. Those differ two
+    # ways: this read stops at the last newline, and the writer may append
+    # between the read and any later `stat()`. Taking it from `st_size`
+    # therefore claimed bytes the snapshot never saw, and `frames()` skips a
+    # file whose size has not changed since the last cursor — so those events
+    # were never sent, and never would be once the run stopped writing. A
+    # finished run then streamed as one still running, forever.
+    events, consumed = recorder.read_tail()
     if not events:
         return LiveSnapshot(trace=rel)
+    size = consumed
     try:
-        stat = path.stat()
-        size, quiet_for = stat.st_size, time() - stat.st_mtime
+        # Only the mtime comes from the file's current state. Erring *new* here
+        # is harmless: it makes the run look more recently active, which delays
+        # an idle verdict by one poll rather than stopping the stream.
+        quiet_for = time() - path.stat().st_mtime
     except OSError:
-        size, quiet_for = 0, float("inf")
+        quiet_for = float("inf")
     return compose_snapshot(
         rel,
         recorder,
