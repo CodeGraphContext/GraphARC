@@ -36,6 +36,8 @@ from grapharc.runtime.budget import Budget
 from grapharc.runtime.graph import END, START, GraphARC
 from grapharc.runtime.state import GraphARCState
 from grapharc.session import (
+    RESUMABLE,
+    ApprovalRequest,
     ApprovalRequired,
     EventKind,
     GraphRegistry,
@@ -109,6 +111,18 @@ def _result(proc: subprocess.Popen, timeout: int = 120) -> dict:
         if line.startswith("RESULT "):
             return json.loads(line[len("RESULT ") :])
     raise AssertionError(f"child emitted no result:\nstdout={out}\nstderr={err}")
+
+
+def _dead_pid() -> int:
+    """A pid with no process behind it, for standing in for a crashed runner.
+
+    Spawned and reaped rather than invented: a made-up number can belong to
+    something, and the reclaim under test refuses a pid that is alive — so an
+    unlucky guess would make this pass or fail for the wrong reason.
+    """
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait(timeout=60)
+    return proc.pid
 
 
 def run_child(tmp_path: Path, name: str, body: str, root: Path, *args: str) -> dict:
@@ -1398,3 +1412,149 @@ def test_the_store_file_lives_where_the_manager_says_it_does(root):
     store = SessionStore(root / STORE_FILENAME)
     assert len(store.list()) == 1
     store.close()
+
+
+# -- reclaiming a session whose runner died (#19) ----------------------------
+#
+# A runner's claim is a compare-and-set, not a lease: it stops a second runner
+# from claiming a session and cannot notice one that died holding it. A crash
+# mid-turn left the row `running` with the dead `runner_pid` still on it, so the
+# store knew who died and offered no way to act on it — every later `run()`
+# raised `SessionBusy` forever and the only remedy was a hand-written UPDATE,
+# which skips the lifecycle check and writes no transition row.
+
+_CLAIM_AND_DIE = """
+    from grapharc.session.store import RESUMABLE
+
+    store = SessionStore(Path(ROOT) / "sessions.sqlite")
+    store.transition(ARGS[0], SessionStatus.RUNNING, expect=RESUMABLE, reason="turn started")
+    emit(claimed=True)
+    # `os._exit` skips every cleanup path, which is the point — it is what a
+    # SIGKILL or an OOM-kill looks like from the store's side. stdout is flushed
+    # by hand because `_exit` will not do it either.
+    sys.stdout.flush()
+    os._exit(0)
+"""
+
+_CLAIM_AND_PARK = """
+    from grapharc.session.store import RESUMABLE
+
+    store = SessionStore(Path(ROOT) / "sessions.sqlite")
+    store.transition(ARGS[0], SessionStatus.RUNNING, expect=RESUMABLE, reason="turn started")
+    emit(claimed=True)
+    sys.stdout.flush()
+    # Hold the claim until the parent says to let go, so the parent can assert a
+    # reclaim is refused against a runner that really is alive.
+    release = Path(ARGS[1])
+    for _ in range(1200):
+        if release.exists():
+            break
+        time.sleep(0.05)
+"""
+
+
+def test_a_session_whose_runner_died_can_be_reclaimed(tmp_path, root, manager):
+    """The bug: this session was wedged in `running` for the life of the file."""
+    manager.create(GRAPH_NAME, session_id="crashed")
+    child = run_child(tmp_path, "claim_and_die", _CLAIM_AND_DIE, root, "crashed")
+
+    wedged = manager.store.require("crashed")
+    assert wedged.status is SessionStatus.RUNNING
+    assert wedged.runner_pid == child["pid"]
+    with pytest.raises(SessionBusy):
+        manager.resume("crashed").run({"inbox": ["hello"]})
+
+    reclaimed = manager.reclaim("crashed", reason="operator reclaim")
+
+    # `failed`, not `interrupted`: a turn that died is a turn that did not
+    # settle, and there is no point to pick it up from.
+    assert reclaimed.status is SessionStatus.FAILED
+    assert reclaimed.runner_pid is None
+    assert str(child["pid"]) in (reclaimed.last_error or "")
+
+    # The audit trail shows the reclaim rather than hiding it.
+    last = manager.store.history("crashed")[-1]
+    assert (last.from_status, last.to_status) == (SessionStatus.RUNNING, SessionStatus.FAILED)
+    assert "operator reclaim" in last.reason
+    assert str(child["pid"]) in last.reason
+
+    # And the session is usable again.
+    result = manager.resume("crashed").run({"inbox": ["hello"]})
+    assert result is not None
+    assert manager.store.require("crashed").status is not SessionStatus.RUNNING
+
+
+def test_reclaim_is_refused_while_the_recorded_runner_is_alive(tmp_path, root, manager):
+    """A live pid does not prove the runner lives, but it proves it might — and
+    reclaiming a session out from under a working runner is the one thing the
+    claim exists to prevent."""
+    manager.create(GRAPH_NAME, session_id="busy")
+    release = tmp_path / "let-go"
+    script = _write_script(tmp_path, "claim_and_park", _CLAIM_AND_PARK)
+    proc = _spawn(script, root, "busy", str(release))
+    try:
+        for _ in range(400):  # wait for the claim to land
+            if manager.store.require("busy").status is SessionStatus.RUNNING:
+                break
+            time.sleep(0.05)
+        held = manager.store.require("busy")
+        assert held.status is SessionStatus.RUNNING
+        assert held.runner_pid == proc.pid
+
+        with pytest.raises(SessionError, match="still alive"):
+            manager.reclaim("busy")
+
+        # Refused *and* unchanged: no transition row, no status move.
+        assert manager.store.require("busy").status is SessionStatus.RUNNING
+        assert manager.store.history("busy")[-1].to_status is SessionStatus.RUNNING
+    finally:
+        release.write_text("go", encoding="utf-8")
+        proc.communicate(timeout=120)
+
+
+def test_a_reclaim_does_not_release_an_approval_hold(tmp_path, root, manager):
+    """Reclaiming a wedged session must not be a way past a human.
+
+    The hold is carried on the row, so a reclaim that rewrote
+    `pending_approval` would let the next turn run a gated node unapproved.
+    """
+    manager.create(GRAPH_NAME, session_id="held")
+    manager.store.transition(
+        "held",
+        SessionStatus.RUNNING,
+        expect=RESUMABLE,
+        reason="turn started",
+        approval=[ApprovalRequest(node=APPROVAL_NODE, action="apply the change")],
+    )
+    # Stand in for the crash: the row is running, the pid is this process's, so
+    # point it at one that cannot exist rather than spawning a child here.
+    manager.store._conn.execute(
+        "UPDATE sessions SET runner_pid = ? WHERE id = ?", (_dead_pid(), "held")
+    )
+    manager.store._conn.commit()
+
+    reclaimed = manager.reclaim("held")
+
+    assert reclaimed.status is SessionStatus.FAILED
+    assert [request.node for request in reclaimed.pending_approvals] == [APPROVAL_NODE]
+
+
+def test_reclaim_refuses_a_session_that_is_not_running(manager):
+    """There is no claim to release, and saying so beats moving the session."""
+    manager.create(GRAPH_NAME, session_id="quiet")
+
+    with pytest.raises(SessionBusy):
+        manager.reclaim("quiet")
+
+    assert manager.store.require("quiet").status is SessionStatus.CREATED
+
+
+def test_reclaim_refuses_when_the_runner_is_this_process(manager):
+    """A runner does not reclaim its own session; that is a caller bug."""
+    manager.create(GRAPH_NAME, session_id="self")
+    manager.store.transition("self", SessionStatus.RUNNING, expect=RESUMABLE, reason="mine")
+
+    with pytest.raises(SessionError, match="this process"):
+        manager.reclaim("self")
+
+    assert manager.store.require("self").status is SessionStatus.RUNNING
