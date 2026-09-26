@@ -96,6 +96,19 @@ state     : goal='investigate the checkout outage' notes=['triage ran', 'patch r
 
 Round 1 wanted to deploy and **never executed**. Round 2 went through the same checker and ran. The full assembly, runnable as written:
 
+To see the planner decompose instead of produce another chain, use the shipped
+research registry. Its scripted plan fans four evidence collectors out from
+`START`, joins them at correlation, forks hypothesis and impact analysis, and
+fans both back in to a final report. Each kind can write only its own state
+field, while the registered `page_oncall` kind is policy-denied. Run
+`grapharc plan "explain elevated checkout latency" --scripted --go --registry
+grapharc.examples.plan_research:build_registry` to reproduce it without a
+model or API key.
+
+The trace's `topology` event records every fan-out, join, fork and fan-in edge;
+the runnable registry is in
+[`grapharc/examples/plan_research.py`](grapharc/examples/plan_research.py).
+
 ```python
 from pydantic import BaseModel
 
