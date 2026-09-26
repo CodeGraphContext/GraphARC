@@ -35,12 +35,14 @@ import signal
 import threading
 import time
 from typing import Annotated
+from unittest import mock
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 
 from grapharc.runtime.budget import (
+    _REARM_SECONDS,
     Budget,
     BudgetExceeded,
     BudgetMeter,
@@ -741,3 +743,107 @@ def test_a_run_stopped_for_overspending_reports_what_it_spent(tmp_path):
     assert metrics.errors == 1
     # The cost report and the audit trail must never disagree.
     assert replay(trace, run_id).tokens == metrics.tokens
+
+
+def test_an_interrupt_landing_inside_the_teardown_leaves_no_timer_running():
+    """The teardown race, and the leak it left behind.
+
+    `fire` queues its async exception *while holding the lock*, so a guard
+    already blocked on that same lock inside `disarm` is handed the exception
+    the moment it acquires it — at the next bytecode, which is before `armed`
+    is cleared and before the re-armed timer is cancelled. `disarm` then
+    propagated, leaving a live 50 ms timer whose `fire` still read `armed` as
+    true: it re-raised into this thread every 50 ms for the life of the thread,
+    long after the run that armed it had finished. On a pooled thread that is
+    an unattributable crash in whatever ran next.
+
+    Forcing the interleaving needs the exception delivered at exactly that
+    point, so the lock is wrapped and raises on the guard thread's *second*
+    entry — the first is the initial arm, the second is `disarm`. It releases
+    before raising, because a real async exception lands inside the `with` body
+    and that block's exit releases the lock; raising from `__enter__` instead
+    would hold the lock forever and deadlock the very timer under test rather
+    than letting it spin.
+
+    The harm is then measured the way a caller feels it: whether anything is
+    still interrupting this thread once the guard has been released. Without the
+    retry in `disarm` this records six further interrupts; with it, none.
+    """
+    from grapharc.runtime import budget as budget_module
+
+    worker = {}
+    calls: list[object] = []
+    has_fired = threading.Event()
+    real_lock = threading.Lock
+
+    # Recorded, not delivered: injecting into the test runner's own thread would
+    # surface as an unrelated crash somewhere later in the session.
+    monkey = mock.patch.object(
+        budget_module, "_async_raise", lambda thread_id, exc: calls.append(exc)
+    )
+
+    class InterruptingLock:
+        """A lock that delivers the deadline interrupt inside `disarm`."""
+
+        def __init__(self) -> None:
+            self._lock = real_lock()
+            self._guard_entries = 0
+
+        def __getattr__(self, name):  # Condition and Event poke at locked() etc.
+            return getattr(self._lock, name)
+
+        def acquire(self, *args, **kwargs):
+            return self._lock.acquire(*args, **kwargs)
+
+        def release(self):
+            return self._lock.release()
+
+        def __enter__(self):
+            self._lock.acquire()
+            if threading.get_ident() == worker.get("id"):
+                self._guard_entries += 1
+                if self._guard_entries == 2 and has_fired.is_set():
+                    self._lock.release()
+                    raise NodeDeadlineExceeded("delivered inside the teardown")
+            return self
+
+        def __exit__(self, *exc_info):
+            self._lock.release()
+            return False
+
+    class NotingTimer(threading.Timer):
+        """Records that `fire` has run at least once, so the interrupt is
+        delivered to a teardown that actually has a re-armed timer to lose."""
+
+        def run(self):
+            has_fired.set()
+            return super().run()
+
+    def body():
+        worker["id"] = threading.get_ident()
+        meter = BudgetMeter(Budget(max_seconds=0.1))
+        try:
+            with deadline_guard(meter, what="worker"):
+                time.sleep(0.4)  # past the deadline, so the timer fires and re-arms
+        except NodeDeadlineExceeded:
+            pass
+
+    with (
+        monkey,
+        mock.patch.object(budget_module.threading, "Lock", InterruptingLock),
+        mock.patch.object(budget_module.threading, "Timer", NotingTimer),
+    ):
+        thread = threading.Thread(target=body)
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert has_fired.is_set(), "the timer never fired; the race was not exercised"
+
+        settled = len(calls)
+        time.sleep(6 * _REARM_SECONDS)
+
+        assert len(calls) == settled, (
+            f"{len(calls) - settled} interrupt(s) queued after the guard was "
+            "released: a re-armed timer outlived its teardown and will keep "
+            "raising into this thread"
+        )
