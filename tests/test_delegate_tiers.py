@@ -29,7 +29,7 @@ from grapharc.testing import ScriptedChatModel
 
 
 class ClaudeCliDouble(ScriptedChatModel):
-    """Looks like the Claude CLI backend to `_is_claude_cli`, runs nothing."""
+    """Looks like the Claude CLI backend to `is_claude_cli`, runs nothing."""
 
     @property
     def _llm_type(self) -> str:

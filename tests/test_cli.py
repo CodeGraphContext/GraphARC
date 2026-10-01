@@ -23,6 +23,7 @@ import json
 import subprocess
 import sys
 import time
+from io import StringIO
 from pathlib import Path
 from types import ModuleType
 
@@ -30,11 +31,17 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel
 
-from grapharc.cli.agent import _approval
+from grapharc.cli.agent import (
+    _approval,
+    build_policy,
+    combined_approval,
+    document_denial_recorder,
+)
 from grapharc.cli.main import build_parser, main
 from grapharc.examples.stage0_dag import DEMO_DOC, build_stage0
-from grapharc.harness import ToolSpec
+from grapharc.harness import Decision, ToolSpec
 from grapharc.observe.trace import TraceRecorder
+from grapharc.policy import PolicyEngine
 
 # -- harness ------------------------------------------------------------------
 
@@ -2481,3 +2488,913 @@ def test_default_flag_forces_the_builtin_kinds(tmp_path, monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
     assert payload["registry"] == "grapharc.stdlib:build_registry"
+
+
+# -- agent --policy (issue #6) --------------------------------------------------
+
+
+DOC_DENY_SHELL = """
+version = "1.0.0"
+name = "agent-cli-test"
+default = "deny"
+
+[[rule]]
+id = "no-shell"
+resource = "tool"
+match = "run_command"
+effect = "deny"
+reason = "the shell is never permitted"
+
+[[rule]]
+id = "notes-ok"
+resource = "tool"
+match = "write_note"
+effect = "allow"
+"""
+
+DOC_ALLOW_WRITES = """
+version = "1.0.0"
+name = "agent-cli-test"
+default = "deny"
+
+[[rule]]
+id = "notes-ok"
+resource = "tool"
+match = "write_*"
+effect = "allow"
+"""
+
+DOC_ASK_WRITES = """
+version = "1.0.0"
+name = "agent-cli-test"
+default = "deny"
+
+[[rule]]
+id = "notes-ask"
+resource = "tool"
+match = "write_note"
+effect = "ask"
+approver_role = "reviewer"
+reason = "writes need a human"
+"""
+
+DOC_TENANTED = """
+version = "1.0.0"
+name = "agent-cli-test"
+default = "deny"
+tenants = ["acme", "globex"]
+
+[[rule]]
+id = "acme-notes"
+resource = "tool"
+match = "write_*"
+effect = "allow"
+tenant = "acme"
+"""
+
+DOC_DENY_WRITES = """
+version = "1.0.0"
+name = "agent-cli-test"
+default = "deny"
+
+[[rule]]
+id = "no-writes"
+resource = "tool"
+match = "write_note"
+effect = "deny"
+reason = "read-only run"
+"""
+
+DOC_NO_TOOLS = """
+version = "1.0.0"
+name = "agent-cli-test"
+default = "deny"
+
+[[rule]]
+id = "chain"
+resource = "edge"
+match = "triage->fix"
+effect = "allow"
+"""
+
+
+def _write_doc(path: Path, text: str) -> Path:
+    path.write_text(text.strip() + "\n", encoding="utf-8")
+    return path
+
+
+def _read_jsonl(path) -> list[dict]:
+    """Audit/trace lines as dicts. A run that recorded nothing has no file yet —
+    the same contract TraceRecorder keeps — which reads as zero records."""
+    target = Path(path)
+    if not target.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in target.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+class _TtyInput(StringIO):
+    """Piped bytes with a tty face, for the interactive approval path."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def _refuse_to_prompt(*args, **kwargs):
+    raise AssertionError("prompted for approval in a non-interactive run")
+
+
+def test_agent_policy_document_denies_a_tool_end_to_end(
+    tmp_path, capsys, scripted_model, stub_tools
+):
+    """Issue #6: the document governs the run — denied tools are undescribed,
+    unexecuted, and recorded in both the audit log and the trace."""
+    stub_tools()
+    workspace = tmp_path / "ws"
+    policy = _write_doc(tmp_path / "policy.toml", DOC_DENY_SHELL)
+    model = scripted_model(
+        [
+            {"tools": [("run_command", {"argv": "id"})]},
+            {"tools": [("write_note", {"path": "note.txt", "content": "hello"})]},
+            {"content": "wrote the note"},
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "do the thing",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--policy",
+            str(policy),
+            "--run-id",
+            "doc-test",
+            # Local execution: the sandbox executor forks, which Windows
+            # cannot do — and confinement is orthogonal to what this test
+            # proves (policy visibility, denial, audit, trace).
+            "--executor",
+            "local",
+        ],
+        capsys,
+    )
+    assert code == 0
+    # Selectively governed: the denied tool is undescribed, the allowed one runs.
+    assert model.bound_tools == ["write_note"]
+    assert payload["tools_visible"] == ["write_note"]
+    assert payload["policy"] == {"allow": [], "ask": [], "deny": []}
+    assert (workspace / "note.txt").read_text(encoding="utf-8") == "hello"
+    assert payload["tool_calls"][0]["tool"] == "run_command"
+    assert payload["tool_calls"][0]["status"] == "denied"
+    assert payload["tool_calls"][0]["refused_by"] == "policy"
+    assert payload["tool_calls"][1]["status"] == "ok"
+
+    # The denial is attributable: rule, version, digest, tenant, effect.
+    audit = _read_jsonl(payload["policy_audit"])
+    decision = next(
+        e for e in audit if e["kind"] == "decision" and e["subject"] == "run_command"
+    )
+    assert decision["effect"] == "deny"
+    assert decision["rule_id"] == "no-shell"
+    assert decision["policy_version"] == "1.0.0"
+    assert decision["tenant"] == "default"
+    assert decision["policy_digest"] == payload["policy_document"]["digest"]
+
+    # ...and the same refusal is on the run trace, not only in the audit log.
+    trace = _read_jsonl(payload["trace"])
+    refusal = next(
+        e
+        for e in trace
+        if e.get("phase") == "tool"
+        and (e.get("state_delta") or {}).get("tool") == "run_command"
+    )
+    assert refusal["state_delta"]["status"] == "denied"
+    assert refusal["state_delta"]["refused_by"] == "policy"
+    assert "PERMISSION_DENIED" in (refusal.get("error") or "")
+
+
+def test_agent_flag_allow_cannot_widen_a_document_deny(
+    tmp_path, capsys, scripted_model, stub_tools
+):
+    stub_tools()
+    workspace = tmp_path / "ws"
+    policy = _write_doc(tmp_path / "policy.toml", DOC_DENY_SHELL)
+    model = scripted_model(
+        [
+            {"tools": [("run_command", {"argv": "id"})]},
+            {"content": "blocked"},
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--policy",
+            str(policy),
+            "--allow",
+            "run_command",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert payload["policy"]["allow"] == ["run_command"]
+    assert "run_command" not in model.bound_tools
+    assert payload["tool_calls"][0]["status"] == "denied"
+    audit = _read_jsonl(payload["policy_audit"])
+    assert any(
+        e["kind"] == "decision"
+        and e["subject"] == "run_command"
+        and e["effect"] == "deny"
+        and e["rule_id"] == "no-shell"
+        for e in audit
+    )
+
+
+def test_agent_flag_deny_narrows_a_document_allow(
+    tmp_path, capsys, scripted_model, stub_tools
+):
+    stub_tools()
+    workspace = tmp_path / "ws"
+    policy = _write_doc(tmp_path / "policy.toml", DOC_ALLOW_WRITES)
+    model = scripted_model(
+        [
+            {"tools": [("write_note", {"path": "note.txt", "content": "hello"})]},
+            {"content": "blocked"},
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--policy",
+            str(policy),
+            "--deny",
+            "write_note",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert "write_note" not in (model.bound_tools or [])
+    assert payload["tool_calls"][0]["status"] == "denied"
+    assert not (workspace / "note.txt").exists()
+    # The flag caused this refusal, not the document — recording it through
+    # the engine would write ALLOW beside a denial, so the audit stays empty.
+    assert _read_jsonl(payload["policy_audit"]) == []
+
+
+def test_agent_flag_allow_reaffirms_a_document_allow(
+    tmp_path, capsys, scripted_model, stub_tools
+):
+    stub_tools()
+    workspace = tmp_path / "ws"
+    policy = _write_doc(tmp_path / "policy.toml", DOC_ALLOW_WRITES)
+    scripted_model(
+        [
+            {"tools": [("write_note", {"path": "note.txt", "content": "hello"})]},
+            {"content": "wrote the note"},
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--policy",
+            str(policy),
+            "--allow",
+            "write_note",
+            # Local execution: the sandbox executor forks, which Windows
+            # cannot do — and confinement is orthogonal to the reaffirmed
+            # allow this test proves.
+            "--executor",
+            "local",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert payload["tool_calls"][0]["status"] == "ok"
+    assert (workspace / "note.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_agent_flag_allow_cannot_bypass_a_document_ask(
+    tmp_path, capsys, scripted_model, stub_tools, monkeypatch
+):
+    """Document ASK plus flag allow stays asked — and in JSON mode the human
+    it asks for does not exist, so the call is refused, not granted."""
+    monkeypatch.setattr("builtins.input", _refuse_to_prompt)
+    stub_tools()
+    workspace = tmp_path / "ws"
+    policy = _write_doc(tmp_path / "policy.toml", DOC_ASK_WRITES)
+    model = scripted_model(
+        [
+            {"tools": [("write_note", {"path": "note.txt", "content": "hello"})]},
+            {"content": "blocked"},
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--policy",
+            str(policy),
+            "--allow",
+            "write_note",
+        ],
+        capsys,
+    )
+    assert code == 0
+    # Asked tools stay visible — ask gates the call, it does not hide the schema.
+    assert "write_note" in model.bound_tools
+    assert payload["tool_calls"][0]["status"] == "denied"
+    assert not (workspace / "note.txt").exists()
+    audit = _read_jsonl(payload["policy_audit"])
+    decision = next(e for e in audit if e["kind"] == "decision")
+    assert decision["effect"] == "ask"
+    assert decision["rule_id"] == "notes-ask"
+    assert decision["approver_role"] == "reviewer"
+    approval = next(e for e in audit if e["kind"] == "approval")
+    assert approval["granted"] is False
+    assert approval["approver_role"] == "reviewer"
+    # The guard refused — had `input()` been reached, the router would have
+    # recorded the stub's AssertionError as a handler failure instead.
+    assert approval["reason"] == "reviewer refused approval"
+
+
+def test_agent_document_deny_plus_flag_deny_is_still_denied(
+    tmp_path, capsys, scripted_model, stub_tools
+):
+    stub_tools()
+    workspace = tmp_path / "ws"
+    policy = _write_doc(tmp_path / "policy.toml", DOC_DENY_SHELL)
+    scripted_model(
+        [
+            {"tools": [("run_command", {"argv": "id"})]},
+            {"content": "blocked"},
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--policy",
+            str(policy),
+            "--deny",
+            "run_command",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert payload["tool_calls"][0]["status"] == "denied"
+    audit = _read_jsonl(payload["policy_audit"])
+    assert any(e["kind"] == "decision" and e["rule_id"] == "no-shell" for e in audit)
+
+
+def test_agent_denied_tool_never_reaches_the_executor(
+    tmp_path, capsys, scripted_model, stub_tools
+):
+    stub_tools()
+    workspace = tmp_path / "ws"
+    policy = _write_doc(tmp_path / "policy.toml", DOC_DENY_WRITES)
+    model = scripted_model(
+        [
+            {"tools": [("write_note", {"path": "note.txt", "content": "hello"})]},
+            {"content": "blocked"},
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--policy",
+            str(policy),
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert "write_note" not in (model.bound_tools or [])
+    assert payload["tool_calls"][0]["status"] == "denied"
+    assert payload["tool_calls"][0]["refused_by"] == "policy"
+    assert not (workspace / "note.txt").exists()
+
+
+def test_agent_policy_tenant_allow_and_deny(
+    tmp_path, capsys, scripted_model, stub_tools
+):
+    """One tenant's grant is not another's; the ungranted tenant is denied."""
+    stub_tools()
+    policy = _write_doc(tmp_path / "policy.toml", DOC_TENANTED)
+
+    granted_ws = tmp_path / "granted"
+    scripted_model(
+        [
+            {"tools": [("write_note", {"path": "note.txt", "content": "hello"})]},
+            {"content": "wrote the note"},
+        ]
+    )
+    code, granted, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(granted_ws),
+            "--policy",
+            str(policy),
+            "--tenant",
+            "acme",
+            # Local execution on both halves of this comparison: the
+            # sandbox executor forks, which Windows cannot do.
+            "--executor",
+            "local",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert granted["tool_calls"][0]["status"] == "ok"
+    assert (granted_ws / "note.txt").read_text(encoding="utf-8") == "hello"
+    assert granted["policy_document"]["tenant"] == "acme"
+
+    refused_ws = tmp_path / "refused"
+    scripted_model(
+        [
+            {"tools": [("write_note", {"path": "note.txt", "content": "hello"})]},
+            {"content": "blocked"},
+        ]
+    )
+    code, refused, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(refused_ws),
+            "--policy",
+            str(policy),
+            "--tenant",
+            "globex",
+            "--executor",
+            "local",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert refused["tool_calls"][0]["status"] == "denied"
+    assert not (refused_ws / "note.txt").exists()
+    audit = _read_jsonl(refused["policy_audit"])
+    decision = next(e for e in audit if e["kind"] == "decision")
+    assert decision["effect"] == "deny"
+    assert decision["tenant"] == "globex"
+    assert decision["rule_id"] is None  # the document default, not a rule
+
+
+def test_agent_policy_unknown_tenant_is_refused_upfront(tmp_path, capsys):
+    policy = _write_doc(tmp_path / "policy.toml", DOC_TENANTED)
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(tmp_path / "ws"),
+            "--policy",
+            str(policy),
+            "--tenant",
+            "nope",
+        ],
+        capsys,
+    )
+    assert code == 2
+    assert payload["ok"] is False
+    assert "nope" in payload["error"]
+    assert "declared" in payload["error"]
+
+
+def test_agent_policy_missing_tenant_is_refused_when_tenants_are_listed(
+    tmp_path, capsys
+):
+    policy = _write_doc(tmp_path / "policy.toml", DOC_TENANTED)
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(tmp_path / "ws"),
+            "--policy",
+            str(policy),
+        ],
+        capsys,
+    )
+    assert code == 2
+    assert "'default'" in payload["error"]
+    assert "pass --tenant" in payload["error"]
+
+
+def test_agent_policy_ask_fails_closed_in_json_mode(
+    tmp_path, capsys, scripted_model, stub_tools, monkeypatch
+):
+    """JSON means no human is reading: ask denies, never prompts, and the
+    refusal is structured — the run still completes so the document's shape
+    is visible instead of a traceback."""
+    monkeypatch.setattr("builtins.input", _refuse_to_prompt)
+    stub_tools()
+    workspace = tmp_path / "ws"
+    policy = _write_doc(tmp_path / "policy.toml", DOC_ASK_WRITES)
+    scripted_model(
+        [
+            {"tools": [("write_note", {"path": "note.txt", "content": "hello"})]},
+            {"content": "blocked"},
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--policy",
+            str(policy),
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert payload["denied"] == 1
+    assert payload["tool_calls"][0]["refused_by"] == "policy"
+    assert not (workspace / "note.txt").exists()
+    audit = _read_jsonl(payload["policy_audit"])
+    assert any(e["kind"] == "decision" and e["effect"] == "ask" for e in audit)
+    approval = next(e for e in audit if e["kind"] == "approval")
+    assert approval["granted"] is False
+    assert approval["reason"] == "reviewer refused approval"
+
+
+def test_agent_policy_ask_grants_interactively(
+    tmp_path, capsys, scripted_model, stub_tools, monkeypatch
+):
+    """On a terminal the role, rule and reason reach the human, and a yes runs."""
+    stub_tools()
+    workspace = tmp_path / "ws"
+    policy = _write_doc(tmp_path / "policy.toml", DOC_ASK_WRITES)
+    scripted_model(
+        [
+            {"tools": [("write_note", {"path": "note.txt", "content": "hello"})]},
+            {"content": "wrote the note"},
+        ]
+    )
+    monkeypatch.setattr("sys.stdin", _TtyInput("y\n"))
+    code, out, _ = call(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--policy",
+            str(policy),
+            # Local execution: the sandbox executor forks, which Windows
+            # cannot do — and confinement is orthogonal to the granted
+            # approval this test proves.
+            "--executor",
+            "local",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert (workspace / "note.txt").read_text(encoding="utf-8") == "hello"
+    assert "reviewer" in out
+    assert "notes-ask" in out
+
+
+def test_agent_policy_refuses_the_delegated_executor(tmp_path, capsys):
+    """A document mapped onto Claude Code flags would claim an enforcement
+    that is not there — refused before the (missing) file is even read."""
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--executor",
+            "claude-cli",
+            "--workspace",
+            str(tmp_path / "ws"),
+            "--policy",
+            str(tmp_path / "nope.toml"),
+        ],
+        capsys,
+    )
+    assert code == 2
+    assert "--policy" in payload["error"]
+    assert "claude-cli" in payload["error"]
+
+
+def test_agent_tenant_without_policy_is_refused(tmp_path, capsys):
+    code, payload, _ = call_json(
+        ["agent", "t", "--workspace", str(tmp_path / "ws"), "--tenant", "acme"],
+        capsys,
+    )
+    assert code == 2
+    assert "--tenant" in payload["error"]
+    assert "--policy" in payload["error"]
+
+
+def test_agent_policy_missing_file_is_a_structured_error(tmp_path, capsys):
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(tmp_path / "ws"),
+            "--policy",
+            str(tmp_path / "nope.toml"),
+        ],
+        capsys,
+    )
+    assert code == 2
+    assert payload["ok"] is False
+    assert payload["command"] == "agent"
+    assert "nope.toml" in payload["error"]
+
+
+def test_agent_policy_without_tool_rules_is_refused(tmp_path, capsys):
+    """A planner-only document constrains nothing an agent does — running
+    under it would report a policy that is not in force."""
+    policy = _write_doc(tmp_path / "policy.toml", DOC_NO_TOOLS)
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(tmp_path / "ws"),
+            "--policy",
+            str(policy),
+        ],
+        capsys,
+    )
+    assert code == 2
+    assert "tool rules" in payload["error"]
+
+
+def test_agent_policy_provenance_is_reported(
+    tmp_path, capsys, scripted_model, stub_tools
+):
+    """The payload says which document governed the run — and the digest it
+    names is the one the audit records carry."""
+    stub_tools()
+    workspace = tmp_path / "ws"
+    policy = _write_doc(tmp_path / "policy.toml", DOC_DENY_SHELL)
+    scripted_model(
+        [
+            {"tools": [("run_command", {"argv": "id"})]},
+            {"tools": [("write_note", {"path": "note.txt", "content": "hello"})]},
+            {"content": "done"},
+        ]
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(workspace),
+            "--policy",
+            str(policy),
+            # Local execution: the sandbox executor forks, which Windows
+            # cannot do — and confinement is orthogonal to the provenance
+            # this test proves.
+            "--executor",
+            "local",
+        ],
+        capsys,
+    )
+    assert code == 0
+    document = payload["policy_document"]
+    assert document["source"] == "flag"
+    assert document["path"] == str(policy)
+    assert document["version"] == "1.0.0"
+    assert document["tenant"] == "default"
+    assert document["tool_rules"] == 2
+    assert len(document["digest"]) == 64
+    audit = _read_jsonl(payload["policy_audit"])
+    assert audit, "a governed run that denied a tool must have audit records"
+    assert {e["policy_digest"] for e in audit} == {document["digest"]}
+
+    text_ws = tmp_path / "text-ws"
+    scripted_model([{"content": "nothing to do"}])
+    code, out, _ = call(
+        [
+            "agent",
+            "t",
+            "--model",
+            "mock/x",
+            "--workspace",
+            str(text_ws),
+            "--policy",
+            str(policy),
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert "document=" in out
+    assert "tenant=default" in out
+    assert "audit=" in out
+
+
+def test_agent_combined_approval_grants_only_when_every_asking_side_grants(monkeypatch):
+    engine = PolicyEngine.from_toml(DOC_ASK_WRITES)
+    doc_policy = engine.permission_policy(tenant="default")
+    flag_open = build_policy(["*"], [], [])
+    flag_ask = build_policy([], [], ["write_note"])
+
+    # Answers travel through `builtins.input`, the way the handlers read
+    # them: `stream` only decides whether a terminal is behind stdin.
+    prompts: list[str] = []
+    script: list[str] = []
+
+    def respond(prompt: str) -> str:
+        prompts.append(prompt)
+        return script.pop(0)
+
+    monkeypatch.setattr("builtins.input", respond)
+
+    approve = combined_approval(
+        engine=engine,
+        doc_policy=doc_policy,
+        flag_policy=flag_open,
+        tenant="default",
+        as_json=False,
+        stream=_TtyInput(),
+    )
+    script.append("y")
+    assert approve("write_note", {"path": "n"}) is True
+    assert script == []  # the answer was consumed, exactly once
+    assert len(prompts) == 1
+    assert "reviewer" in prompts[0]
+    assert "notes-ask" in prompts[0]
+
+    both = combined_approval(
+        engine=engine,
+        doc_policy=doc_policy,
+        flag_policy=flag_ask,
+        tenant="default",
+        as_json=False,
+        stream=_TtyInput(),
+    )
+    script.extend(["y", "y"])
+    assert both("write_note", {}) is True
+    assert script == []
+
+    vetoed = combined_approval(
+        engine=engine,
+        doc_policy=doc_policy,
+        flag_policy=flag_ask,
+        tenant="default",
+        as_json=False,
+        stream=_TtyInput(),
+    )
+    script.extend(["y", "n"])
+    assert vetoed("write_note", {}) is False
+    assert script == []
+
+    asked = len(prompts)
+    refused = combined_approval(
+        engine=engine,
+        doc_policy=doc_policy,
+        flag_policy=flag_open,
+        tenant="default",
+        as_json=True,
+        stream=_TtyInput(),
+    )
+    assert refused("write_note", {}) is False
+    assert len(prompts) == asked  # JSON mode never prompts, not even on a tty
+
+    open_engine = PolicyEngine.from_toml(DOC_ALLOW_WRITES)
+    nobody_asks = combined_approval(
+        engine=open_engine,
+        doc_policy=open_engine.permission_policy(tenant="default"),
+        flag_policy=build_policy(["*"], [], []),
+        tenant="default",
+        as_json=False,
+        stream=_TtyInput(),
+    )
+    assert nobody_asks("write_note", {}) is False
+    assert len(prompts) == asked
+
+
+def test_agent_combined_approval_skips_the_second_prompt_after_a_refusal(monkeypatch):
+    engine = PolicyEngine.from_toml(DOC_ASK_WRITES)
+    prompts: list[str] = []
+
+    def refuse(prompt: str) -> str:
+        prompts.append(prompt)
+        return "n"
+
+    monkeypatch.setattr("builtins.input", refuse)
+    approve = combined_approval(
+        engine=engine,
+        doc_policy=engine.permission_policy(tenant="default"),
+        flag_policy=build_policy([], [], ["write_note"]),
+        tenant="default",
+        as_json=False,
+        stream=_TtyInput(),
+    )
+    assert approve("write_note", {}) is False
+    # The document's role refused first, so the flag prompt never fired.
+    assert len(prompts) == 1
+    assert "reviewer" in prompts[0]
+
+
+def test_agent_document_denial_recorder_skips_flag_side_denials():
+    """Recording a flag-side denial through the engine would write ALLOW
+    beside a refusal — so the hook records document denials only."""
+    engine = PolicyEngine.from_toml(DOC_ALLOW_WRITES)
+    record = document_denial_recorder(
+        engine=engine,
+        doc_policy=engine.permission_policy(tenant="default"),
+        tenant="default",
+    )
+    record("write_note")  # the document allows it; some flag denied it
+    assert len(engine.audit) == 0
+
+    strict = PolicyEngine.from_toml(DOC_DENY_SHELL)
+    record_doc_deny = document_denial_recorder(
+        engine=strict,
+        doc_policy=strict.permission_policy(tenant="default"),
+        tenant="default",
+        context={"command": "agent", "run_id": "r1"},
+    )
+    record_doc_deny("run_command")
+    assert len(strict.audit) == 1
+    entry = strict.audit.entries()[0]
+    assert entry.effect is Decision.DENY
+    assert entry.rule_id == "no-shell"
+    assert entry.tenant == "default"
+    assert entry.context == {"command": "agent", "run_id": "r1"}
+
+
+def test_agent_policy_refuses_a_claude_cli_model(
+    tmp_path, capsys, monkeypatch, stub_tools
+):
+    """Delegation triggers on the model, not on --executor: a claude-cli model
+    would hand the loop to a subprocess outside the governed harness."""
+    from types import SimpleNamespace
+
+    stub_tools()
+    policy = _write_doc(tmp_path / "policy.toml", DOC_ALLOW_WRITES)
+    monkeypatch.setattr(
+        "grapharc.gateway.get_model",
+        lambda *args, **kwargs: SimpleNamespace(_llm_type="grapharc-claude-cli"),
+    )
+    code, payload, _ = call_json(
+        [
+            "agent",
+            "t",
+            "--model",
+            "claude-cli/opus-4-6",
+            "--workspace",
+            str(tmp_path / "ws"),
+            "--policy",
+            str(policy),
+        ],
+        capsys,
+    )
+    assert code == 2
+    assert "--policy" in payload["error"]
+    assert "claude-cli" in payload["error"]

@@ -566,6 +566,8 @@ def _cmd_agent(args: argparse.Namespace) -> int:
         max_seconds=args.max_seconds,
         executor=args.executor,
         system_prompt=args.system_prompt,
+        policy_path=args.policy,
+        tenant=args.tenant,
         run_id=args.run_id,
         as_json=args.json,
     )
@@ -1129,6 +1131,24 @@ def build_parser() -> argparse.ArgumentParser:
             "delegates the whole loop to Claude Code's headless agent on your "
             "subscription (default: sandbox)"
         ),
+    )
+    agent.add_argument(
+        "--policy",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "TOML policy document governing this agent's tools. The document "
+            "is the ceiling: --deny/--ask narrow it further, --allow cannot "
+            "widen it, and denials are recorded to policy-audit.jsonl next to "
+            "the trace"
+        ),
+    )
+    agent.add_argument(
+        "--tenant",
+        default=None,
+        metavar="NAME",
+        help="tenant to compile --policy for (needs --policy)",
     )
     agent.add_argument("--system-prompt", default=None)
     agent.set_defaults(handler=_cmd_agent)

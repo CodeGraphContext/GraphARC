@@ -39,6 +39,13 @@ DEFAULT_MAX_TURNS = 12
 DEFAULT_MAX_TOKENS = 100_000
 DEFAULT_MAX_SECONDS = 300.0
 
+#: Sibling of the run's trace: the policy-document enforcement behind an
+#: `agent --policy` run lands here as JSONL, via `grapharc.policy.audit` —
+#: denials, and the decision-plus-outcome pair behind every approval request.
+#: Allowances leave no record: the compiled policy grants them without
+#: consulting the engine, so there is no document decision to write down.
+POLICY_AUDIT_FILENAME = "policy-audit.jsonl"
+
 
 def _accepts(fn: Any, param: str) -> bool:
     """Whether `fn` can be called with `param=`; unknown signatures say no."""
@@ -88,14 +95,25 @@ def build_registry(workspace: Path) -> tuple[Any, str]:
     )
 
 
-def build_policy(allow: list[str], deny: list[str], ask: list[str]) -> Any:
-    """Flags to a `PermissionPolicy`. Unmatched tools keep the policy's DENY default."""
+def build_policy(
+    allow: list[str], deny: list[str], ask: list[str], *, default: Any = None
+) -> Any:
+    """Flags to a `PermissionPolicy`.
+
+    Unmatched tools keep the `PermissionPolicy` DENY default — unless a
+    caller passes `default=ALLOW`, which is what the policy-document path
+    does: beside a document the flags are refinements, and an unmatched tool
+    is "no flag opinion", decided by the document alone. The default is `None`
+    meaning DENY rather than a `Decision` so this module keeps its lazy
+    `grapharc.harness` import.
+    """
     from grapharc.harness import Decision, PermissionPolicy, PermissionRule
 
     rules = [PermissionRule(action=Decision.DENY, pattern=p) for p in deny]
     rules += [PermissionRule(action=Decision.ASK, pattern=p) for p in ask]
     rules += [PermissionRule(action=Decision.ALLOW, pattern=p) for p in allow]
-    return PermissionPolicy(rules=rules)
+    unmatched = Decision.DENY if default is None else default
+    return PermissionPolicy(rules=rules, default=unmatched)
 
 
 def _approval(as_json: bool, *, stream: Any = None) -> Any:
@@ -117,6 +135,129 @@ def _approval(as_json: bool, *, stream: Any = None) -> Any:
     return ask
 
 
+def _load_agent_document(
+    policy_path: Path, *, tenant: str | None, audit_path: Path
+) -> tuple[Any, str]:
+    """Load and validate the document governing an agent run.
+
+    Returns `(engine, tenant_name)`. Raises `PolicyError` — the shape a
+    missing or malformed file already fails with — for the two agent-specific
+    refusals as well: a document declaring no tool rules cannot govern tools,
+    and a tenant the document does not declare would deny every tool. Both
+    are refused before the audit log is built, so a refused run writes
+    nothing, not even an empty audit file.
+    """
+    from grapharc.policy import AuditLog, PolicyEngine, PolicyError, load_document
+    from grapharc.policy.document import DEFAULT_TENANT, ResourceKind
+
+    document = load_document(policy_path)
+    if not document.rules_for(ResourceKind.TOOL):
+        raise PolicyError(
+            f"policy document {policy_path} declares no tool rules, so it cannot "
+            "govern an agent run — it constrains nothing this command does"
+        )
+    tenant_name = DEFAULT_TENANT if tenant is None else tenant
+    if not document.declares_tenant(tenant_name):
+        if tenant is None:
+            hint = "pass --tenant to name one"
+        else:
+            hint = "check the spelling of --tenant"
+        raise PolicyError(
+            f"tenant {tenant_name!r} is not declared by policy "
+            f"{document.version!r}; declared: {document.tenants!r} — {hint}"
+        )
+    return PolicyEngine(document, audit=AuditLog(audit_path)), tenant_name
+
+
+def combined_approval(
+    *,
+    engine: Any,
+    doc_policy: Any,
+    flag_policy: Any,
+    tenant: str,
+    as_json: bool,
+    stream: Any = None,
+    context: dict[str, Any] | None = None,
+) -> Any:
+    """Approval honoring both a policy document and CLI `--ask` flags.
+
+    Called by `Harness` when the combined policy answers ASK — so at least
+    one side asks and neither denies — and granted only when every asking
+    side grants: the document's approver role through `ApprovalRouter`, the
+    flags through the same terminal prompt `--ask` has always used. A role
+    handler that is missing, refuses, fails, or has nobody behind it (JSON
+    mode, redirected stdin) denies, exactly as the router already fails
+    closed; the role, rule and reason travel into the prompt so the human
+    approves a named thing, not a bare tool call.
+    """
+    from grapharc.harness import Decision
+    from grapharc.policy.document import ResourceKind
+
+    roles = sorted(
+        {
+            rule.approver_role
+            for rule in engine.document.rules_for(ResourceKind.TOOL)
+            if rule.effect is Decision.ASK and rule.approver_role
+        }
+    )
+
+    def handle_role(role: str) -> Any:
+        def handle(request: Any) -> bool:
+            # Same fail-closed guard `_approval` stands on: a prompt has no
+            # business in a pipe, and piped bytes are not consent.
+            source = stream or sys.stdin
+            if as_json or not getattr(source, "isatty", lambda: False)():
+                return False
+            answer = input(
+                f"allow {request.subject} as {role} "
+                f"(rule {request.rule_id}: {request.reason})? [y/N] "
+            ).strip().lower()
+            return answer in ("y", "yes")
+
+        return handle
+
+    router = engine.approval_router(
+        {role: handle_role(role) for role in roles}, tenant=tenant
+    )
+    flag_prompt = _approval(as_json, stream=stream)
+
+    def approve(tool_name: str, args: dict[str, Any]) -> bool:
+        doc_asks = doc_policy.decide(tool_name) is Decision.ASK
+        flag_asks = flag_policy.decide(tool_name) is Decision.ASK
+        granted = True
+        if doc_asks:
+            decision = engine.check_tool(tool_name, tenant=tenant, context=context)
+            granted = router.route(decision, args=args).granted
+        if granted and flag_asks:
+            granted = flag_prompt(tool_name, args)
+        # Both asking sides granted; neither asking at all is a refusal, not
+        # an approval — unreachable from Harness, which only calls back on ASK.
+        return granted and (doc_asks or flag_asks)
+
+    return approve
+
+
+def document_denial_recorder(
+    *, engine: Any, doc_policy: Any, tenant: str, context: dict[str, Any] | None = None
+) -> Any:
+    """An `on_denial` hook recording document-side denials, and only those.
+
+    `Harness` fires the hook for every policy denial, including ones the CLI
+    flags caused. Recording a flag-side denial through the engine would write
+    ALLOW beside a refusal whenever the document permits the tool — a
+    contradiction in the audit log — so those stay trace-only, exactly as
+    before this command learned about documents.
+    """
+    from grapharc.harness import Decision
+
+    def record(tool_name: str) -> None:
+        if doc_policy.decide(tool_name) is not Decision.DENY:
+            return
+        engine.check_tool(tool_name, tenant=tenant, context=context)
+
+    return record
+
+
 def run_agent(
     task: str,
     *,
@@ -132,6 +273,8 @@ def run_agent(
     executor: str = "sandbox",
     system_prompt: str | None = None,
     run_id: str | None = None,
+    policy_path: Path | None = None,
+    tenant: str | None = None,
     as_json: bool = False,
 ) -> int:
     """Run one agent loop and report it. Returns the process exit code.
@@ -140,10 +283,38 @@ def run_agent(
     an exhausted budget, an error — exits 1, because a script that ran an agent
     needs to know the task was not finished without parsing the reason first.
 
+    `policy_path` names a TOML policy document whose tool rules govern the run
+    beside the CLI flags: the document is the ceiling and the flags can only
+    narrow it — most restrictive wins, so a document DENY beats a flag allow
+    and a document ASK stays asked. Denials the document causes are recorded
+    to a policy audit file next to the trace; `--tenant` compiles the
+    document for one tenant and is refused without `--policy`, as `--policy`
+    itself is refused for delegated execution — `--executor claude-cli` or a
+    `claude-cli/*` model — which cannot enforce it.
+
     `max_tokens=None` means the default ceiling on the governed path — and is
     the only value the delegated path accepts, because a ceiling it cannot
     enforce must be refused rather than silently unapplied.
     """
+    if policy_path is not None and executor == "claude-cli":
+        # The delegated loop runs inside Claude Code, outside this process's
+        # policy, approval routing and audit — mapping a document onto CLI
+        # flags would claim an enforcement that is not there. Refused, like
+        # the token ceiling the same path cannot honor below.
+        return fail(
+            "--policy cannot be enforced under --executor claude-cli: the delegated "
+            "loop runs outside this process's policy and audit. Drop --executor "
+            "claude-cli for a governed run",
+            as_json=as_json,
+            command="agent",
+        )
+    if tenant is not None and policy_path is None:
+        return fail(
+            "--tenant names whose rules a policy document enforces, so it needs "
+            "--policy to mean anything",
+            as_json=as_json,
+            command="agent",
+        )
     if executor == "claude-cli":
         # The whole loop is Claude Code's; nothing below (registry, harness,
         # gateway model) applies. `--model` semantics shift too: the delegated
@@ -184,7 +355,14 @@ def run_agent(
     from grapharc.runtime.budget import Budget, BudgetExceeded, BudgetMeter, deadline_guard
     from grapharc.runtime.graph import RunContext
 
-    allow = allow or ["*"]
+    if policy_path is None:
+        allow = allow or ["*"]
+    else:
+        # No implicit allow-all beside a document: the document's default
+        # governs unmatched tools, and an implicit `*` would permit what a
+        # default-deny document refuses. Explicit --allow still votes allow —
+        # it just cannot outvote the document (see CombinedPolicy).
+        allow = allow or []
     deny = deny or []
     ask = ask or []
     workspace = Path(workspace).expanduser().resolve()
@@ -202,15 +380,74 @@ def run_agent(
     except optional.Unavailable as exc:
         return fail(str(exc), as_json=as_json, command="agent")
 
-    policy = build_policy(allow, deny, ask)
+    governed: tuple[Any, str, Path] | None = None
+    if policy_path is not None:
+        from grapharc.policy import PolicyError
+
+        try:
+            audit_path = trace_path.parent / POLICY_AUDIT_FILENAME
+            engine, tenant_name = _load_agent_document(
+                Path(policy_path),
+                tenant=tenant,
+                audit_path=audit_path,
+            )
+        except PolicyError as exc:
+            return fail(str(exc), as_json=as_json, command="agent", task=task)
+        governed = (engine, tenant_name, audit_path)
+
+    if governed is None:
+        policy = build_policy(allow, deny, ask)
+        approval: Any = _approval(as_json)
+        on_denial: Any = None
+    else:
+        from grapharc.harness import CombinedPolicy, Decision
+
+        engine, tenant_name, _ = governed
+        doc_policy = engine.permission_policy(tenant=tenant_name)
+        # Flags beside a document vote no opinion by default (ALLOW): the
+        # document decides unmatched tools, and --deny/--ask narrow it.
+        flag_policy = build_policy(allow, deny, ask, default=Decision.ALLOW)
+        policy = CombinedPolicy(policies=[doc_policy, flag_policy])
+        audit_context = {"command": "agent", "run_id": run_id}
+        approval = combined_approval(
+            engine=engine,
+            doc_policy=doc_policy,
+            flag_policy=flag_policy,
+            tenant=tenant_name,
+            as_json=as_json,
+            context=audit_context,
+        )
+        on_denial = document_denial_recorder(
+            engine=engine, doc_policy=doc_policy, tenant=tenant_name, context=audit_context
+        )
     harness = Harness(
         registry,
         policy,
         executor=LocalExecutor() if executor == "local" else None,
         workspace=str(workspace),
-        approval=_approval(as_json),
+        approval=approval,
+        on_denial=on_denial,
     )
     visible = [spec.name for spec in harness.visible_tools()]
+    # Present only when a document governed the run: the no-document payload
+    # keeps exactly the keys it has always had.
+    governance_extra: dict[str, Any] = {}
+    if governed is not None:
+        from grapharc.policy.document import ResourceKind
+
+        _engine, _tenant_name, _audit_path = governed
+        _document = _engine.document
+        governance_extra = {
+            "policy_document": {
+                "source": "flag",
+                "path": str(policy_path),
+                "version": _document.version,
+                "digest": _engine.digest,
+                "tenant": _tenant_name,
+                "tool_rules": len(_document.rules_for(ResourceKind.TOOL)),
+            },
+            "policy_audit": str(_audit_path),
+        }
 
     try:
         from grapharc.gateway import get_model
@@ -220,6 +457,22 @@ def run_agent(
         return fail(
             f"could not build model {model_spec!r}: {exc}", as_json=as_json, command="agent"
         )
+
+    if governed is not None:
+        from grapharc.harness.agent import is_claude_cli
+
+        # Delegation triggers on the model, not on --executor: a claude-cli
+        # model would hand the loop to a subprocess outside the harness this
+        # policy was just compiled for. Same predicate AgentNode delegates on,
+        # so the two cannot disagree.
+        if is_claude_cli(model):
+            return fail(
+                "--policy cannot be enforced for a claude-cli model: the loop "
+                "runs inside Claude Code, outside this process's policy and "
+                "audit. Use a tool-calling backend for a governed run",
+                as_json=as_json,
+                command="agent",
+            )
 
     trace = TraceRecorder(trace_path)
     # The loop's own turn cap bounds iterations, so the meter is left to bound
@@ -255,6 +508,7 @@ def run_agent(
         "tools_from": f"grapharc.tools.{entry_point}",
         "policy": {"allow": allow, "ask": ask, "deny": deny},
         "tools_visible": visible,
+        **governance_extra,
     }
 
     try:
@@ -303,6 +557,16 @@ def run_agent(
         """
         return style.err(str(number)) if number else str(number)
 
+    policy_value = (
+        f"{style.dim('allow=')}{allow} {style.dim('ask=')}{ask} {style.dim('deny=')}{deny}"
+    )
+    if governed is not None:
+        _, _tenant_name, _audit_path = governed
+        policy_value += (
+            f" {style.dim('document=')}{policy_path}"
+            f" {style.dim('tenant=')}{_tenant_name}"
+            f" {style.dim('audit=')}{_audit_path}"
+        )
     lines = [
         style.kv("task", task, width=width),
         style.kv("model", model_spec, width=width, tint=style.accent),
@@ -314,7 +578,7 @@ def run_agent(
         ),
         style.kv(
             "policy",
-            f"{style.dim('allow=')}{allow} {style.dim('ask=')}{ask} {style.dim('deny=')}{deny}",
+            policy_value,
             width=width,
         ),
         "",
@@ -357,5 +621,7 @@ __all__ = [
     "CORE_TOOL_ENTRY_POINTS",
     "build_policy",
     "build_registry",
+    "combined_approval",
+    "document_denial_recorder",
     "run_agent",
 ]

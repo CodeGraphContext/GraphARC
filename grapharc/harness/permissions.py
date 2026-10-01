@@ -18,7 +18,7 @@ import glob
 from enum import StrEnum
 from fnmatch import fnmatch
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class Decision(StrEnum):
@@ -90,3 +90,61 @@ class PermissionPolicy(BaseModel):
                 if rule.action == tier and rule.matches(tool_name):
                     return tier
         return self.default
+
+
+class CombinedPolicy(PermissionPolicy):
+    """Two or more policies consulted together; the most restrictive wins.
+
+    Tiered semantics lifted from rules to policies: a tool is DENY when any
+    side denies it, ASK when any side asks and none denies, and ALLOW only
+    when every side allows. The order of `policies` does not matter — unlike
+    rule order within one policy there is no first match here, only the
+    strictest verdict.
+
+    The use case is a ceiling plus refinements: a policy document compiled by
+    `PolicyEngine.permission_policy()` sets the maximum authority, and a
+    flag-built policy can only narrow it. A CLI `--allow` votes ALLOW exactly
+    as before, but it can never outvote a document DENY or quietly demote a
+    document ASK — most-restrictive is precisely "flags cannot widen the
+    document". The flag side therefore carries default ALLOW: with no flag
+    opinion on a tool, the document decides it alone.
+
+    `rules` and `default` are inherited and rejected, not merged: this answers
+    only from `policies`, and a rule written on the combination itself would
+    be silently ignored, which for a DENY rule fails open. `Harness` and
+    `ToolRegistry.visible` speak `PermissionPolicy`, so this subclasses it and
+    drops into either unchanged.
+    """
+
+    policies: list[PermissionPolicy] = []
+
+    @field_validator("policies")
+    @classmethod
+    def _require_policies(
+        cls, policies: list[PermissionPolicy]
+    ) -> list[PermissionPolicy]:
+        if not policies:
+            raise ValueError("CombinedPolicy needs at least one policy to combine")
+        return policies
+
+    @model_validator(mode="after")
+    def _forbid_own_rules(self) -> CombinedPolicy:
+        if self.rules or self.default is not Decision.DENY:
+            raise ValueError(
+                "CombinedPolicy answers from `policies`, not from its own rules: "
+                "append another PermissionPolicy instead of writing rules here"
+            )
+        return self
+
+    def decide(self, tool_name: str) -> Decision:
+        if not self.policies:
+            # Unreachable from the constructor — the validator refuses an
+            # empty list — but reachable by post-construction mutation, and
+            # an empty verdict set must deny, never fall through to allow.
+            return Decision.DENY
+        decisions = {policy.decide(tool_name) for policy in self.policies}
+        if Decision.DENY in decisions:
+            return Decision.DENY
+        if Decision.ASK in decisions:
+            return Decision.ASK
+        return Decision.ALLOW

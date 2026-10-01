@@ -8,10 +8,11 @@ from grapharc.harness.agent import (
     tool_schema,
     tool_schemas,
 )
-from grapharc.harness.core import ApprovalCallback, Harness
+from grapharc.harness.core import ApprovalCallback, DenialCallback, Harness
 from grapharc.harness.executor import LocalExecutor, SandboxedExecutor, SandboxViolation
 from grapharc.harness.hooks import HookAction, HookDecision, PostHook, PreHook
 from grapharc.harness.permissions import (
+    CombinedPolicy,
     Decision,
     PermissionDenied,
     PermissionPolicy,
@@ -25,6 +26,8 @@ __all__ = [
     "AgentNode",
     "AgentResult",
     "ApprovalCallback",
+    "DenialCallback",
+    "CombinedPolicy",
     "Decision",
     "Harness",
     "HookAction",
