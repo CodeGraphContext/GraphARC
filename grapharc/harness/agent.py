@@ -355,8 +355,12 @@ _DELEGATION_WARNING_BYPASS = (
 )
 
 
-def _is_claude_cli(model: Any) -> bool:
-    """Is this the Claude CLI backend?
+def is_claude_cli(model: Any) -> bool:
+    """Is this the Claude CLI backend — the loop that delegates?
+
+    `AgentNode` delegates on this predicate, and `grapharc agent --policy`
+    refuses on it; one shared test so the two can never disagree about what
+    "delegated" means.
 
     Matched on `_llm_type` rather than `isinstance`, so this module does not
     import the gateway, and rather than "does it lack bind_tools" — which is
@@ -419,7 +423,7 @@ class AgentNode:
         #: True when the backend is the Claude CLI, which has no tool-calling
         #: wire format and therefore cannot be driven as a raw model. The loop
         #: is handed to Claude Code instead — see `_run_delegated`.
-        self.delegated = _is_claude_cli(model)
+        self.delegated = is_claude_cli(model)
         self.delegated_mode = delegated_mode
         if self.delegated:
             if delegated_mode == "bypass":

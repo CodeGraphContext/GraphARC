@@ -220,7 +220,7 @@ The edges are documented, not denied — the full list with mechanisms is in the
 - The in-process sandbox is defense in depth; `ContainerExecutor` is the real boundary. `run_command` children are unconfined.
 - The HTTP API does not yet use the durable session layer.
 - On the Claude CLI backend an agent node is *delegated*, not governed: by default it runs under an allowlist mapped from the node's own tools, but enforcement there is Claude Code's, and the `bypass` tier — explicit opt-in — has no checks at all.
-- Policy documents govern planning; the tool plane still reads CLI flags.
+- Agent tool policies are enforced on tool-calling backends. A policy document refuses delegated Claude CLI runs; allowed tool calls are not written to the document audit.
 - The MCP gate binds the MCP surface, not the host: an agent with its own file tools in the run directory could forge the approval decision. The trust boundary is the working directory, as it is for the Slack workspace.
 
 Version `0.1.8` · [changelog](CHANGELOG.md) · [roadmap](ROADMAP.md) · [website](https://codegraphcontext.github.io/GraphARC/) · MIT

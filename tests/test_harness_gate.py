@@ -22,8 +22,10 @@ import time
 import uuid
 
 import pytest
+from pydantic import ValidationError
 
 from grapharc.harness import (
+    CombinedPolicy,
     Decision,
     Harness,
     HookAction,
@@ -1220,3 +1222,176 @@ def test_gate_tool_cannot_signal_another_process(tmp_path):
     with pytest.raises(SandboxViolation, match="signal another process"):
         harness.call("signal_pid", {"pid": os.getpid()})
     assert harness.call("signal_self", {}) == "signalled"
+
+
+# -- CombinedPolicy -----------------------------------------------------------
+
+
+def test_combined_policy_denies_when_either_side_denies():
+    """Most restrictive wins: one DENY outvotes any number of allows."""
+    doc = _policy([{"action": "deny", "pattern": "run_command"}])
+    flags = _policy([{"action": "allow", "pattern": "*"}])
+    assert CombinedPolicy(policies=[doc, flags]).decide("run_command") is Decision.DENY
+    # Order does not matter: there is no first match between policies.
+    assert CombinedPolicy(policies=[flags, doc]).decide("run_command") is Decision.DENY
+
+
+def test_combined_policy_asks_when_either_side_asks_and_neither_denies():
+    doc = _policy([{"action": "ask", "pattern": "deploy_*"}])
+    flags = _policy([{"action": "allow", "pattern": "*"}])
+    assert CombinedPolicy(policies=[doc, flags]).decide("deploy_prod") is Decision.ASK
+    # An ask on the flag side gates a document allow, the way --ask narrows.
+    doc_allow = _policy([{"action": "allow", "pattern": "write_*"}])
+    flag_ask = _policy([{"action": "ask", "pattern": "write_note"}])
+    assert (
+        CombinedPolicy(policies=[doc_allow, flag_ask]).decide("write_note")
+        is Decision.ASK
+    )
+
+
+def test_combined_policy_allows_only_when_every_side_allows():
+    doc = _policy([{"action": "allow", "pattern": "read_*"}])
+    flags = PermissionPolicy(rules=[], default=Decision.ALLOW)
+    assert (
+        CombinedPolicy(policies=[doc, flags]).decide("read_file") is Decision.ALLOW
+    )
+    # ...and a default-deny on either side holds for unmatched tools.
+    strict_flags = PermissionPolicy(rules=[], default=Decision.DENY)
+    assert (
+        CombinedPolicy(policies=[doc, strict_flags]).decide("read_file")
+        is Decision.DENY
+    )
+
+
+def test_combined_policy_needs_at_least_one_policy():
+    with pytest.raises(ValidationError, match="at least one policy"):
+        CombinedPolicy(policies=[])
+
+
+def test_combined_policy_denies_when_its_sides_are_emptied_after_construction():
+    """Defense in depth: the validator refuses an empty list, and `decide`
+    refuses to allow on one — so post-construction mutation fails closed."""
+    combined = CombinedPolicy(policies=[_policy([{"action": "allow", "pattern": "*"}])])
+    combined.policies = []
+    assert combined.decide("anything") is Decision.DENY
+
+
+def test_combined_policy_rejects_rules_written_on_the_combination_itself():
+    """Own rules would be silently ignored — for a DENY that fails open."""
+    side = _policy([{"action": "allow", "pattern": "*"}])
+    with pytest.raises(ValidationError, match="answers from `policies`"):
+        CombinedPolicy(
+            policies=[side],
+            rules=[PermissionRule(action=Decision.DENY, pattern="x")],
+        )
+    with pytest.raises(ValidationError, match="answers from `policies`"):
+        CombinedPolicy(policies=[side], default=Decision.ALLOW)
+
+
+def test_combined_policy_hides_what_either_side_denies():
+    """Policy-before-schema survives combination: denied means undescribed.
+
+    The document side allows by default here, so the one hidden tool is
+    hidden by its explicit DENY — which a flag-side `ALLOW *` cannot widen.
+    """
+    registry = ToolRegistry()
+    registry.register(ToolSpec(name="read_file", description="read", fn=_echo))
+    registry.register(ToolSpec(name="run_command", description="shell", fn=_echo))
+    doc = PermissionPolicy(
+        rules=[PermissionRule(action=Decision.DENY, pattern="run_command")],
+        default=Decision.ALLOW,
+    )
+    flags = _policy([{"action": "allow", "pattern": "*"}])
+    visible = registry.visible(CombinedPolicy(policies=[doc, flags]))
+    assert [spec.name for spec in visible] == ["read_file"]
+
+
+def test_combined_policy_default_deny_side_is_not_widened_by_an_allow_all():
+    """The opposite invariant: a default-deny document denies an unmatched
+    tool even beside `ALLOW *` — the default is the side's verdict, and
+    flags narrow a document, never widen it."""
+    registry = ToolRegistry()
+    registry.register(ToolSpec(name="read_file", description="read", fn=_echo))
+    registry.register(ToolSpec(name="run_command", description="shell", fn=_echo))
+    doc = _policy([{"action": "deny", "pattern": "run_command"}])  # default DENY
+    flags = _policy([{"action": "allow", "pattern": "*"}])
+    combined = CombinedPolicy(policies=[doc, flags])
+    assert combined.decide("read_file") is Decision.DENY
+    assert [spec.name for spec in registry.visible(combined)] == []
+
+
+# -- denial hook --------------------------------------------------------------
+
+
+class _EchoExecutor:
+    """Runs everything: denials are the policy's business, not the executor's."""
+
+    def run(self, spec, args):
+        return {"ran": spec.name}
+
+
+def _hook_harness(policy, *, approval=None):
+    registry = ToolRegistry()
+    registry.register(ToolSpec(name="write_note", description="write", fn=_echo))
+    registry.register(ToolSpec(name="list_notes", description="list", fn=_echo))
+    fired: list[str] = []
+    harness = Harness(
+        registry,
+        policy,
+        executor=_EchoExecutor(),
+        approval=approval,
+        on_denial=fired.append,
+    )
+    return harness, fired
+
+
+def test_harness_notifies_on_denial_for_a_denied_tool():
+    harness, fired = _hook_harness(_policy([{"action": "deny", "pattern": "write_*"}]))
+    with pytest.raises(PermissionDenied, match="denied by policy"):
+        harness.call("write_note", {"path": "n.txt"})
+    assert fired == ["write_note"]
+
+
+def test_harness_denial_hook_stays_silent_otherwise():
+    """Allowances, granted approvals and unknown tools are not policy denials;
+    a refused approval already belongs to the approval path's own record."""
+    harness, fired = _hook_harness(
+        _policy(
+            [
+                {"action": "ask", "pattern": "write_note"},
+                {"action": "allow", "pattern": "*"},
+            ]
+        ),
+        approval=lambda tool, args: True,
+    )
+    assert harness.call("list_notes", {}) == {"ran": "list_notes"}
+    assert harness.call("write_note", {}) == {"ran": "write_note"}
+    with pytest.raises(PermissionDenied, match="unknown tool"):
+        harness.call("no_such_tool", {})
+    assert fired == []
+
+    refused, fired_refused = _hook_harness(
+        _policy(
+            [
+                {"action": "ask", "pattern": "write_note"},
+                {"action": "allow", "pattern": "*"},
+            ]
+        ),
+        approval=lambda tool, args: False,
+    )
+    with pytest.raises(PermissionDenied, match="requires approval"):
+        refused.call("write_note", {})
+    assert fired_refused == []
+
+
+def test_a_failing_denial_hook_cannot_break_the_denial():
+    """A broken recorder must not turn a denial into a tool error one frame up."""
+    harness, _ = _hook_harness(_policy([{"action": "deny", "pattern": "*"}]))
+
+    def broken(tool_name):
+        raise OSError("audit disk is gone")
+
+    harness.on_denial = broken
+    with pytest.raises(PermissionDenied, match="denied by policy"):
+        harness.call("write_note", {})
+    assert harness.denial_hook_errors == 1
