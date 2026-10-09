@@ -1601,3 +1601,40 @@ grapharc agent --workspace ./scratch --deny 'run_command' --ask 'write_file' \
 
 A trace lands at `<workspace>/trace.jsonl` either way; `grapharc trace`,
 `grapharc metrics` and `grapharc viz` read it.
+
+### How does a policy document govern the CLI agent?
+
+`grapharc agent --policy policy.toml --tenant acme` applies the document's
+`resource = "tool"` rules through the same harness that filters tool schemas
+before the model sees them. Flags can narrow that authority: any denial wins,
+then any approval requirement, and a tool runs freely only when both sides
+allow it. `--allow '*'` cannot override a document denial.
+
+Policy and tenant can also come from configuration:
+
+```toml
+# grapharc.toml
+[grapharc]
+policy = "policy.toml"
+tenant = "acme"
+```
+
+The document must declare `acme` when it lists tenants. Resolution is
+`flag > GRAPHARC_POLICY / GRAPHARC_TENANT > grapharc.toml > default`.
+`--config PATH` selects another file; a relative policy path in that file is
+anchored to its directory. Parent directories are not searched. This agent
+config path resolves policy and tenant only; model, budgets and the other agent
+options retain their CLI/Python-argument defaults.
+
+A governed JSON result includes `config_file`, `sources`, `policy_source`, and
+`policy_document` with the document's path, source, version, digest and tenant.
+The human view includes the document's source beside its path. The
+`policy_audit` path points to `policy-audit.jsonl` beside the trace, recording
+document-driven denials and approval decisions. Ordinary allowed calls and
+flag-only denials are not document-audited; attempted calls and their outcomes
+remain on the run trace.
+
+Document approval requests fail closed under `--json` or redirected stdin.
+A policy selected from flags, environment or config also refuses
+`--executor claude-cli` and Claude CLI models: that delegated loop cannot
+enforce the document. Bad config is refused before model setup or delegation.

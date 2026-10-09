@@ -3398,3 +3398,94 @@ def test_agent_policy_refuses_a_claude_cli_model(
     assert code == 2
     assert "--policy" in payload["error"]
     assert "claude-cli" in payload["error"]
+
+
+@pytest.mark.parametrize("source", ["config", "env", "flag"])
+def test_agent_configuration_governs_tools_and_records_its_source(
+    tmp_path, monkeypatch, capsys, scripted_model, stub_tools, source
+):
+    """Issue #6: configured rules must reach the same boundary as explicit flags."""
+    monkeypatch.chdir(tmp_path)
+    stub_tools()
+    policy = _write_doc(tmp_path / "deny.toml", DOC_DENY_WRITES)
+    config = _write_doc(
+        tmp_path / "grapharc.toml", '[grapharc]\npolicy = "deny.toml"\ntenant = "default"'
+    )
+    args = ["agent", "t", "--model", "mock/x", "--workspace", str(tmp_path / "ws")]
+    if source in ("env", "flag"):
+        monkeypatch.setenv("GRAPHARC_POLICY", str(policy))
+        monkeypatch.setenv("GRAPHARC_TENANT", "default")
+    if source == "flag":
+        args += ["--policy", str(policy), "--tenant", "default"]
+    model = scripted_model([
+        {"tools": [("write_note", {"path": "note.txt", "content": "must not run"})]},
+        {"content": "done"},
+    ])
+
+    code, payload, _ = call_json(args, capsys)
+
+    assert code == 0
+    assert payload["denied"] == 1
+    assert not (tmp_path / "ws" / "note.txt").exists()
+    assert "write_note" not in (model.bound_tools or [])
+    assert payload["policy_document"]["source"] == source
+    assert payload["policy_document"]["path"] == str(policy)
+    assert payload["sources"] == {"policy": source, "tenant": source}
+    assert payload["config_file"] == str(config)
+    audit = _read_jsonl(payload["policy_audit"])
+    assert audit[0]["rule_id"] == "no-writes"
+
+
+def test_agent_explicit_config_anchors_policy_and_supplies_tenant(
+    tmp_path, monkeypatch, capsys, scripted_model, stub_tools
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    policy = _write_doc(project / "policy.toml", DOC_TENANTED)
+    config = _write_doc(
+        project / "grapharc.toml", '[grapharc]\npolicy = "policy.toml"\ntenant = "acme"'
+    )
+    monkeypatch.chdir(tmp_path)
+    stub_tools()
+    scripted_model([{"content": "done"}])
+
+    code, payload, _ = call_json([
+        "agent", "t", "--model", "mock/x", "--workspace", str(tmp_path / "ws"),
+        "--config", str(config),
+    ], capsys)
+
+    assert code == 0
+    assert payload["policy_document"]["path"] == str(policy)
+    assert payload["policy_document"]["tenant"] == "acme"
+    assert payload["sources"] == {"policy": "config", "tenant": "config"}
+
+
+def test_agent_configured_policy_cannot_be_bypassed_by_delegation(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    _write_doc(tmp_path / "grapharc.toml", '[grapharc]\npolicy = "deny.toml"')
+
+    def delegate(*args, **kwargs):
+        pytest.fail("delegation bypassed the configured policy")
+
+    monkeypatch.setattr("grapharc.cli.delegate.run_delegated", delegate)
+    code, payload, _ = call_json(["agent", "t", "--executor", "claude-cli"], capsys)
+
+    assert code == 2
+    assert "--policy cannot be enforced" in payload["error"]
+
+
+def test_agent_bad_config_is_refused_before_model_construction(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _write_doc(tmp_path / "grapharc.toml", '[grapharc]\npollicy = "deny.toml"')
+
+    def build_model(*args, **kwargs):
+        pytest.fail("a model was constructed under an invalid governance config")
+
+    monkeypatch.setattr("grapharc.gateway.get_model", build_model)
+    code, payload, _ = call_json(["agent", "t", "--workspace", str(tmp_path / "ws")], capsys)
+
+    assert code == 2
+    assert "unknown key(s) pollicy" in payload["error"]
+    assert not (tmp_path / "ws").exists()

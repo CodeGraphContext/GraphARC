@@ -324,9 +324,11 @@ The component with no prior art to copy. It exists, and the cycle runs.
       runner from claiming a session, and nothing reclaims one whose runner died
       holding it. That is a claim, not a lease.
 
-## 7. Policy engine — `[~] ~75% built, 0% wired`
+## 7. Policy engine — `[~] node, edge and tool paths wired`
 
-Everything here works and nothing calls it.
+The planner's admission gate and the agent CLI compile policy documents into
+their existing permission boundaries. Compiled rules do not audit ordinary
+allowances; the agent records document-driven denials and approval decisions.
 
 - [x] **7.1 — Declarative policy config** over nodes, edges, tools and spend.
       TOML in, `PolicyEngine` out; a commented example ships at
@@ -339,7 +341,7 @@ Everything here works and nothing calls it.
       `engine.approval_router(handlers, tenant=…)` produces the callback a
       `Harness` already obeys, and `engine.permission_policy(tenant=…)` produces
       a real `PermissionPolicy`.
-- [x] **7.3 — Policy versioning and decision audit.** Every decision lands in a
+- [x] **7.3 — Policy versioning and decision audit.** Every direct engine check lands in a
       JSONL record naming the resource, subject, tenant, effect, the rule id and
       reason that produced it, the policy version, and a digest of the document
       — so a decision can be tied to the exact policy text that made it.
@@ -355,9 +357,13 @@ Everything here works and nothing calls it.
       longer imported by nothing. What the compiled object still cannot carry is
       what `permission_policy()` cannot either: the approver role and the audit
       record, because `EdgePolicy.decide` returns a bare `Decision`. Admission
-      treats `ask` as not-yet-permitted. Still open: no call from `AgentNode` or
-      `grapharc agent` to `permission_policy()`, so the tool plane is still
-      governed by Python objects rather than by the document.
+      treats `ask` as not-yet-permitted. `grapharc agent --policy` now compiles
+      tool rules through `permission_policy()`, pairs document `ask` with
+      `approval_router()`, and records document denials through `check_tool()`.
+      Flags can narrow the document but cannot widen it. Policy and tenant
+      follow the shared flag/environment/config precedence, and a configured
+      policy refuses delegated execution just as an explicit one does. Ordinary
+      allowed tool calls still have no document-audit record.
 
 ## 8. Memory & artifacts — `[~] ~85%`
 

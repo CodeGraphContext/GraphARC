@@ -2,7 +2,7 @@
 
 This is the first CLI command that is not a demo: the task comes from the
 caller, the tools come from `grapharc.tools`, and what the agent was permitted
-to do comes from flags rather than from a hard-coded example. The output is
+to do comes from a policy document and flags. The output is
 built so a run answers the three questions the architecture is graded on — what
 it did (`tool_calls`), what it was allowed to do (`policy`, `tools_visible`),
 and why it stopped (`termination_reason`, `note`).
@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from grapharc.cli import optional, style
+from grapharc.cli.config import ConfigError
+from grapharc.cli.config import load as load_settings
 from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit, fail
 from grapharc.cli.runid import refuse_reused_run_id
 
@@ -275,6 +277,7 @@ def run_agent(
     run_id: str | None = None,
     policy_path: Path | None = None,
     tenant: str | None = None,
+    config_path: Path | None = None,
     as_json: bool = False,
 ) -> int:
     """Run one agent loop and report it. Returns the process exit code.
@@ -295,7 +298,18 @@ def run_agent(
     `max_tokens=None` means the default ceiling on the governed path — and is
     the only value the delegated path accepts, because a ceiling it cannot
     enforce must be refused rather than silently unapplied.
+
+    Policy and tenant resolve from flags, environment, `grapharc.toml`, then
+    defaults, using the same path anchoring and provenance as the planner.
+    Other agent options retain their flag/Python-argument defaults.
     """
+    try:
+        settings = load_settings(config_path)
+        policy_path = settings.resolve_path("policy", policy_path)
+        tenant = settings.resolve("tenant", tenant)
+    except ConfigError as exc:
+        return fail(str(exc), as_json=as_json, command="agent", task=task)
+
     if policy_path is not None and executor == "claude-cli":
         # The delegated loop runs inside Claude Code, outside this process's
         # policy, approval routing and audit — mapping a document onto CLI
@@ -429,8 +443,8 @@ def run_agent(
         on_denial=on_denial,
     )
     visible = [spec.name for spec in harness.visible_tools()]
-    # Present only when a document governed the run: the no-document payload
-    # keeps exactly the keys it has always had.
+    # Present only when a document governed the run, with the same provenance
+    # used to resolve it. Runs without a document retain their existing payload.
     governance_extra: dict[str, Any] = {}
     if governed is not None:
         from grapharc.policy.document import ResourceKind
@@ -438,8 +452,10 @@ def run_agent(
         _engine, _tenant_name, _audit_path = governed
         _document = _engine.document
         governance_extra = {
+            "policy_source": settings.sources["policy"],
+            **settings.provenance(),
             "policy_document": {
-                "source": "flag",
+                "source": settings.sources["policy"],
                 "path": str(policy_path),
                 "version": _document.version,
                 "digest": _engine.digest,
@@ -564,6 +580,7 @@ def run_agent(
         _, _tenant_name, _audit_path = governed
         policy_value += (
             f" {style.dim('document=')}{policy_path}"
+            f" {style.dim('source=')}{settings.sources['policy']}"
             f" {style.dim('tenant=')}{_tenant_name}"
             f" {style.dim('audit=')}{_audit_path}"
         )

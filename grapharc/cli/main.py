@@ -568,6 +568,7 @@ def _cmd_agent(args: argparse.Namespace) -> int:
         system_prompt=args.system_prompt,
         policy_path=args.policy,
         tenant=args.tenant,
+        config_path=args.config,
         run_id=args.run_id,
         as_json=args.json,
     )
@@ -1058,7 +1059,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.set_defaults(handler=_cmd_approve)
 
     agent = sub.add_parser(
-        "agent", parents=[common], help="run an agent node against a task with the core tools"
+        "agent", parents=[common, configurable],
+        help="run an agent node against a task with the core tools"
     )
     agent.add_argument("task", help="what the agent should do")
     agent.add_argument(
