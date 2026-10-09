@@ -31,12 +31,13 @@ same reason: a file is authored by whoever can write to the directory.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import tomllib
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from grapharc.cli import style
 from grapharc.cli.config import ConfigError
@@ -45,6 +46,9 @@ from grapharc.cli.generate import resolve_or_generate_policy
 from grapharc.cli.output import EXIT_FAILED, EXIT_OK, emit, fail
 from grapharc.cli.plan import PlanSetupError, resolve_registry
 from grapharc.cli.runid import refuse_reused_run_id
+
+if TYPE_CHECKING:
+    from grapharc.planner import Subgraph
 
 #: Stage names `demo` owns. Kept so `grapharc run stage0` — which worked before
 #: the split — fails with a redirection rather than an argparse complaint about
@@ -101,6 +105,30 @@ def build_proposal(document: dict[str, Any]) -> Any:
         return Subgraph.model_validate(document)
     except ValidationError as exc:
         raise PlanSetupError(f"not a valid topology: {exc}") from exc
+
+
+def topology_fingerprint(proposal: Subgraph) -> str:
+    """A repeatable content digest for CLI comparisons, never for authorisation.
+
+    Hash the validated topology, including arguments, notes and rationale,
+    without each scope's `proposal_id` and `origin`. Mapping key order and file
+    formatting do not matter; node and edge order still does. Only schema-owned
+    provenance is removed: an argument named `origin` remains graph content.
+
+    Admission and materialisation keep their exact-proposal fingerprint. This
+    digest says nothing about a registry, policy or whether execution is safe.
+    """
+    document = proposal.model_dump(mode="json")
+    scopes = [document]
+    while scopes:
+        scope = scopes.pop()
+        scope.pop("proposal_id")
+        scope.pop("origin")
+        for node in scope["nodes"]:
+            if node["subgraph"] is not None:
+                scopes.append(node["subgraph"])
+    content = json.dumps(document, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
 
 def run_graph(
@@ -205,6 +233,7 @@ def run_graph(
         "nodes": proposal.node_count(),
         "admitted": verdict.admitted,
         "fingerprint": verdict.fingerprint,
+        "topology_fingerprint": topology_fingerprint(proposal),
         "rejections": [
             {"code": r.code, "subject": r.subject, "detail": r.detail, "remedy": r.remedy}
             for r in verdict.rejections
@@ -282,9 +311,9 @@ def run_graph(
             style.kv("nodes", str(proposal.node_count()), width=width),
             "",
             style.ok("ADMITTED") + style.dim(" and buildable. Nothing was run."),
-            # Wider than the label column on purpose, and always has been: the
-            # fingerprint is what a later run is compared against.
-            style.kv("fingerprint", verdict.fingerprint, width=width, tint=style.accent),
+            # Compare topology content across loads, while the JSON payload and
+            # admission trace retain the exact proposal's authorisation binding.
+            style.kv("topology", common["topology_fingerprint"], width=width, tint=style.accent),
         ]
         emit(
             {"ok": True, "checked_only": True, "buildable": True, **common},
@@ -308,4 +337,4 @@ def run_graph(
     return EXIT_OK
 
 
-__all__ = ["DEMO_HINTS", "build_proposal", "load_topology", "run_graph"]
+__all__ = ["DEMO_HINTS", "build_proposal", "load_topology", "run_graph", "topology_fingerprint"]
