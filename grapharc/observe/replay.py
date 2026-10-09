@@ -286,7 +286,7 @@ def _build_executions(
     return order, unattached
 
 
-def replay(source: TraceRecorder | str | Path, run_id: str) -> ReplayedRun:
+def replay(source: TraceRecorder | str | Path | Sequence[TraceEvent], run_id: str) -> ReplayedRun:
     """Reconstruct one run from its trace.
 
     Raises `ReplayError` if the trace holds no events for `run_id` — an empty

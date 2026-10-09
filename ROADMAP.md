@@ -451,7 +451,7 @@ allowances; the agent records document-driven denials and approval decisions.
       importing the module needs no OTel. Previously documented as unverified
       against the real SDK — verified during this pass against
       `opentelemetry-sdk` 1.44.0, with spans reaching an `InMemorySpanExporter`.
-- [~] **10.4 — Cost attribution** per run, thread (session) and node. The
+- [x] **10.4 — Cost attribution** per run, thread (session), node and explicit tenant. The
       price is now recorded, not guessed: every gateway publishes a
       `cost_usd` through the same `llm_output` envelope, the runtime's usage
       callback accumulates it per node and writes it onto the `end` event, and
@@ -461,9 +461,16 @@ allowances; the agent records document-driven denials and approval decisions.
       figure wins outright rather than being averaged with a guess. Tokens are
       counted from the same events `metrics.summarize` uses — node `end` events
       *plus* work outside any node span, which is what a `grapharc agent` run
-      consists of entirely — and the suite asserts the two agree. **One gap
-      left:** there is no tenant on a trace event, so tenant attribution is not
-      offered rather than being approximated.
+      consists of entirely — and the suite asserts the two agree. An optional
+      tenant on `RunContext` labels every native graph, planner and agent event;
+      the loop carries it through round sub-runs. `attribute_tenant` and
+      `grapharc cost --tenant NAME` select whole labelled runs, refuse conflicting
+      labels, and leave old unlabelled runs unassigned. Planning tokens without
+      a recorded price are estimated or marked unpriced, including in tenant
+      totals. **Producer limit:** planner turns and failed node terminal events
+      still omit the provider price ([#138](https://github.com/CodeGraphContext/GraphARC/issues/138));
+      a rate-card estimate is not a recorded bill.
+      Tenant labels provide attribution, not authorization.
 - [ ] **10.2 — Rollback** and versioned graph/prompt configs.
 - [ ] **10.5 — Alerting** on budget, failure, and verifier-drift.
 

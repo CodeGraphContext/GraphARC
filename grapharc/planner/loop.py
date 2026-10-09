@@ -366,17 +366,20 @@ class GovernedLoop:
         *,
         run_id: str | None = None,
         thread_id: str | None = None,
+        tenant: str | None = None,
     ) -> LoopResult:
         """Carry `goal` from first proposal to recorded stop.
 
         `state` may be a `state_schema` instance, a dict, or None for the
         schema's defaults. The returned `LoopResult.state` is the last state any
-        executed round produced.
+        executed round produced. `tenant` labels planning, admission and every
+        executed round with the same explicit attribution label.
         """
         rid = run_id or uuid.uuid4().hex[:12]
         meter = BudgetMeter(self.budget)
         ctx = RunContext(
-            run_id=rid, graph=self.name, meter=meter, thread_id=thread_id or rid, attempt=1
+            run_id=rid, graph=self.name, meter=meter,
+            thread_id=thread_id or rid, tenant=tenant, attempt=1
         )
         current = self._initial_state(state)
         rounds: list[RoundRecord] = []
@@ -701,6 +704,7 @@ class GovernedLoop:
             self.trace.event(
                 run_id=ctx.run_id,
                 thread_id=ctx.thread_id,
+                tenant=ctx.tenant,
                 attempt=ctx.attempt,
                 graph=compiled.arc.name,
                 node="topology",
@@ -772,6 +776,7 @@ class GovernedLoop:
                 state,
                 run_id=ctx.run_id,
                 thread_id=f"{ctx.thread_id}/r{round_number}",
+                tenant=ctx.tenant,
                 budget=budget,
             )
         except BudgetExceeded as exc:
@@ -949,6 +954,7 @@ class GovernedLoop:
         self.trace.event(
             run_id=ctx.run_id,
             thread_id=ctx.thread_id,
+            tenant=ctx.tenant,
             attempt=ctx.attempt,
             graph=self.name,
             node=node,

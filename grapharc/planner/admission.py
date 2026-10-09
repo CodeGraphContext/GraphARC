@@ -1085,6 +1085,7 @@ class AdmissionChecker:
             # proposal's own id stands in for the run id.
             run_id=ctx.run_id if ctx is not None else proposal.proposal_id,
             thread_id=ctx.thread_id if ctx is not None else None,
+            tenant=ctx.tenant if ctx is not None else None,
             attempt=ctx.attempt if ctx is not None else 1,
             graph=ctx.graph if ctx is not None else self.name,
             node=f"{self.name}:{proposal.proposal_id}",

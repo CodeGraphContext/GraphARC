@@ -70,6 +70,8 @@ print(g.compile().invoke({"question": "meaning of life"}))
 
 Typed state, declared writes, a budget — none optional. The rest of the surface (agents, tools, memory, sessions, policy documents, cost attribution, OTel) is in the [deep dive](docs/deep-dive.md) and the [cookbook](docs/cookbook/).
 
+Cost attribution also supports explicit tenants: pass `tenant="team-a"` to a compiled graph or governed loop, then read its bill with `attribute_tenant(trace, "team-a", rates=...)` or `grapharc cost trace.jsonl --tenant team-a --json`. `run`, `plan`, `go` and policy-governed `agent` runs carry an explicit `--tenant`, `GRAPHARC_TENANT` or config value into the trace. Recorded USD and rate-card estimates stay separate; old unlabelled runs remain unassigned. See [the cost guide](docs/cookbook/06-serving-and-ops.md#where-did-the-tokens-go) for the boundaries.
+
 ## The admission gate
 
 You cannot pre-author a graph for "investigate this incident" — the shape is discovered while working. So the graph is proposed at runtime, and a deterministic checker stands between proposing and running: registry, policy, remaining budget, depth, acyclicity, all on every proposal. A rejection is structured feedback the planner replans against; work discovered mid-run re-enters the same gate. Watch it refuse (free, scripted, the first proposal names a policy-denied kind):

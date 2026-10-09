@@ -667,7 +667,8 @@ class AgentNode:
         if self.trace is not None:
             self.trace.event(
                 run_id=ctx.run_id, graph=ctx.graph, node=self.name, phase="model",
-                step=step, thread_id=ctx.thread_id, attempt=ctx.attempt,
+                step=step, thread_id=ctx.thread_id,
+                tenant=ctx.tenant, attempt=ctx.attempt,
                 state_delta={"executor": "delegated",
                              "delegated_mode": self.delegated_mode,
                              "tools": ("all of Claude Code's" if bypass
@@ -705,7 +706,8 @@ class AgentNode:
             if self.trace is not None:
                 self.trace.event(
                     run_id=ctx.run_id, graph=ctx.graph, node=self.name, phase="stop",
-                    step=step, thread_id=ctx.thread_id, attempt=ctx.attempt,
+                    step=step, thread_id=ctx.thread_id,
+                    tenant=ctx.tenant, attempt=ctx.attempt,
                     state_delta={"executor": "delegated",
                                  "delegated_mode": self.delegated_mode,
                                  "termination_reason": exc.reason},
@@ -724,7 +726,8 @@ class AgentNode:
         if self.trace is not None:
             self.trace.event(
                 run_id=ctx.run_id, graph=ctx.graph, node=self.name, phase="stop",
-                step=step, thread_id=ctx.thread_id, attempt=ctx.attempt,
+                step=step, thread_id=ctx.thread_id,
+                tenant=ctx.tenant, attempt=ctx.attempt,
                 tokens=run.tokens_reported or None,
                 cost_usd=run.cost_usd,
                 state_delta={"executor": "delegated",
@@ -947,6 +950,7 @@ class AgentNode:
         self.trace.event(
             run_id=ctx.run_id,
             thread_id=ctx.thread_id,
+            tenant=ctx.tenant,
             attempt=ctx.attempt,
             graph=ctx.graph,
             node=node or f"{self.name}:{phase}",

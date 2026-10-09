@@ -66,6 +66,7 @@ STYLED = [
     # A painted row per trace event: dim, cell, accent and err in one output.
     pytest.param(lambda w: ["trace", str(w["trace"])], id="trace"),
     pytest.param(lambda w: ["metrics", str(w["trace"]), w["run_id"]], id="metrics"),
+    pytest.param(lambda w: ["cost", str(w["trace"]), "--run-id", w["run_id"]], id="cost"),
 ]
 
 # The subset whose output is reproducible enough to compare byte-for-byte across
