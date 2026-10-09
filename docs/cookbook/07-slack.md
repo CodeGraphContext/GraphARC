@@ -116,6 +116,12 @@ Configuration is environment-only, read once at startup:
 | `GRAPHARC_SLACK_LIVE_INTERVAL` | `2.5` | seconds between two edits of the status message |
 | `GRAPHARC_SLACK_LIVE_URL` | unset | base URL of a `grapharc serve --live-root` the requester can reach; posts a "watch live" link |
 
+The timeout and live-interval environment values must be finite and positive;
+fractions of a second are accepted. `NaN`, infinity and overflowing values
+such as `1e309` are startup errors naming the variable. A requester-supplied
+`--approval-timeout` must also be finite and positive and fit within the
+command's existing timeout ceiling.
+
 The bot reads tokens from the process environment only. The model gateway's
 `.env` loader is deliberately not used here — even though it now reads the
 working directory alone rather than searching upward: a bot that a whole

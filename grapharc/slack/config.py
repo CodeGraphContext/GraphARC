@@ -11,6 +11,7 @@ the bot, and nowhere else.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,8 +87,8 @@ class SlackBotConfig:
             raise SlackConfigError(
                 f"GRAPHARC_SLACK_TIMEOUT must be a number of seconds, got {raw_timeout!r}"
             ) from None
-        if timeout <= 0:
-            raise SlackConfigError("GRAPHARC_SLACK_TIMEOUT must be positive")
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise SlackConfigError("GRAPHARC_SLACK_TIMEOUT must be positive and finite")
 
         raw_work_timeout = env.get("GRAPHARC_SLACK_WORK_TIMEOUT", "1800")
         try:
@@ -97,8 +98,8 @@ class SlackBotConfig:
                 "GRAPHARC_SLACK_WORK_TIMEOUT must be a number of seconds, "
                 f"got {raw_work_timeout!r}"
             ) from None
-        if work_timeout <= 0:
-            raise SlackConfigError("GRAPHARC_SLACK_WORK_TIMEOUT must be positive")
+        if not math.isfinite(work_timeout) or work_timeout <= 0:
+            raise SlackConfigError("GRAPHARC_SLACK_WORK_TIMEOUT must be positive and finite")
         # A work budget under the reader budget is almost certainly a typo, and
         # the failure it produces is confusing: `plan --go` would be killed
         # sooner than `metrics`. Take the larger rather than obeying literally.
@@ -112,8 +113,8 @@ class SlackBotConfig:
                 "GRAPHARC_SLACK_LIVE_INTERVAL must be a number of seconds, "
                 f"got {raw_interval!r}"
             ) from None
-        if live_interval <= 0:
-            raise SlackConfigError("GRAPHARC_SLACK_LIVE_INTERVAL must be positive")
+        if not math.isfinite(live_interval) or live_interval <= 0:
+            raise SlackConfigError("GRAPHARC_SLACK_LIVE_INTERVAL must be positive and finite")
 
         live_url_base = env.get("GRAPHARC_SLACK_LIVE_URL", "").rstrip("/") or None
         if live_url_base is not None and not live_url_base.startswith(("http://", "https://")):
