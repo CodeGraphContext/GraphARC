@@ -1689,9 +1689,28 @@ line on stderr.
 | `grapharc metrics <trace> <run>` | summarize one run |
 | `grapharc viz <trace> <run>` | render the executed path as Mermaid |
 
+`run --check-only` prints a `topology` digest for comparing the same graph
+across invocations. With `--json`, this is `topology_fingerprint`, on both
+check-only and execution results. It hashes the validated nodes, edges,
+arguments, notes and rationale, including nested subgraphs, excluding only
+each scope's `proposal_id` and `origin`. File formatting and mapping key order
+do not affect it; node and edge order do. It does not cover the registry or
+policy, so a matching digest does not guarantee the same admission verdict or
+execution behaviour.
+
+The existing JSON `fingerprint` and the admission trace still identify the
+exact proposal, including its provenance, for admission and materialisation.
+They can change when a file is loaded again and are not topology comparisons.
+The topology digest is never used to authorise execution or approve a plan.
+
 Exit codes are part of the interface: `0` did the job, `1` ran and the answer
 was negative (two runs differed, a run id had no events, no backend was usable),
 `2` could not run at all (missing file, missing component, unknown model spec).
+
+`trace`, `metrics` and `viz` also exit `2` when a trace contains an invalid
+event or non-UTF-8 bytes. The error names the file and its 1-based line; with
+`--json` it is one failure document on stdout and stderr is empty. These
+strict readers refuse the file rather than present a partial audit trail.
 
 A whole session, verbatim (run ids are random per run and durations are
 wall-clock; the test maps the former, masks the latter, and byte-compares every

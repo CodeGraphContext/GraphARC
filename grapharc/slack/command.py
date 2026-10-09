@@ -40,6 +40,7 @@ user types is ever interpreted by a shell.
 from __future__ import annotations
 
 import importlib
+import math
 import shlex
 import tomllib
 import uuid
@@ -530,10 +531,10 @@ def parse_command(
                 raise SlackCommandError(
                     f"`--approval-timeout` wants a number of seconds, got {supplied!r}"
                 ) from None
-            if asked <= 0 or asked > ceiling:
+            if not math.isfinite(asked) or asked <= 0 or asked > ceiling:
                 raise SlackCommandError(
                     f"`--approval-timeout {supplied}` does not fit this command's "
-                    f"budget: the wait must be between 1 and {ceiling:.0f} seconds, "
+                    f"budget: the wait must be finite, positive and at most {ceiling:.0f} seconds, "
                     "so that a run nobody answers ends by reporting a timeout "
                     "rather than by being killed mid-wait"
                 )

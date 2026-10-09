@@ -232,13 +232,19 @@ class TraceRecorder:
         if not self.path.exists():
             return []
         events = []
-        with self.path.open(encoding="utf-8") as f:
-            for line_number, line in enumerate(f, start=1):
-                if not line.strip():
-                    continue
+        # Decode one JSONL line at a time. TextIO's buffered decoder can fail
+        # before yielding an earlier valid line when later bytes are not UTF-8,
+        # losing both the trace-error boundary and the offending line number.
+        with self.path.open("rb") as f:
+            # Preserve the text reader's LF, CRLF and CR line boundaries.
+            lines = (line for raw in f for line in raw.splitlines(keepends=True))
+            for line_number, raw in enumerate(lines, start=1):
                 try:
+                    line = raw.decode("utf-8")
+                    if not line.strip():
+                        continue
                     ev = TraceEvent.model_validate_json(line)
-                except ValidationError as exc:
+                except (UnicodeDecodeError, ValidationError) as exc:
                     raise TraceReadError(self.path, line_number, exc) from exc
                 if run_id is None or ev.run_id == run_id:
                     events.append(ev)
