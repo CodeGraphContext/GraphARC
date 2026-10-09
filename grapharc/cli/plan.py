@@ -451,6 +451,7 @@ def execute_plan(
         model_spec = settings.resolve("model", model_spec, record.get("model"))
         policy_path = settings.resolve_path("policy", policy_path)
         tenant = settings.resolve("tenant", tenant, "default")
+        trace_tenant = tenant if settings.sources["tenant"] != "default" else None
         max_tokens = settings.resolve("max_tokens", max_tokens, 100_000)
         model_args = _parse_model_args(model_arg_pairs)
         # The registry gets the real model (agent-backed kinds need one); the
@@ -514,7 +515,7 @@ def execute_plan(
         ),
     )
     initial = schema(goal=goal) if "goal" in schema.model_fields else schema()
-    result = loop.run(goal, initial, run_id=run_id)
+    result = loop.run(goal, initial, run_id=run_id, tenant=trace_tenant)
 
     executed = any(r.executed for r in result.rounds)
     if executed:
@@ -950,6 +951,7 @@ def plan(
             )
         policy_path = settings.resolve_path("policy", policy_path)
         tenant = settings.resolve("tenant", tenant, "default")
+        trace_tenant = tenant if settings.sources["tenant"] != "default" else None
         max_rounds = settings.resolve("max_rounds", max_rounds, 8)
         max_tokens = settings.resolve("max_tokens", max_tokens, 100_000)
         max_planning_failures = settings.resolve(
@@ -1018,7 +1020,7 @@ def plan(
     # `plan` plans; `go` (and `plan --go`) executes. The attribute rather
     # than a ctor param keeps every registry module's build_loop signature.
     loop.plan_only = command == "plan" and not go_after
-    result = loop.run(goal, initial, run_id=run_id)
+    result = loop.run(goal, initial, run_id=run_id, tenant=trace_tenant)
 
     # The admitted shape as data, computed before the plan file so the file
     # can carry the same `mutating` verdict the payload does. An external

@@ -1570,7 +1570,9 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 
-from grapharc.observe import RateCard, TraceRecorder, attribute, summarize, to_mermaid
+from grapharc.observe import (
+    RateCard, TraceRecorder, attribute, attribute_tenant, summarize, to_mermaid,
+)
 from grapharc.runtime.graph import END, START, GraphARC
 from grapharc.runtime.state import GraphARCState
 from grapharc.testing import ScriptedChatModel
@@ -1612,6 +1614,12 @@ metrics = summarize(trace, "r1")
 print("metrics :", metrics.nodes_executed, "nodes,", metrics.tokens, "tokens,", metrics.per_node)
 print()
 print(to_mermaid(trace, "r1"))
+
+# A second run has an explicit tenant; the old unlabelled run stays excluded.
+g.compile().invoke({"question": "budgets?"}, run_id="r2", tenant="team-a")
+bill = attribute_tenant(trace, "team-a", rates=RateCard(default=3.0))
+assert [run.run_id for run in bill.runs] == ["r2"]
+assert bill.tokens == attribute(trace, "r2").tokens
 ```
 
 ```
@@ -1634,24 +1642,25 @@ flowchart TD
 ```
 
 `RunCost.tokens` and `RunMetrics.tokens` agree by construction — both count the
-`end` events of node executions, and the test suite asserts they match, because
+`end` and `error` events plus work outside node spans, and the suite asserts they match, because
 a cost report and an audit trail that disagree are worse than either alone.
 
 **Three honest limits:**
 
-- **Nothing in GraphARC writes `cost_usd` onto a trace event today.** The field
-  exists and `TraceRecorder.event` accepts it, but the kernel does not pass it,
-  so `recorded_cost_usd` is always `None` on a trace from today's runtime.
-  Everything you see above is `estimated_cost_usd` — tokens × your rate card,
-  reported in its own field so nobody mistakes an estimate for an invoice.
+- **Recorded cost depends on the producer.** The kernel writes provider prices
+  onto successful node terminal events, and agents record their per-call prices.
+  Planner turns and failed node terminal events currently omit the provider
+  price. The example above uses a backend that reports no price, so its money
+  is `estimated_cost_usd` — tokens × your rate card. Recorded and estimated
+  figures remain separate; a recorded figure takes precedence over an estimate.
 - **`complete` is what tells you the total is a total.** Tokens with neither a
   recorded cost nor a matching rate are counted in `unpriced_tokens`, and a
   non-zero count means `cost_usd` is a lower bound. A `RateCard` with no
   `default` and no matching model prices nothing.
-- **A node that raised has no token count at node level.** No `end` event was
-  written. Where it was an `AgentNode`, its per-call sub-events still hold the
-  spend, reported as `tokens_before_error` — kept out of the total so the total
-  keeps matching `metrics`.
+- **Older error events may have no token count.** Current node wrappers record
+  tokens on both `end` and `error`. When an older or hand-built trace omits the
+  failed node's count, an agent's per-call sub-events may still hold the spend,
+  reported as `tokens_before_error` and kept out of the total that matches `metrics`.
 
 `to_mermaid` renders the graph's *declared topology* — the `topology` event every
 run now writes — with execution status overlaid per node: `done`, `running`,
@@ -1666,11 +1675,54 @@ renderer that speaks Mermaid.
 `attribute_thread(trace, thread_id)` is the same for a whole session across
 resumes, and `by_node(trace)` ranks every node in a file by cost.
 
+For tenant attribution, supply one label at the run entry point, as the example
+above does with `tenant="team-a"`. `attribute_tenant` selects its second run,
+`r2`, while the first unlabelled run stays excluded.
+
+Every compiled execution entry (`invoke`, `stream`, `ainvoke`, `astream`,
+`astream_events`) accepts `tenant=`, as does `GovernedLoop.run`. The loop carries
+it through planning, admission, approval, round execution and stop events;
+`AgentNode` inherits its supplied `RunContext.tenant`. Custom producers must
+label their own events consistently. Attribution is a caller-supplied label,
+not an authorization check; it does not apply a policy on its own.
+
+`attribute_tenant(trace, name, rates=...)` reads one snapshot and returns
+`TenantCost`: the matching runs, tokens, duration, recorded USD, estimated USD,
+combined known USD, unpriced tokens and `complete`. It prices the same whole
+runs as `attribute`, so model substeps do not add a second copy of node spend.
+An unknown tenant raises `ReplayError`. Any run with inconsistent labels,
+including a mixture of labelled and unlabelled events, makes the reader refuse
+the report rather than guess a bill. Legacy runs with no tenant remain
+unassigned, and writing an unlabelled run adds no tenant key.
+
+The CLI uses the same reader:
+
+```bash
+grapharc cost trace.jsonl --tenant team-a --json
+grapharc cost trace.jsonl --run-id r2
+```
+
+Choose exactly one scope. JSON includes separate `recorded_cost_usd` and
+`estimated_cost_usd`, `unpriced_tokens`, `complete`, and per-run detail for a
+tenant report. The CLI supplies no rate card, so tokens without recorded prices
+remain unpriced; use the Python API for estimates. Missing or unreadable files
+exit 2, and missing selections or inconsistent labels exit 1, including in JSON.
+
+`run`, `plan`, `go` and policy-governed `agent` runs carry a tenant supplied by
+`--tenant`, `GRAPHARC_TENANT`
+or `grapharc.toml` into their traces. The policy layer's implicit `"default"`
+does not label a trace; an explicit `--tenant default` does. Executing a saved
+plan uses the current invocation's explicit tenant, rather than inheriting a
+label from the planning run. The standalone `grapharc agent` command
+currently requires `--policy` when selecting a tenant; its trace uses the explicit
+selection, while the document's implicit default tenant stays unlabelled.
+
+
 ---
 
 ## The CLI tour
 
-Twelve commands. Every one takes `--json`, which prints the same payload as one
+The commands below all take `--json`, which prints the same payload as one
 document on stdout — including failures, which become the document rather than a
 line on stderr.
 
@@ -1687,6 +1739,7 @@ line on stderr.
 | `grapharc diff <trace> <a> <b>` | compare two runs in one trace |
 | `grapharc trace <trace>` | pretty-print a trace file |
 | `grapharc metrics <trace> <run>` | summarize one run |
+| `grapharc cost <trace> --tenant NAME` | attribute whole labelled runs; alternatively select `--run-id ID` |
 | `grapharc viz <trace> <run>` | render the executed path as Mermaid |
 
 `run --check-only` prints a `topology` digest for comparing the same graph

@@ -677,6 +677,54 @@ def _cmd_metrics(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_cost(args: argparse.Namespace) -> int:
+    from grapharc.observe.cost import attribute, attribute_tenant
+
+    recorder = _existing_trace(args.path, command="cost", as_json=args.json)
+    if isinstance(recorder, int):
+        return recorder
+    try:
+        report = (
+            attribute_tenant(recorder, args.tenant)
+            if args.tenant is not None
+            else attribute(recorder, args.run_id)
+        )
+    except TraceReadError as exc:
+        return fail(str(exc), as_json=args.json, command="cost")
+    except (OSError, UnicodeDecodeError) as exc:
+        return fail(
+            f"unreadable trace file: {args.path}: {exc}", as_json=args.json, command="cost"
+        )
+    except ReplayError as exc:
+        return fail(str(exc), as_json=args.json, command="cost", code=EXIT_FAILED)
+    totals = {
+        "tokens": report.tokens,
+        "duration_ms": report.duration_ms,
+        "recorded_cost_usd": report.recorded_cost_usd,
+        "estimated_cost_usd": report.estimated_cost_usd,
+        "cost_usd": report.cost_usd,
+        "unpriced_tokens": report.unpriced_tokens,
+        "complete": report.complete,
+    }
+    data = {**report.model_dump(), **totals}
+    lines = []
+    if args.tenant is not None:
+        lines.append(f"tenant {args.tenant} · {len(report.runs)} runs")
+    else:
+        lines.append(report.format())
+    for key, value in totals.items():
+        text = (
+            ("unknown" if value is None else f"${value:.6f}")
+            if key.endswith("cost_usd") else str(value)
+        )
+        lines.append(style.kv(key, text))
+    emit(
+        {"ok": True, "command": "cost", "path": str(args.path), **data},
+        lines, as_json=args.json,
+    )
+    return EXIT_OK
+
+
 def _cmd_viz(args: argparse.Namespace) -> int:
     recorder = _existing_trace(args.path, command="viz", as_json=args.json)
     if isinstance(recorder, int):
@@ -1228,6 +1276,15 @@ def build_parser() -> argparse.ArgumentParser:
     mx.add_argument("path", type=Path)
     mx.add_argument("run_id")
     mx.set_defaults(handler=_cmd_metrics)
+
+    cost = sub.add_parser(
+        "cost", parents=[common], help="attribute recorded spend by run or tenant"
+    )
+    cost.add_argument("path", type=Path)
+    scope = cost.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--run-id", help="one recorded run")
+    scope.add_argument("--tenant", help="all runs explicitly labelled with this tenant")
+    cost.set_defaults(handler=_cmd_cost)
 
     vz = sub.add_parser("viz", parents=[common], help="render a run's executed path as Mermaid")
     vz.add_argument("path", type=Path)

@@ -502,7 +502,7 @@ def run_agent(
             max_seconds=max_seconds,
         )
     )
-    ctx = RunContext(run_id=run_id, graph="cli-agent", meter=meter)
+    ctx = RunContext(run_id=run_id, graph="cli-agent", meter=meter, tenant=tenant)
     node = AgentNode(
         model=model,
         harness=harness,

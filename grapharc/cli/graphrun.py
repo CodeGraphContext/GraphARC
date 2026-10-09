@@ -169,6 +169,7 @@ def run_graph(
         registry_target = settings.resolve("registry", registry_target, DEFAULT_REGISTRY)
         policy_path = settings.resolve_path("policy", policy_path)
         tenant = settings.resolve("tenant", tenant, "default")
+        trace_tenant = tenant if settings.sources["tenant"] != "default" else None
         max_tokens = settings.resolve("max_tokens", max_tokens)
         max_iterations = settings.resolve("max_iterations", max_iterations)
         max_seconds = settings.resolve("max_seconds", max_seconds)
@@ -221,7 +222,8 @@ def run_graph(
     # `grapharc metrics <trace> <run-id>` finds nothing under that id.
     rid = run_id or uuid.uuid4().hex[:12]
     verdict = checker.check(
-        proposal, meter=meter, ctx=RunContext(run_id=rid, graph="cli-run", meter=meter)
+        proposal, meter=meter,
+        ctx=RunContext(run_id=rid, graph="cli-run", meter=meter, tenant=trace_tenant),
     )
 
     common = {
@@ -322,7 +324,7 @@ def run_graph(
         )
         return EXIT_OK
 
-    state = compiled.invoke(schema().model_dump(), run_id=rid)
+    state = compiled.invoke(schema().model_dump(), run_id=rid, tenant=trace_tenant)
 
     payload = {"ok": True, "checked_only": False, **common, "state": state}
     lines = [

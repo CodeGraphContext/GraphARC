@@ -29,14 +29,14 @@ Two limits, stated rather than smoothed over:
   Where the node was an `AgentNode`, its per-call `"model"` sub-events still
   hold them, and they are reported as `tokens_before_error` rather than folded
   into the total that must match `metrics`.
-- There is no tenant on a trace event, so tenant attribution is not offered
-  here. Run, thread (session) and node are what the format supports today.
+- Tenant attribution needs an explicit, consistent label on every event in
+  a run. Older unlabelled runs are not assigned to a tenant retrospectively.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -48,7 +48,7 @@ from grapharc.observe.replay import (
     replay,
     replay_thread,
 )
-from grapharc.observe.trace import TraceRecorder
+from grapharc.observe.trace import TraceEvent, TraceRecorder, load_events
 
 
 class RateCard(BaseModel):
@@ -133,6 +133,7 @@ class RunCost(BaseModel):
     run_id: str
     graph: str
     thread_id: str | None = None
+    tenant: str | None = None
     executions: int = 0
     errors: int = 0
     tokens: int = 0
@@ -166,6 +167,8 @@ class RunCost(BaseModel):
 
     def format(self) -> str:
         lines = [f"run {self.run_id} · graph {self.graph}"]
+        if self.tenant is not None:
+            lines.append(f"tenant {self.tenant}")
         for entry in self.per_node:
             cost = "—" if entry.cost_usd is None else f"${entry.cost_usd:.6f}"
             lines.append(
@@ -218,6 +221,52 @@ class ThreadCost(BaseModel):
     @property
     def cost_usd(self) -> float | None:
         return _combine(self.recorded_cost_usd, self.estimated_cost_usd)
+
+
+class TenantCost(BaseModel):
+    """Whole runs explicitly attributed to one tenant, in first-seen order.
+
+    Runs retain their per-node and per-model detail. Recorded and estimated
+    USD stay separate, and missing prices remain visible as unpriced tokens.
+    """
+
+    tenant: str
+    runs: list[RunCost] = Field(default_factory=list)
+
+    @property
+    def tokens(self) -> int:
+        return sum(r.tokens for r in self.runs)
+
+    @property
+    def duration_ms(self) -> float:
+        return round(sum(r.duration_ms for r in self.runs), 2)
+
+    @property
+    def unpriced_tokens(self) -> int:
+        return sum(r.unpriced_tokens for r in self.runs)
+
+    @property
+    def recorded_cost_usd(self) -> float | None:
+        return _sum_optional(r.recorded_cost_usd for r in self.runs)
+
+    @property
+    def estimated_cost_usd(self) -> float | None:
+        return _sum_optional(r.estimated_cost_usd for r in self.runs)
+
+    @property
+    def cost_usd(self) -> float | None:
+        return _combine(self.recorded_cost_usd, self.estimated_cost_usd)
+
+    @property
+    def complete(self) -> bool:
+        return self.unpriced_tokens == 0
+
+
+def _run_tenant(events: Sequence[TraceEvent]) -> str | None:
+    labels = {event.tenant for event in events}
+    if len(labels) > 1:
+        raise ReplayError(f"inconsistent tenant labels for run_id {events[0].run_id!r}")
+    return next(iter(labels), None)
 
 
 def _combine(*values: float | None) -> float | None:
@@ -365,6 +414,15 @@ def _price_run(run: ReplayedRun, rates: RateCard | None) -> RunCost:
         if sub.phase != "model":
             if sub.cost_usd is not None:
                 recorded_total.append(sub.cost_usd)
+            elif sub.tokens:
+                # Planner turns also spend tokens outside node spans. A
+                # non-model phase must not make that spend disappear from
+                # pricing or leave an incomplete report marked complete.
+                amount = card.price(sub.tokens, sub.model)
+                if amount is None:
+                    unpriced += sub.tokens
+                else:
+                    estimated_total.append(amount)
             continue
         sub_estimate = (
             None if sub.cost_usd is not None else card.price(sub.tokens or 0, sub.model)
@@ -394,6 +452,7 @@ def _price_run(run: ReplayedRun, rates: RateCard | None) -> RunCost:
         entry.duration_ms = round(entry.duration_ms, 2)
     return RunCost(
         run_id=run.run_id,
+        tenant=_run_tenant(run.events),
         graph=run.graph,
         thread_id=run.thread_id,
         executions=sum(n.executions for n in per_node),
@@ -472,6 +531,32 @@ def attribute_thread(
     )
 
 
+def attribute_tenant(
+    source: TraceRecorder | str | Path,
+    tenant: str,
+    *,
+    rates: RateCard | None = None,
+) -> TenantCost:
+    """Attribute all whole runs labelled with `tenant`, from the trace alone.
+
+    Read one snapshot so appended events cannot change labels between
+    selection and pricing. Refuse any run whose events disagree on tenant,
+    including a mixture of labelled and unlabelled events. Legacy runs stay
+    unassigned. Raises `ReplayError` for inconsistent labels or no matching
+    runs, as `attribute_thread` does for a missing thread.
+    """
+    grouped: dict[str, list[TraceEvent]] = {}
+    for event in load_events(source):
+        grouped.setdefault(event.run_id, []).append(event)
+    selected = []
+    for run_id, events in grouped.items():
+        if _run_tenant(events) == tenant:
+            selected.append(_price_run(replay(events, run_id), rates))
+    if not selected:
+        raise ReplayError(f"no events for tenant {tenant!r} in the trace")
+    return TenantCost(tenant=tenant, runs=selected)
+
+
 def by_node(source: TraceRecorder | str | Path, *, rates: RateCard | None = None) -> list[NodeCost]:
     """Every node's cost across every run in a trace file, most expensive first.
 
@@ -520,8 +605,10 @@ __all__ = [
     "NodeCost",
     "RateCard",
     "RunCost",
+    "TenantCost",
     "ThreadCost",
     "attribute",
+    "attribute_tenant",
     "attribute_thread",
     "by_node",
     "tokens_by_model",

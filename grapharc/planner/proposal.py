@@ -823,6 +823,7 @@ class PlannerNode:
         self.trace.event(
             run_id=ctx.run_id,
             thread_id=ctx.thread_id,
+            tenant=ctx.tenant,
             attempt=ctx.attempt,
             graph=ctx.graph,
             node=f"{self.name}:plan",

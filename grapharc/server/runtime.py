@@ -248,7 +248,11 @@ def _trace_payload(event: TraceEvent) -> dict[str, Any]:
         # `_trace_shape` reprs it below — which is what the trace format does
         # with such a value anyway.
         dumped = event.model_dump(exclude_none=True)
-    return _trace_shape(dumped)
+    payload = _trace_shape(dumped)
+    if event.tenant is not None:
+        # Match TraceRecorder: attribution identifiers are never clipped.
+        payload["tenant"] = event.tenant
+    return payload
 
 
 class BroadcastRecorder(TraceRecorder):
@@ -295,6 +299,7 @@ class BroadcastRecorder(TraceRecorder):
         phase: str,
         step: int,
         thread_id: str | None = None,
+        tenant: str | None = None,
         attempt: int = 1,
         state_delta: dict[str, Any] | None = None,
         duration_ms: float | None = None,
@@ -314,6 +319,7 @@ class BroadcastRecorder(TraceRecorder):
                 ts=_now(),
                 run_id=run_id,
                 thread_id=thread_id,
+                tenant=tenant,
                 attempt=attempt,
                 graph=graph,
                 node=node,

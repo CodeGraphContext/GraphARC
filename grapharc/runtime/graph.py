@@ -141,7 +141,11 @@ class MissingRunContextError(Exception):
 
 
 class RunContext:
-    """Per-run bookkeeping shared with every node via the runnable config."""
+    """Per-run bookkeeping shared with every node via the runnable config.
+
+    `tenant` is an explicit trace attribution label, not a policy decision or
+    an authorization boundary. None keeps the run unlabelled.
+    """
 
     def __init__(
         self,
@@ -150,6 +154,7 @@ class RunContext:
         graph: str,
         meter: BudgetMeter,
         thread_id: str | None = None,
+        tenant: str | None = None,
         attempt: int = 1,
         step_seed: int = 0,
     ) -> None:
@@ -157,6 +162,7 @@ class RunContext:
         self.graph = graph
         self.meter = meter
         self.thread_id = thread_id
+        self.tenant = tenant
         self.attempt = attempt
         self._step = step_seed
         self._lock = threading.Lock()
@@ -802,6 +808,7 @@ class GraphARC:
                 trace.event(
                     run_id=ctx.run_id,
                     thread_id=ctx.thread_id,
+                    tenant=ctx.tenant,
                     attempt=ctx.attempt,
                     graph=self.name,
                     node=name,
@@ -1012,7 +1019,11 @@ class CompiledGraphARC:
         self.last_run: RunContext | None = None
 
     def _run_config(
-        self, thread_id: str | None, run_id: str | None, budget: Budget | None
+        self,
+        thread_id: str | None,
+        run_id: str | None,
+        budget: Budget | None,
+        tenant: str | None,
     ) -> dict[str, Any]:
         rid = run_id or uuid.uuid4().hex[:12]
         thread = thread_id or rid
@@ -1025,6 +1036,7 @@ class CompiledGraphARC:
             graph=self.arc.name,
             meter=BudgetMeter(budget or self.arc.budget or _NOOP_BUDGET),
             thread_id=thread,
+            tenant=tenant,
             attempt=attempt,
             step_seed=step_seed,
         )
@@ -1044,6 +1056,7 @@ class CompiledGraphARC:
                 phase="topology",
                 step=0,
                 thread_id=thread,
+                tenant=tenant,
                 attempt=attempt,
                 state_delta=topology_delta(self.arc),
             )
@@ -1102,6 +1115,7 @@ class CompiledGraphARC:
         *,
         thread_id: str | None = None,
         run_id: str | None = None,
+        tenant: str | None = None,
         budget: Budget | None = None,
     ) -> Any:
         """Run the graph. Pass `input=None` with a previous `thread_id` to resume
@@ -1110,10 +1124,12 @@ class CompiledGraphARC:
         Notes: the budget meter is fresh per invoke — limits bound one attempt,
         not the lifetime of a thread. Trace step/attempt counters continue from
         the thread's history so replay points stay unique across resumes.
+        `tenant` labels this attempt's events; it is never inferred from state
+        or inherited from a previous checkpoint.
         """
         self._reject_async_nodes("invoke")
         input = self._checked_input("invoke", input)
-        return self.inner.invoke(input, self._run_config(thread_id, run_id, budget))
+        return self.inner.invoke(input, self._run_config(thread_id, run_id, budget, tenant))
 
     def stream(
         self,
@@ -1121,6 +1137,7 @@ class CompiledGraphARC:
         *,
         thread_id: str | None = None,
         run_id: str | None = None,
+        tenant: str | None = None,
         budget: Budget | None = None,
         **stream_kwargs: Any,
     ) -> Iterator[Any]:
@@ -1132,7 +1149,7 @@ class CompiledGraphARC:
         self._reject_async_nodes("stream")
         input = self._checked_input("stream", input)
         yield from self.inner.stream(
-            input, self._run_config(thread_id, run_id, budget), **stream_kwargs
+            input, self._run_config(thread_id, run_id, budget, tenant), **stream_kwargs
         )
 
     async def ainvoke(
@@ -1141,6 +1158,7 @@ class CompiledGraphARC:
         *,
         thread_id: str | None = None,
         run_id: str | None = None,
+        tenant: str | None = None,
         budget: Budget | None = None,
     ) -> Any:
         """Async twin of `invoke()`, with the same discipline and the same notes.
@@ -1150,7 +1168,7 @@ class CompiledGraphARC:
         nodes is how `max_seconds` is delivered: see `_async_deadline`.
         """
         input = self._checked_input("ainvoke", input)
-        return await self.inner.ainvoke(input, self._run_config(thread_id, run_id, budget))
+        return await self.inner.ainvoke(input, self._run_config(thread_id, run_id, budget, tenant))
 
     async def astream(
         self,
@@ -1158,13 +1176,14 @@ class CompiledGraphARC:
         *,
         thread_id: str | None = None,
         run_id: str | None = None,
+        tenant: str | None = None,
         budget: Budget | None = None,
         **stream_kwargs: Any,
     ) -> AsyncIterator[Any]:
         """Async twin of `stream()`; `.inner.astream()` fails closed."""
         input = self._checked_input("astream", input)
         async for chunk in self.inner.astream(
-            input, self._run_config(thread_id, run_id, budget), **stream_kwargs
+            input, self._run_config(thread_id, run_id, budget, tenant), **stream_kwargs
         ):
             yield chunk
 
@@ -1174,6 +1193,7 @@ class CompiledGraphARC:
         *,
         thread_id: str | None = None,
         run_id: str | None = None,
+        tenant: str | None = None,
         budget: Budget | None = None,
         version: Literal["v1", "v2"] = "v2",
         **kwargs: Any,
@@ -1188,7 +1208,7 @@ class CompiledGraphARC:
             raise ValueError(f"astream_events supports version 'v1' or 'v2', got {version!r}")
         input = self._checked_input("astream_events", input)
         async for event in self.inner.astream_events(
-            input, self._run_config(thread_id, run_id, budget), version=version, **kwargs
+            input, self._run_config(thread_id, run_id, budget, tenant), version=version, **kwargs
         ):
             yield event
 

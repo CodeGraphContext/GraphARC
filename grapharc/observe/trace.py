@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,9 @@ class TraceEvent(BaseModel):
     ts: str
     run_id: str
     thread_id: str | None = None
+    # An explicit attribution label, not an authorization boundary. Omitted
+    # when unset so legacy trace output and parsing remain unchanged.
+    tenant: str | None = None
     attempt: int = 1
     graph: str
     node: str
@@ -124,7 +128,12 @@ class TraceRecorder:
         self._thread_max: dict[str, tuple[int, int]] = {}
 
     def record(self, event: TraceEvent) -> None:
-        line = json.dumps(_jsonable(event.model_dump(exclude_none=True)), ensure_ascii=False)
+        payload = _jsonable(event.model_dump(exclude_none=True))
+        if event.tenant is not None:
+            # Attribution identifiers must survive exactly; truncation is
+            # useful for state text, but would silently rename this tenant.
+            payload["tenant"] = event.tenant
+        line = json.dumps(payload, ensure_ascii=False)
         with self._lock, self.path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
 
@@ -137,6 +146,7 @@ class TraceRecorder:
         phase: str,
         step: int,
         thread_id: str | None = None,
+        tenant: str | None = None,
         attempt: int = 1,
         state_delta: dict[str, Any] | None = None,
         duration_ms: float | None = None,
@@ -150,6 +160,7 @@ class TraceRecorder:
                 ts=datetime.now(UTC).isoformat(timespec="milliseconds"),
                 run_id=run_id,
                 thread_id=thread_id,
+                tenant=tenant,
                 attempt=attempt,
                 graph=graph,
                 node=node,
@@ -315,9 +326,11 @@ class TailRecorder(TraceRecorder):
 
 
 def load_events(
-    source: TraceRecorder | str | Path, run_id: str | None = None
+    source: TraceRecorder | str | Path | Sequence[TraceEvent], run_id: str | None = None
 ) -> list[TraceEvent]:
-    """Read a trace from a recorder or a path, so callers can pass either."""
+    """Read a recorder, path, or an already-read snapshot of trace events."""
+    if not isinstance(source, (TraceRecorder, str, Path)):
+        return [event for event in source if run_id is None or event.run_id == run_id]
     recorder = source if isinstance(source, TraceRecorder) else TraceRecorder(source)
     return recorder.read_events(run_id)
 
