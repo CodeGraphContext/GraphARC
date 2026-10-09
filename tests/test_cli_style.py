@@ -55,7 +55,7 @@ STYLED = [
     pytest.param(_fixed("models"), id="models"),
     pytest.param(_fixed("models", "--check"), id="models-check"),
     pytest.param(_fixed("demo", "stage0"), id="demo-stage0"),
-    # The ADMITTED verdict block and its accent-tinted fingerprint.
+    # The ADMITTED verdict block and its accent-tinted topology digest.
     pytest.param(
         lambda w: ["run", str(w["admitted"]), "--check-only", *w["hermetic"]],
         id="run-check-only",
@@ -86,19 +86,6 @@ _TMPDIR = re.compile(re.escape(tempfile.gettempdir()) + r"/grapharc-[A-Za-z0-9_.
 # The default trace directory stamp: two invocations of one command are two
 # runs with two stamps, and the comparison is about styling, not clocks.
 _RUNDIR = re.compile(r"\d{8}-\d{6}-[0-9a-f]{6}")
-# `run`'s fingerprint, which is *not* stable across two loads of the same
-# topology file: `Subgraph.proposal_id` defaults to a fresh `uuid4` and
-# `fingerprint()` hashes the whole model, `proposal_id` included. Normalised
-# here so this file can still compare the styling of the line it appears on —
-# which is the whole point of covering the ADMITTED block — rather than dropping
-# `run` out of the comparison over one token.
-#
-# It is normalised under protest. `graphrun.py` prints it under the comment "the
-# fingerprint is what a later run is compared against", and a value that differs
-# on every invocation cannot do that job. Filed separately; if that is fixed so
-# the fingerprint follows the topology, this normaliser should be deleted and the
-# comparison will be stricter for it.
-_FINGERPRINT = re.compile(r"(?<=fingerprint: )[0-9a-f]{16}")
 
 
 def _env(**extra: str) -> dict[str, str]:
@@ -168,8 +155,7 @@ def _on_pty(args: list[str], **extra: str) -> tuple[str, int]:
 
 def _normalise(text: str) -> str:
     text = _TMPDIR.sub("/tmp/grapharc-NORMALISED", text)
-    text = _RUNDIR.sub("RUNDIR-NORMALISED", text)
-    return _FINGERPRINT.sub("FINGERPRINT-NORMALISED", text)
+    return _RUNDIR.sub("RUNDIR-NORMALISED", text)
 
 
 @pytest.fixture(scope="module")

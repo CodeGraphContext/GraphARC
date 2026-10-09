@@ -1530,6 +1530,32 @@ def test_check_only_validates_without_executing(tmp_path, capsys, monkeypatch):
     assert "state" not in payload
 
 
+@pytest.mark.parametrize("check_only", [True, False])
+def test_run_topology_fingerprint_is_stable_without_reusing_admission(
+    tmp_path, capsys, monkeypatch, check_only
+):
+    """Issue #125: comparisons survive reloads; authorisation still pins each proposal."""
+    monkeypatch.chdir(tmp_path)
+    graph = _write_graph(tmp_path, _LEGAL_GRAPH)
+    args = ["run", str(graph), "--trace", str(tmp_path / "t.jsonl")]
+    if check_only:
+        args.append("--check-only")
+
+    first_code, first, _ = call_json(args, capsys)
+    second_code, second, _ = call_json(args, capsys)
+
+    assert first_code == second_code == 0
+    assert first["topology_fingerprint"] == second["topology_fingerprint"]
+    assert first["fingerprint"] != second["fingerprint"]
+    admission_events = [
+        event for event in TraceRecorder(tmp_path / "t.jsonl").read_events()
+        if event.phase == "admission"
+    ]
+    assert [event.state_delta["fingerprint"] for event in admission_events] == [
+        first["fingerprint"], second["fingerprint"]
+    ]
+
+
 def test_check_only_still_fails_on_an_illegal_topology(tmp_path, capsys, monkeypatch):
     # A scratch cwd: a developer's own `grapharc init` in the checkout
     # must not steer these runs.
