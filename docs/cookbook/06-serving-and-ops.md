@@ -1707,6 +1707,11 @@ Exit codes are part of the interface: `0` did the job, `1` ran and the answer
 was negative (two runs differed, a run id had no events, no backend was usable),
 `2` could not run at all (missing file, missing component, unknown model spec).
 
+`trace`, `metrics` and `viz` also exit `2` when a trace contains an invalid
+event or non-UTF-8 bytes. The error names the file and its 1-based line; with
+`--json` it is one failure document on stdout and stderr is empty. These
+strict readers refuse the file rather than present a partial audit trail.
+
 A whole session, verbatim (run ids are random per run and durations are
 wall-clock; the test maps the former, masks the latter, and byte-compares every
 other character):
