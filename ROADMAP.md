@@ -470,7 +470,8 @@ allowances; the agent records document-driven denials and approval decisions.
       totals. Planner turns retain the call-specific price and model from the
       returned message envelope, including parse failures. Every node terminal
       error path retains its own usage scope, excluding concurrent siblings'
-      spend. A rate-card estimate is not a recorded bill.
+      spend. A failed execution's reported USD is retained even without token
+      metadata. A rate-card estimate is not a recorded bill.
       Tenant labels provide attribution, not authorization.
 - [ ] **10.2 — Rollback** and versioned graph/prompt configs.
 - [ ] **10.5 — Alerting** on budget, failure, and verifier-drift.
