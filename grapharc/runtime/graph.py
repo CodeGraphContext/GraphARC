@@ -855,6 +855,7 @@ class GraphARC:
         usage: Any = None,
     ) -> Any:
         """Everything both node wrappers do after the node body returns."""
+        measured = _usage_fields(ctx, tokens_before, usage)
         delta: dict[str, Any] | None = None
         if result is not None:
             try:
@@ -864,7 +865,7 @@ class GraphARC:
                     "error",
                     duration_ms=duration_ms,
                     error=str(err),
-                    tokens=ctx.meter.tokens - tokens_before,
+                    **measured,
                 )
                 raise
 
@@ -881,31 +882,15 @@ class GraphARC:
                 "error",
                 duration_ms=duration_ms,
                 error=f"budget: {exc.reason}",
-                tokens=ctx.meter.tokens - tokens_before,
+                **measured,
             )
             raise
 
-        # The provider's own price for every model call made inside this node,
-        # collected by the usage callback. Left None when no backend reported
-        # one, so `observe.cost` can keep a measured figure apart from a
-        # rate-card estimate instead of recording a guess as a fact.
-        models = getattr(usage, "models", ())
-        # This node's own spend, from the meter's per-node scope, not the movement
-        # of the run's shared total while the node ran. Under fan-out those differ:
-        # the workers' windows overlap, so every worker used to be credited with
-        # each sibling's concurrent spend — three workers costing 8 tokens each
-        # traced as 24/16/8, and `metrics` and `cost` both reported 48 for 24
-        # tokens of real work, doubling the estimated bill purely because the work
-        # ran in parallel. Falls back to the difference when no scope was open, so
-        # a caller driving `_leave` outside `charging()` still gets a figure.
-        spent = getattr(usage, "tokens", None)
         emit(
             "end",
             state_delta=delta,
             duration_ms=duration_ms,
-            tokens=ctx.meter.tokens - tokens_before if spent is None else spent,
-            cost_usd=getattr(usage, "cost_usd", None),
-            model=models[0] if len(models) == 1 else None,
+            **measured,
         )
         return result
 
@@ -935,7 +920,7 @@ class GraphARC:
                         "error",
                         duration_ms=(time.perf_counter() - t0) * 1000,
                         error=repr(exc),
-                        tokens=ctx.meter.tokens - tokens_before,
+                        **_usage_fields(ctx, tokens_before, usage),
                     )
                     raise
                 return self._leave(
@@ -974,7 +959,7 @@ class GraphARC:
                     "error",
                     duration_ms=(time.perf_counter() - t0) * 1000,
                     error=repr(exc),
-                    tokens=ctx.meter.tokens - tokens_before,
+                    **_usage_fields(ctx, tokens_before, usage),
                 )
                 raise
             return self._leave(
@@ -989,6 +974,22 @@ class GraphARC:
             )
 
         return wrapped
+
+
+def _usage_fields(ctx: RunContext, tokens_before: int, usage: Any) -> dict[str, Any]:
+    """The same measured spend on every terminal event, successful or failed.
+
+    A node's own scope excludes concurrent siblings' spend. The shared meter
+    difference is only a fallback for callers outside `charging()`. A missing
+    provider price stays missing; rate-card estimates belong to trace readers.
+    """
+    spent = getattr(usage, "tokens", None)
+    models = getattr(usage, "models", ())
+    return {
+        "tokens": ctx.meter.tokens - tokens_before if spent is None else spent,
+        "cost_usd": getattr(usage, "cost_usd", None),
+        "model": models[0] if len(models) == 1 else None,
+    }
 
 
 def topology_delta(arc: GraphARC) -> dict[str, Any]:

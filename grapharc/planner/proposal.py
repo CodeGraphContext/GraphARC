@@ -690,10 +690,19 @@ class PlannerNode:
             error = ""
             proposal = self._stamp(proposal)
 
+        # Read this call's envelope, rather than a model's mutable last_usage:
+        # the latter can describe another concurrent call, or an earlier call
+        # when this one failed before producing a message.
+        metadata = raw_message.response_metadata if raw_message is not None else {}
+        cost = (metadata.get("token_usage") or {}).get("cost")
+        if cost is None:
+            cost = metadata.get("cost_usd")
         self._emit(
             ctx,
             duration_ms=(time.perf_counter() - started) * 1000,
             tokens=tokens,
+            cost_usd=cost,
+            model=metadata.get("model_name"),
             state_delta={
                 "structured": structured,
                 "nodes": proposal.node_count() if proposal else 0,

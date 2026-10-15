@@ -454,7 +454,7 @@ allowances; the agent records document-driven denials and approval decisions.
 - [x] **10.4 — Cost attribution** per run, thread (session), node and explicit tenant. The
       price is now recorded, not guessed: every gateway publishes a
       `cost_usd` through the same `llm_output` envelope, the runtime's usage
-      callback accumulates it per node and writes it onto the `end` event, and
+      callback accumulates it per node and writes it onto the `end` or `error` event, and
       an `AgentNode` writes the per-call figure onto each `model` event. A
       backend that reports no price still falls back to a `RateCard` estimate,
       and `recorded_cost_usd` and `estimated_cost_usd` never mix — a recorded
@@ -467,9 +467,10 @@ allowances; the agent records document-driven denials and approval decisions.
       `grapharc cost --tenant NAME` select whole labelled runs, refuse conflicting
       labels, and leave old unlabelled runs unassigned. Planning tokens without
       a recorded price are estimated or marked unpriced, including in tenant
-      totals. **Producer limit:** planner turns and failed node terminal events
-      still omit the provider price ([#138](https://github.com/CodeGraphContext/GraphARC/issues/138));
-      a rate-card estimate is not a recorded bill.
+      totals. Planner turns retain the call-specific price and model from the
+      returned message envelope, including parse failures. Every node terminal
+      error path retains its own usage scope, excluding concurrent siblings'
+      spend. A rate-card estimate is not a recorded bill.
       Tenant labels provide attribution, not authorization.
 - [ ] **10.2 — Rollback** and versioned graph/prompt configs.
 - [ ] **10.5 — Alerting** on budget, failure, and verifier-drift.
