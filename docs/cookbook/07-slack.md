@@ -166,11 +166,22 @@ status message is posted to the channel (a `respond()`-style reply would allow
 only five updates), so a live run is visible to everyone in it — the mention
 path threads it under your message as before.
 
-Because the trace now lands inside the working directory, the run is also
-inspectable afterwards from Slack itself: `/grapharc metrics
-slack-runs/<stamp>/trace.jsonl <run-id>`, `viz` for the finished diagram,
-`replay` for the reconstruction. The `slack-runs/` directories are the audit
-trail and are never cleaned up automatically; prune them like any other logs.
+Because the trace lands inside the working directory, the run is also
+inspectable afterwards from Slack itself: `/grapharc metrics`, `viz` for the
+finished diagram, `replay` for the reconstruction, or `trace` for its events.
+Bare readers use the latest completed trace remembered for that channel. In a
+new channel or after a bot restart, they fall back to the newest trace under
+`slack-runs/`. Each reply names the selected path, run id and whether it used
+that workdir fallback. A trace containing zero or multiple runs needs explicit
+selection; the bot does not guess. With no previous trace, it suggests
+`demo stage0` instead of returning an argparse usage error.
+
+Explicit commands such as `/grapharc metrics
+slack-runs/<stamp>/trace.jsonl <run-id>` keep working. `diff` still needs an
+explicit path and two run ids. Inferred paths pass the same confinement gate
+as typed paths. Channel history is process-local; the traces are durable. The
+`slack-runs/` directories are the audit trail and are never cleaned up
+automatically; prune them like any other logs.
 
 ## Watching it live in a browser
 
