@@ -348,7 +348,9 @@ def _price_run(run: ReplayedRun, rates: RateCard | None) -> RunCost:
             entry.errors += 1
             entry.tokens += execution.tokens
             entry.duration_ms += execution.duration_ms or 0.0
-            if execution.tokens:
+            # Dollars and tokens are independent optional measurements. A
+            # provider may bill a failed call without reporting token usage.
+            if execution.tokens or execution.cost_usd is not None:
                 estimate, unpriced_here, models = _estimate(execution, card)
                 entry.models = list(dict.fromkeys([*entry.models, *models]))
                 if execution.cost_usd is not None:
