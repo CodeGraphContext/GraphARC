@@ -100,8 +100,9 @@ def test_error_events_keep_the_tenant_and_spend(tmp_path):
     cost = tenant_cost(trace, "alpha")
     assert cost.runs[0].errors == 1
     assert cost.recorded_cost_usd == attribute(trace, "failed").recorded_cost_usd
+    assert cost.recorded_cost_usd == pytest.approx(0.002)
     assert cost.tokens > 0
-    assert cost.unpriced_tokens == cost.tokens
+    assert cost.unpriced_tokens == 0
 
 
 def test_tenants_partition_runs_without_double_counting_substeps(tmp_path):
@@ -308,9 +309,10 @@ def test_saved_plan_execution_uses_the_current_explicit_tenant(
     assert {e.tenant for e in events if e.run_id in old_runs} == {"planning"}
 
 
-def test_governed_planning_and_rounds_share_one_tenant_bill(tmp_path):
+@pytest.mark.parametrize("price", [None, 0.003])
+def test_governed_planning_and_rounds_share_one_tenant_bill(tmp_path, price):
     trace = TraceRecorder(tmp_path / "trace.jsonl")
-    model = ScriptedChatModel(responses=plan_research.scripted_planner_replies(), cost_usd=0.003)
+    model = ScriptedChatModel(responses=plan_research.scripted_planner_replies(), cost_usd=price)
     loop = plan_research.build_loop(model, trace=trace)
     result = loop.run("explain elevated latency", run_id="loop", tenant="research")
     events = trace.read_events()
@@ -328,14 +330,18 @@ def test_governed_planning_and_rounds_share_one_tenant_bill(tmp_path):
     assert any(r.executed for r in result.rounds)
     cost = tenant_cost(trace, "research", rates=RateCard(default=2.0))
     assert [r.run_id for r in cost.runs] == ["loop"]
-    # Planner events currently carry tokens, not a provider price. That
-    # missing price must remain an estimate, even when the model has one.
-    assert cost.recorded_cost_usd is None
     assert cost.tokens == attribute(trace, "loop").tokens > 0
-    assert cost.estimated_cost_usd == pytest.approx(cost.tokens * 2.0 / 1000)
     unpriced = tenant_cost(trace, "research")
-    assert unpriced.unpriced_tokens == unpriced.tokens
-    assert unpriced.complete is False
+    if price is None:
+        assert cost.recorded_cost_usd is None
+        assert cost.estimated_cost_usd == pytest.approx(cost.tokens * 2.0 / 1000)
+        assert unpriced.unpriced_tokens == unpriced.tokens
+        assert unpriced.complete is False
+    else:
+        assert cost.recorded_cost_usd == pytest.approx(model.call_count * price)
+        assert cost.estimated_cost_usd == 0.0  # only zero-token deterministic nodes
+        assert unpriced.unpriced_tokens == 0
+        assert unpriced.complete is True
 
 
 def test_unlabelled_planner_spend_is_also_priced_or_marked_incomplete(tmp_path):
