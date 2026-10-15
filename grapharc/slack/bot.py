@@ -44,6 +44,7 @@ from grapharc.slack.command import (
 from grapharc.slack.config import SlackBotConfig
 from grapharc.slack.format import format_result, live_view_url, mermaid_live_url
 from grapharc.slack.live import ApprovalPrompt, LiveSettings, LiveSink, LiveTail
+from grapharc.slack.recent import RecentRuns
 from grapharc.slack.runner import run_command
 
 #: `action_id`s for the two approval buttons. Stable strings, because a bolt
@@ -61,7 +62,14 @@ def handle_text(text: str, config: SlackBotConfig) -> str:
     return handle_text_live(text, config, sink=None)
 
 
-def handle_text_live(text: str, config: SlackBotConfig, sink: LiveSink | None) -> str:
+def handle_text_live(
+    text: str,
+    config: SlackBotConfig,
+    sink: LiveSink | None,
+    *,
+    history: RecentRuns | None = None,
+    channel: str = "",
+) -> str:
     """Like `handle_text`, but narrates a tracing command through `sink`.
 
     Returns the message the caller must still post — `""` when the sink
@@ -70,6 +78,7 @@ def handle_text_live(text: str, config: SlackBotConfig, sink: LiveSink | None) -
     result always reaches the requester through one route or the other.
     """
     stripped = _MENTION.sub("", text).strip()
+    history = history or RecentRuns()
     try:
         argv = parse_command(
             stripped,
@@ -79,6 +88,11 @@ def handle_text_live(text: str, config: SlackBotConfig, sink: LiveSink | None) -
             timeout_seconds=config.timeout_seconds,
             work_timeout_seconds=config.work_timeout_seconds,
         )
+        argv, resolved_note = history.resolve(argv, config.workdir, channel)
+        if resolved_note:
+            # Inferred arguments pass the exact same allowlist and path gate
+            # as typed arguments, including run ids that resemble flags.
+            argv = parse_command(shlex.join(argv), workdir=config.workdir)
     except SlackCommandError as exc:
         return str(exc)
 
@@ -109,7 +123,10 @@ def handle_text_live(text: str, config: SlackBotConfig, sink: LiveSink | None) -
 
     if handle is None:
         result = run_command(argv, workdir=config.workdir, timeout_seconds=timeout)
-        return _with_final_links(format_result(result), argv, tpath, config, prior_runs)
+        history.remember(config.workdir, channel, tpath)
+        return resolved_note + _with_final_links(
+            format_result(result), argv, tpath, config, prior_runs
+        )
 
     def _update(message: str, prompt: ApprovalPrompt | None = None) -> bool:
         try:
@@ -129,6 +146,7 @@ def handle_text_live(text: str, config: SlackBotConfig, sink: LiveSink | None) -
         mutating_kinds=mutating_kinds_for(argv, config.workdir),
     ):
         result = run_command(argv, workdir=config.workdir, timeout_seconds=timeout)
+    history.remember(config.workdir, channel, tpath)
     final = _with_final_links(format_result(result), argv, tpath, config, prior_runs)
     if _update(final):
         return ""
@@ -309,6 +327,7 @@ def build_app(config: SlackBotConfig) -> Any:
         ) from None
 
     app = App(token=config.bot_token)
+    history = RecentRuns()
 
     @app.command(config.slash_command)
     def _slash(ack: Any, respond: Any, command: dict[str, Any], client: Any) -> None:
@@ -318,7 +337,9 @@ def build_app(config: SlackBotConfig) -> Any:
             return
         ack(f"running `grapharc {text}`…")
         sink = _ChannelSink(client, command.get("channel_id", ""))
-        reply = handle_text_live(text, config, sink)
+        reply = handle_text_live(
+            text, config, sink, history=history, channel=command.get("channel_id", "")
+        )
         if reply:
             respond(reply)
 
@@ -326,7 +347,10 @@ def build_app(config: SlackBotConfig) -> Any:
     def _mention(event: dict[str, Any], say: Any, client: Any) -> None:
         thread_ts = event.get("thread_ts") or event.get("ts")
         sink = _ChannelSink(client, event.get("channel", ""), thread_ts=thread_ts)
-        reply = handle_text_live(event.get("text", ""), config, sink)
+        reply = handle_text_live(
+            event.get("text", ""), config, sink,
+            history=history, channel=event.get("channel", ""),
+        )
         if reply:
             say(reply, thread_ts=thread_ts)
 
