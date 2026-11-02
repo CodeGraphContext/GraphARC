@@ -21,9 +21,10 @@ from typing import Any
 from grapharc.cli import style
 
 #: The three columns every row prints, in characters. Constants, not measurements
-#: of the terminal: `tests/test_cli.py` asserts on `"bedrock      unprobed"`, and
-#: the page in `docs/cookbook/02-models.md` shows this table verbatim.
-BACKEND_COLUMN = 12
+#: of the terminal: `tests/test_cli.py` asserts on `"bedrock           unprobed"`,
+#: and the page in `docs/cookbook/02-models.md` shows this table verbatim. The
+#: backend column fits the longest name, `cheaperinference`, plus one space.
+BACKEND_COLUMN = 17
 MARK_COLUMN = 9
 
 # A backend that is a test double rather than a provider. `--check` exits
@@ -115,6 +116,26 @@ def _probe_novita() -> dict[str, Any]:
     }
 
 
+def _probe_cheaperinference() -> dict[str, Any]:
+    from grapharc.gateway import cheaper_inference_api_key, redact
+
+    key = cheaper_inference_api_key()
+    has_dependency = importlib.util.find_spec("langchain_openai") is not None
+    missing = []
+    if not key:
+        missing.append("no API key (set CHEAPER_INFERENCE_API_KEY, or add one to .env)")
+    if not has_dependency:
+        missing.append("langchain-openai not installed (uv sync --extra cheaperinference)")
+    return {
+        "backend": "cheaperinference",
+        "kind": KIND_PROVIDER,
+        "usable": bool(key) and has_dependency,
+        "credential": redact(key),
+        "detail": "; ".join(missing) or "api key configured and langchain-openai installed",
+        "checked": "credential presence only; no request was sent to api.cheaperinference.com",
+    }
+
+
 def _probe_ollama() -> dict[str, Any]:
     from grapharc.gateway import ollama_base_url
 
@@ -173,6 +194,7 @@ def probe_backends(*, claude_path: str = "claude") -> list[dict[str, Any]]:
         "openrouter": _probe_openrouter,
         "openai": _probe_openai,
         "novita": _probe_novita,
+        "cheaperinference": _probe_cheaperinference,
         "ollama": _probe_ollama,
         "mock": _probe_mock,
     }
