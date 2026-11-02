@@ -1903,15 +1903,19 @@ model: anthropic/claude-haiku-4.5
 <!-- verified: cli varies -->
 ```console
 $ grapharc models --check
-claude-cli   usable    'claude' on PATH at /home/you/.local/bin/claude
-                       credential: claude subscription login (no API key)
-openrouter   unusable  no API key (set OPENROUTER_API_KEY, or add one to .env)
-                       credential: <unset>
-openai       unusable  no API key (set OPENAI_API_KEY, or add one to .env)
-                       credential: <unset>
-ollama       usable    local server at http://localhost:11434/v1
-                       credential: none needed (local server)
-mock         usable    scripted test double; never reaches a provider
+claude-cli        usable    'claude' on PATH at /home/you/.local/bin/claude
+                            credential: claude subscription login (no API key)
+openrouter        unusable  no API key (set OPENROUTER_API_KEY, or add one to .env)
+                            credential: <unset>
+openai            unusable  no API key (set OPENAI_API_KEY, or add one to .env)
+                            credential: <unset>
+novita            unusable  no API key (set NOVITA_API_KEY, or add one to .env)
+                            credential: <unset>
+cheaperinference  unusable  no API key (set CHEAPER_INFERENCE_API_KEY, or add one to .env)
+                            credential: <unset>
+ollama            usable    local server at http://localhost:11434/v1
+                            credential: none needed (local server)
+mock              usable    scripted test double; never reaches a provider
 
 local probe only — no provider was contacted, so a configured key
 is not a validated one.

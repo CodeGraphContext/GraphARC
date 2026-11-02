@@ -8,6 +8,7 @@ nodes take a spec string and the registry decides which adapter serves it:
     openrouter/openai/gpt-4o:floor          -> OpenRouter, cheapest provider
     openai/gpt-4o-mini                      -> OpenAI directly (OPENAI_API_KEY)
     novita/moonshotai/kimi-k3             -> Novita (NOVITA_API_KEY)
+    cheaperinference/gpt-5.4-mini           -> Cheaper Inference (CHEAPER_INFERENCE_API_KEY)
     ollama/llama3.1                         -> a local Ollama server, no key
     mock/anything                           -> scripted test double
 
@@ -29,7 +30,7 @@ class UnknownBackendError(Exception):
     """The spec named a backend that is not registered."""
 
 
-BACKENDS = ("claude-cli", "openrouter", "openai", "novita", "ollama", "mock")
+BACKENDS = ("claude-cli", "openrouter", "openai", "novita", "cheaperinference", "ollama", "mock")
 
 # Authors that appear in OpenRouter model ids. A spec starting with one of
 # these is a model name, not a mistyped backend — `anthropic/claude-haiku-4.5`
@@ -42,7 +43,8 @@ KNOWN_AUTHORS = (
 
 #: Which vendor's models a backend serves, for the independence check below.
 #: OpenRouter is deliberately absent: it serves everyone, so its vendor comes
-#: from the author slug in the model id instead.
+#: from the author slug in the model id instead. Cheaper Inference is absent
+#: too: it serves several labs under bare ids, so it reads as itself.
 BACKEND_VENDOR = {
     "claude-cli": "anthropic",
     "openai": "openai",
@@ -73,6 +75,7 @@ _BARE_BACKEND_EXAMPLE = {
     "openrouter": "openrouter/anthropic/claude-sonnet-4.5",
     "openai": "openai/gpt-4o-mini",
     "novita": "novita/moonshotai/kimi-k3",
+    "cheaperinference": "cheaperinference/gpt-5.4-mini",
     "ollama": "ollama/llama3.1",
 }
 
@@ -172,6 +175,17 @@ def get_model(spec: str, **kwargs: Any) -> BaseChatModel:
             ) from exc
 
         return NovitaChatModel(model, **kwargs)
+
+    if backend == "cheaperinference":
+        try:
+            from grapharc.gateway.cheaperinference import CheaperInferenceChatModel
+        except ImportError as exc:  # pragma: no cover - depends on install extras
+            raise UnknownBackendError(
+                "The Cheaper Inference backend needs langchain-openai. "
+                "Install it with: uv sync --extra cheaperinference"
+            ) from exc
+
+        return CheaperInferenceChatModel(model, **kwargs)
 
     if backend == "ollama":
         try:

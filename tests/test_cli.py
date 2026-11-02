@@ -446,6 +446,7 @@ def test_models_check_exits_one_when_nothing_is_configured(monkeypatch, capsys):
         "OPENROUTER_API_KEY", "OPENROUTER_KEY", "open-router-api-key",
         "OPENAI_API_KEY", "OPENAI_KEY", "openai-api-key",
         "NOVITA_API_KEY", "NOVITA_KEY", "novita-api-key",
+        "CHEAPER_INFERENCE_API_KEY", "CHEAPER_INFERENCE_KEY", "cheaper-inference-api-key",
         "OLLAMA_HOST", "OLLAMA_BASE_URL",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -461,10 +462,11 @@ def test_models_check_exits_one_when_nothing_is_configured(monkeypatch, capsys):
         "openrouter": False,
         "openai": False,
         "novita": False,
+        "cheaperinference": False,
         "ollama": False,
         "mock": True,
     }
-    for backend in ("openrouter", "openai", "novita"):
+    for backend in ("openrouter", "openai", "novita", "cheaperinference"):
         assert next(b for b in payload["backends"] if b["backend"] == backend)[
             "credential"
         ] == "<unset>"
@@ -503,7 +505,7 @@ def test_models_check_flags_a_backend_it_cannot_probe(monkeypatch, capsys):
     assert "no probe" in bedrock["detail"]
 
     _, out, _ = call(["models", "--check"], capsys)
-    assert "bedrock      unprobed" in out
+    assert "bedrock           unprobed" in out
 
 
 def test_models_check_and_a_spec_are_different_questions(capsys):

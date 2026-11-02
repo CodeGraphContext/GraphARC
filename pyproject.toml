@@ -77,6 +77,12 @@ openai = [
 novita = [
     "langchain-openai>=0.2",
 ]
+# Imported by grapharc/gateway/cheaperinference.py. Cheaper Inference speaks the
+# OpenAI wire format against its own endpoint, so this needs the same client and
+# no Cheaper Inference-specific package.
+cheaperinference = [
+    "langchain-openai>=0.2",
+]
 # Imported by grapharc/gateway/ollama.py. Ollama speaks the OpenAI wire format,
 # so the local backend needs the same client and no ollama-specific package.
 ollama = [
@@ -121,7 +127,7 @@ slack = [
 ]
 # Everything above. Self-referential so it cannot drift out of sync.
 all = [
-    "grapharc[api,ladybug,mcp,novita,ollama,openai,openrouter,otel,server,slack]",
+    "grapharc[api,cheaperinference,ladybug,mcp,novita,ollama,openai,openrouter,otel,server,slack]",
 ]
 
 [dependency-groups]

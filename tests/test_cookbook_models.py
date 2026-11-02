@@ -41,6 +41,7 @@ import pytest
 
 from grapharc.gateway import DEFAULT_RETRY_POLICY, NO_RETRY
 from grapharc.gateway.config import (
+    CHEAPER_INFERENCE_KEYS,
     NOVITA_KEYS,
     OLLAMA_BASE_URL_KEYS,
     OLLAMA_KEYS,
@@ -78,6 +79,7 @@ _CREDENTIAL_ENV = frozenset(
         *OPENAI_KEYS,
         *OPENAI_BASE_URL_KEYS,
         *NOVITA_KEYS,
+        *CHEAPER_INFERENCE_KEYS,
         *OLLAMA_KEYS,
         *OLLAMA_BASE_URL_KEYS,
     )
@@ -198,6 +200,7 @@ def _needs_openrouter(body: str) -> bool:
             "langchain_openai",
             '"openai/',
             '"novita/',
+            '"cheaperinference/',
             '"ollama/',
         )
     )
@@ -292,9 +295,11 @@ def test_cli_command_with_machine_dependent_output_runs(position, tmp_path):
 
 def test_the_backend_list_the_page_prints_is_the_real_one():
     page = DOC.read_text(encoding="utf-8")
-    assert BACKENDS == ("claude-cli", "openrouter", "openai", "novita", "ollama", "mock")
+    assert BACKENDS == (
+        "claude-cli", "openrouter", "openai", "novita", "cheaperinference", "ollama", "mock",
+    )
     assert DEFAULT_BACKEND == "claude-cli"
-    assert "There are six backends:" in page
+    assert "There are seven backends:" in page
     # Every backend has a row in the page's table. A backend added to the
     # gateway and not to the page fails here rather than going undocumented.
     for backend in BACKENDS:
