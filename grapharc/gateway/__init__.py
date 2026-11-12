@@ -7,6 +7,7 @@ a node is configuration rather than code:
     get_model("openrouter/anthropic/claude-sonnet-4.5") # many providers, one key
     get_model("openai/gpt-4o-mini")                     # OPENAI_API_KEY
     get_model("novita/moonshotai/kimi-k3")            # NOVITA_API_KEY
+    get_model("uberllm/deepseek/deepseek-v4.1-flash")   # UBERLLM_API_KEY
     get_model("ollama/llama3.1")                        # local server, no key
     get_model("mock/x", responses=[...])                # deterministic tests
 
@@ -17,8 +18,9 @@ gets the same behaviour whichever one serves it:
     get_model(spec, cost_ceiling_usd=0.25)                     # raises when passed
     get_model(spec, spend=shared_meter)                        # one ceiling, many models
 
-The four OpenAI-wire backends (`openrouter`, `openai`, `novita`, `ollama`) are
-imported lazily — they need `langchain-openai`, which is an optional extra.
+The five OpenAI-wire backends (`openrouter`, `openai`, `novita`, `uberllm`,
+`ollama`) are imported lazily — they need `langchain-openai`, which is an
+optional extra.
 """
 
 from grapharc.gateway.claude_cli import ClaudeCodeCLIChatModel
@@ -30,6 +32,7 @@ from grapharc.gateway.config import (
     openai_base_url,
     openrouter_api_key,
     redact,
+    uberllm_api_key,
 )
 from grapharc.gateway.errors import (
     CostCeilingExceeded,
@@ -76,6 +79,7 @@ __all__ = [
     "openrouter_api_key",
     "redact",
     "split_spec",
+    "uberllm_api_key",
     "vendor",
 ]
 
@@ -90,6 +94,8 @@ _LAZY = {
     "OpenAIError": "openai",
     "NovitaChatModel": "novita",
     "NovitaError": "novita",
+    "UberLLMChatModel": "uberllm",
+    "UberLLMError": "uberllm",
     "OllamaChatModel": "ollama",
     "OllamaError": "ollama",
 }

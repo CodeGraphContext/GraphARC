@@ -446,6 +446,7 @@ def test_models_check_exits_one_when_nothing_is_configured(monkeypatch, capsys):
         "OPENROUTER_API_KEY", "OPENROUTER_KEY", "open-router-api-key",
         "OPENAI_API_KEY", "OPENAI_KEY", "openai-api-key",
         "NOVITA_API_KEY", "NOVITA_KEY", "novita-api-key",
+        "UBERLLM_API_KEY", "UBERLLM_KEY", "uberllm-api-key",
         "OLLAMA_HOST", "OLLAMA_BASE_URL",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -461,10 +462,11 @@ def test_models_check_exits_one_when_nothing_is_configured(monkeypatch, capsys):
         "openrouter": False,
         "openai": False,
         "novita": False,
+        "uberllm": False,
         "ollama": False,
         "mock": True,
     }
-    for backend in ("openrouter", "openai", "novita"):
+    for backend in ("openrouter", "openai", "novita", "uberllm"):
         assert next(b for b in payload["backends"] if b["backend"] == backend)[
             "credential"
         ] == "<unset>"

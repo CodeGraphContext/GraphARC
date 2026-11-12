@@ -20,7 +20,7 @@ still wins over any file, and a caller can still name a file anywhere with
 Secrets are returned, never logged. Anything that renders a config for humans
 goes through `redact`.
 
-Four key-holding backends, plus one that usually holds none:
+Five key-holding backends, plus one that usually holds none:
 
 - **OpenRouter** — `OPENROUTER_API_KEY`.
 - **OpenAI** — `OPENAI_API_KEY`, optionally with `OPENAI_BASE_URL` for an
@@ -31,6 +31,8 @@ Four key-holding backends, plus one that usually holds none:
 - **Novita** — `NOVITA_API_KEY`. The endpoint is fixed
   (`grapharc.gateway.novita.NOVITA_BASE_URL`), so unlike OpenAI there is no
   base-url override to resolve here.
+- **UberLLM** — `UBERLLM_API_KEY`. The endpoint is fixed too
+  (`grapharc.gateway.uberllm.UBERLLM_BASE_URL`).
 - **Ollama** — no credential by default: it is a server on your own machine.
   What it needs is an address, so `ollama_base_url()` always returns one
   (`OLLAMA_HOST` / `OLLAMA_BASE_URL`, else localhost). `OLLAMA_API_KEY` exists
@@ -64,6 +66,13 @@ NOVITA_KEYS = (
     "NOVITA_KEY",
     "novita-api-key",
     "novita_api_key",
+)
+
+UBERLLM_KEYS = (
+    "UBERLLM_API_KEY",
+    "UBERLLM_KEY",
+    "uberllm-api-key",
+    "uberllm_api_key",
 )
 
 # `OPENAI_API_BASE` is the older spelling and is still what a lot of tooling
@@ -145,6 +154,10 @@ def openai_api_key(*, env_file: Path | None = None) -> str | None:
 
 def novita_api_key(*, env_file: Path | None = None) -> str | None:
     return get_secret(NOVITA_KEYS, env_file=env_file)
+
+
+def uberllm_api_key(*, env_file: Path | None = None) -> str | None:
+    return get_secret(UBERLLM_KEYS, env_file=env_file)
 
 
 def openai_base_url(*, env_file: Path | None = None) -> str | None:
