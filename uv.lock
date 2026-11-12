@@ -405,6 +405,9 @@ server = [
 slack = [
     { name = "slack-bolt" },
 ]
+uberllm = [
+    { name = "langchain-openai" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -420,12 +423,13 @@ dev = [
 requires-dist = [
     { name = "anthropic", marker = "extra == 'api'", specifier = ">=0.40" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115" },
-    { name = "grapharc", extras = ["api", "ladybug", "mcp", "novita", "ollama", "openai", "openrouter", "otel", "server", "slack"], marker = "extra == 'all'" },
+    { name = "grapharc", extras = ["api", "ladybug", "mcp", "novita", "ollama", "openai", "openrouter", "otel", "server", "slack", "uberllm"], marker = "extra == 'all'" },
     { name = "langchain-core", specifier = ">=0.3" },
     { name = "langchain-openai", marker = "extra == 'novita'", specifier = ">=0.2" },
     { name = "langchain-openai", marker = "extra == 'ollama'", specifier = ">=0.2" },
     { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=0.2" },
     { name = "langchain-openai", marker = "extra == 'openrouter'", specifier = ">=0.2" },
+    { name = "langchain-openai", marker = "extra == 'uberllm'", specifier = ">=0.2" },
     { name = "langgraph", specifier = ">=0.4" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=2.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2,<2" },
@@ -437,7 +441,7 @@ requires-dist = [
     { name = "slack-bolt", marker = "extra == 'slack'", specifier = ">=1.20" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.32" },
 ]
-provides-extras = ["openrouter", "openai", "novita", "ollama", "server", "mcp", "ladybug", "otel", "api", "slack", "all"]
+provides-extras = ["openrouter", "openai", "novita", "uberllm", "ollama", "server", "mcp", "ladybug", "otel", "api", "slack", "all"]
 
 [package.metadata.requires-dev]
 dev = [

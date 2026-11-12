@@ -115,6 +115,26 @@ def _probe_novita() -> dict[str, Any]:
     }
 
 
+def _probe_uberllm() -> dict[str, Any]:
+    from grapharc.gateway import redact, uberllm_api_key
+
+    key = uberllm_api_key()
+    has_dependency = importlib.util.find_spec("langchain_openai") is not None
+    missing = []
+    if not key:
+        missing.append("no API key (set UBERLLM_API_KEY, or add one to .env)")
+    if not has_dependency:
+        missing.append("langchain-openai not installed (uv sync --extra uberllm)")
+    return {
+        "backend": "uberllm",
+        "kind": KIND_PROVIDER,
+        "usable": bool(key) and has_dependency,
+        "credential": redact(key),
+        "detail": "; ".join(missing) or "api key configured and langchain-openai installed",
+        "checked": "credential presence only; no request was sent to api.uberllm.dev",
+    }
+
+
 def _probe_ollama() -> dict[str, Any]:
     from grapharc.gateway import ollama_base_url
 
@@ -173,6 +193,7 @@ def probe_backends(*, claude_path: str = "claude") -> list[dict[str, Any]]:
         "openrouter": _probe_openrouter,
         "openai": _probe_openai,
         "novita": _probe_novita,
+        "uberllm": _probe_uberllm,
         "ollama": _probe_ollama,
         "mock": _probe_mock,
     }

@@ -8,6 +8,7 @@ nodes take a spec string and the registry decides which adapter serves it:
     openrouter/openai/gpt-4o:floor          -> OpenRouter, cheapest provider
     openai/gpt-4o-mini                      -> OpenAI directly (OPENAI_API_KEY)
     novita/moonshotai/kimi-k3             -> Novita (NOVITA_API_KEY)
+    uberllm/deepseek/deepseek-v4.1-flash  -> UberLLM (UBERLLM_API_KEY)
     ollama/llama3.1                         -> a local Ollama server, no key
     mock/anything                           -> scripted test double
 
@@ -29,7 +30,7 @@ class UnknownBackendError(Exception):
     """The spec named a backend that is not registered."""
 
 
-BACKENDS = ("claude-cli", "openrouter", "openai", "novita", "ollama", "mock")
+BACKENDS = ("claude-cli", "openrouter", "openai", "novita", "uberllm", "ollama", "mock")
 
 # Authors that appear in OpenRouter model ids. A spec starting with one of
 # these is a model name, not a mistyped backend — `anthropic/claude-haiku-4.5`
@@ -73,6 +74,7 @@ _BARE_BACKEND_EXAMPLE = {
     "openrouter": "openrouter/anthropic/claude-sonnet-4.5",
     "openai": "openai/gpt-4o-mini",
     "novita": "novita/moonshotai/kimi-k3",
+    "uberllm": "uberllm/deepseek/deepseek-v4.1-flash",
     "ollama": "ollama/llama3.1",
 }
 
@@ -172,6 +174,17 @@ def get_model(spec: str, **kwargs: Any) -> BaseChatModel:
             ) from exc
 
         return NovitaChatModel(model, **kwargs)
+
+    if backend == "uberllm":
+        try:
+            from grapharc.gateway.uberllm import UberLLMChatModel
+        except ImportError as exc:  # pragma: no cover - depends on install extras
+            raise UnknownBackendError(
+                "The UberLLM backend needs langchain-openai. "
+                "Install it with: uv sync --extra uberllm"
+            ) from exc
+
+        return UberLLMChatModel(model, **kwargs)
 
     if backend == "ollama":
         try:
